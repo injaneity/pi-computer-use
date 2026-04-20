@@ -5,13 +5,39 @@
   "type": "module",
   "keywords": [
     "pi-package",
+    "pi-extension",
     "pi",
     "computer-use",
-    "macos"
+    "macos",
+    "screenshot",
+    "automation"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/injaneity/pi-computer-use.git"
+  },
+  "bugs": {
+    "url": "https://github.com/injaneity/pi-computer-use/issues"
+  },
+  "homepage": "https://github.com/injaneity/pi-computer-use#readme",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "files": [
+    "extensions",
+    "skills",
+    "src",
+    "scripts/build-native.mjs",
+    "scripts/setup-helper.mjs",
+    "native/macos/bridge.swift",
+    "prebuilt/macos",
+    "README.md",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [
-      "./extensions/computer-use.ts"
+      "./extensions"
     ],
     "skills": [
       "./skills"
