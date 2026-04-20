@@ -32,6 +32,7 @@
     "scripts/setup-helper.mjs",
     "native/macos/bridge.swift",
     "prebuilt/macos",
+    "assets",
     "README.md",
     "LICENSE"
   ],
@@ -41,7 +42,9 @@
     ],
     "skills": [
       "./skills"
-    ]
+    ],
+    "video": "./assets/pi-computer-use.mp4",
+    "image": "./assets/img.jpg"
   },
   "scripts": {
     "postinstall": "node scripts/setup-helper.mjs --postinstall",

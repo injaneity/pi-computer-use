@@ -1,5 +1,9 @@
 # pi-computer-use
 
+**Demo:** [`pi-computer-use.mp4`](./assets/pi-computer-use.mp4)
+
+![pi-computer-use](./assets/img.jpg)
+
 Add Codex-style computer-use tools to Pi on macOS.
 
 This package bundles:
