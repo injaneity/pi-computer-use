@@ -7,21 +7,16 @@
 Add Codex-style computer-use tools to Pi on macOS.
 
 This package bundles:
-- a Pi extension that adds screenshot, mouse, and keyboard tools
+- a Pi extension that adds semantic computer-use tools
 - a skill that teaches the agent how to use those tools reliably
-- a native macOS helper used for screenshots and input dispatch
+- a native macOS helper used for screenshots and AX dispatch
 
 ## What you get
 
 Public tools:
 - `screenshot`
 - `click`
-- `double_click`
-- `move_mouse`
-- `drag`
-- `scroll`
 - `type_text`
-- `keypress`
 - `wait`
 
 ## Requirements
@@ -77,6 +72,8 @@ On first use, the package will guide you through granting:
 - Accessibility
 - Screen Recording
 
+Accessibility is treated as mandatory for AX-first computer use. Screen Recording is required for window screenshots.
+
 Grant both permissions to the helper at:
 
 ```text
@@ -95,7 +92,12 @@ Grant both permissions to the helper at:
 - `screenshot` should be called first to choose a target window
 - Successful actions return a fresh screenshot for the next step
 - The helper uses a non-intrusive strategy where possible instead of taking over your cursor globally
-- `type_text` prefers AX value setting before paste/raw key fallbacks
+- Accessibility is mandatory: the runtime is being pushed toward AX-first/background-first behavior
+- Public tool surface is semantic-only: `screenshot`, `click`, `type_text`, `wait`
+- `click` is AX-only semantic press/focus, not pointer-event fallback
+- `type_text` is AX value-setting only, not clipboard or raw key fallback
+- Tool results include execution metadata so we can verify that actions stayed on AX paths
+- The runtime remains on the current desktop/session only: no second screen or virtual display, no foreground activation, and no physical cursor takeover
 
 ## Build the helper manually
 
