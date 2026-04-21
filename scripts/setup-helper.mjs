@@ -142,7 +142,7 @@ async function setup() {
 	}
 
 	throw new Error(
-		`No prebuilt helper found for ${arch} at ${prebuiltPath}. Run 'npm run build:native -- --output ${helperDestPath}' to build locally.`,
+		`No prebuilt helper found for ${arch} at ${prebuiltPath}. Run 'node scripts/build-native.mjs --output ${helperDestPath}' to build locally.`,
 	);
 }
 

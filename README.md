@@ -33,16 +33,18 @@ Public tools:
 
 ## Install
 
+`pi-computer-use` currently resolves to an unrelated package. Install this package from GitHub or a local checkout instead.
+
 ### Global install
 
 ```bash
-pi install npm:pi-computer-use
+pi install git:github.com/injaneity/pi-computer-use
 ```
 
 ### Project-local install
 
 ```bash
-pi install -l npm:pi-computer-use
+pi install -l git:github.com/injaneity/pi-computer-use
 ```
 
 ### Install from a local checkout
@@ -100,7 +102,7 @@ Grant both permissions to the helper at:
 If you need to build the helper yourself:
 
 ```bash
-npm run build:native
+node scripts/build-native.mjs
 ```
 
 You can also build to a custom output path:
@@ -112,7 +114,7 @@ node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridg
 ## Remove
 
 ```bash
-pi remove npm:pi-computer-use
+pi remove git:github.com/injaneity/pi-computer-use
 ```
 
 ## License

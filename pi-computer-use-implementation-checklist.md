@@ -497,7 +497,7 @@ Run manual checks on real macOS apps.
 - [ ] Confirm all tools are sequential.
 - [ ] Confirm no eager helper startup.
 - [ ] Confirm no permission prompt on extension load.
-- [ ] Confirm package installs via npm/git/local path.
+- [ ] Confirm package installs via git/local path.
 - [ ] Confirm dev fallback source build instructions are correct.
 - [ ] Add brief README or package-level usage notes if needed.
 
