@@ -13,46 +13,14 @@ export interface ScreenshotParams {
 	windowTitle?: string;
 }
 
-export type MouseButton = "left" | "right" | "wheel" | "back" | "forward";
-
 export interface ClickParams {
 	x: number;
 	y: number;
-	button?: MouseButton;
-	captureId?: string;
-}
-
-export interface DoubleClickParams {
-	x: number;
-	y: number;
-	captureId?: string;
-}
-
-export interface MoveMouseParams {
-	x: number;
-	y: number;
-	captureId?: string;
-}
-
-export interface DragParams {
-	path: Array<{ x: number; y: number }>;
-	captureId?: string;
-}
-
-export interface ScrollParams {
-	x: number;
-	y: number;
-	scrollX: number;
-	scrollY: number;
 	captureId?: string;
 }
 
 export interface TypeTextParams {
 	text: string;
-}
-
-export interface KeypressParams {
-	keys: string[];
 }
 
 export interface WaitParams {
@@ -81,6 +49,18 @@ interface ActivationFlags {
 	raised: boolean;
 }
 
+interface ExecutionTrace {
+	strategy:
+		| "screenshot"
+		| "wait"
+		| "ax_press"
+		| "ax_focus"
+		| "ax_set_value";
+	axAttempted?: boolean;
+	axSucceeded?: boolean;
+	fallbackUsed?: boolean;
+}
+
 export interface ComputerUseDetails {
 	tool: string;
 	target: {
@@ -99,11 +79,7 @@ export interface ComputerUseDetails {
 		coordinateSpace: "window-relative-screenshot-pixels";
 	};
 	activation: ActivationFlags;
-	ghostCursor?: {
-		x: number;
-		y: number;
-		coordinateSpace: "window-relative-screenshot-pixels";
-	};
+	execution: ExecutionTrace;
 }
 
 interface HelperApp {
@@ -139,11 +115,6 @@ interface FrontmostResult {
 	windowId?: number;
 }
 
-interface MousePositionResult {
-	x: number;
-	y: number;
-}
-
 interface ScreenshotPayload {
 	pngBase64: string;
 	width: number;
@@ -163,6 +134,11 @@ interface FocusedElementResult {
 
 interface AxPressAtPointResult {
 	pressed: boolean;
+	reason?: string;
+}
+
+interface AxFocusResult {
+	focused: boolean;
 	reason?: string;
 }
 
@@ -186,7 +162,6 @@ interface PendingRequest {
 interface RuntimeState {
 	currentTarget?: CurrentTarget;
 	currentCapture?: CurrentCapture;
-	ghostCursor?: MousePositionResult;
 	helper?: ChildProcessWithoutNullStreams;
 	helperStdoutBuffer: string;
 	pending: Map<string, PendingRequest>;
@@ -197,17 +172,7 @@ interface RuntimeState {
 	helperInstallChecked: boolean;
 }
 
-const TOOL_NAMES = new Set([
-	"screenshot",
-	"click",
-	"double_click",
-	"move_mouse",
-	"drag",
-	"scroll",
-	"type_text",
-	"keypress",
-	"wait",
-]);
+const TOOL_NAMES = new Set(["screenshot", "click", "type_text", "wait"]);
 
 const MISSING_TARGET_ERROR = "No current controlled window. Call screenshot first to choose a target window.";
 const CURRENT_TARGET_GONE_ERROR =
@@ -366,13 +331,6 @@ function ensurePointIsInCapture(
 			`${errorPrefix} (${Math.round(x)},${Math.round(y)}) are outside the latest screenshot bounds (${capture.width}x${capture.height}). Call screenshot again and retry.`,
 		);
 	}
-}
-
-function updateGhostCursor(position: MousePositionResult): void {
-	runtimeState.ghostCursor = {
-		x: Math.max(0, Math.round(position.x)),
-		y: Math.max(0, Math.round(position.y)),
-	};
 }
 
 function validateCaptureId(captureId?: string): CurrentCapture {
@@ -781,6 +739,35 @@ function scoreWindow(window: HelperWindow): number {
 	return score;
 }
 
+function summarizeWindowCandidate(window: HelperWindow): string {
+	const flags = [
+		window.isFocused ? "focused" : undefined,
+		window.isMain ? "main" : undefined,
+		window.isOnscreen ? "onscreen" : undefined,
+		window.isMinimized ? "minimized" : undefined,
+	]
+		.filter(Boolean)
+		.join(",");
+	return `${window.title || "(untitled)"} [score=${scoreWindow(window)}${flags ? `, ${flags}` : ""}]`;
+}
+
+function summarizeWindowCandidates(windows: HelperWindow[], limit = 6): string {
+	return [...windows]
+		.sort((a, b) => scoreWindow(b) - scoreWindow(a))
+		.slice(0, limit)
+		.map(summarizeWindowCandidate)
+		.join("; ");
+}
+
+function chooseRankedWindowOrUndefined(windows: HelperWindow[]): HelperWindow | undefined {
+	if (windows.length === 0) return undefined;
+	const ranked = [...windows].sort((a, b) => scoreWindow(b) - scoreWindow(a));
+	if (ranked.length === 1) return ranked[0];
+	const topScore = scoreWindow(ranked[0]);
+	const nextScore = scoreWindow(ranked[1]);
+	return topScore >= nextScore + 25 ? ranked[0] : undefined;
+}
+
 function chooseAppByQuery(apps: HelperApp[], appQuery: string): HelperApp {
 	const query = normalizeText(appQuery);
 	const exactMatches = apps.filter((app) => normalizeText(app.appName) === query);
@@ -791,7 +778,8 @@ function chooseAppByQuery(apps: HelperApp[], appQuery: string): HelperApp {
 
 	const partialMatches = apps.filter((app) => normalizeText(app.appName).includes(query));
 	if (partialMatches.length === 0) {
-		throw new Error(`App '${appQuery}' is not running.`);
+		const running = apps.slice(0, 12).map((app) => app.appName).join(", ");
+		throw new Error(`App '${appQuery}' is not running. Running apps: ${running || "none"}.`);
 	}
 	if (partialMatches.length === 1) {
 		return partialMatches[0];
@@ -806,18 +794,26 @@ function chooseWindowByTitle(windows: HelperWindow[], windowTitle: string, appNa
 	const exactMatches = windows.filter((window) => normalizeText(window.title) === query);
 	if (exactMatches.length === 1) return exactMatches[0];
 	if (exactMatches.length > 1) {
-		const candidates = exactMatches.map((window) => window.title || "(untitled)").join(", ");
-		throw new Error(`Window title '${windowTitle}' is ambiguous in app '${appName}' (${candidates}).`);
+		const clearWinner = chooseRankedWindowOrUndefined(exactMatches);
+		if (clearWinner) return clearWinner;
+		throw new Error(
+			`Window title '${windowTitle}' is ambiguous in app '${appName}'. Candidates: ${summarizeWindowCandidates(exactMatches)}.`,
+		);
 	}
 
 	const partialMatches = windows.filter((window) => normalizeText(window.title).includes(query));
 	if (partialMatches.length === 0) {
-		throw new Error(`Window '${windowTitle}' was not found in app '${appName}'.`);
+		throw new Error(
+			`Window '${windowTitle}' was not found in app '${appName}'. Available windows: ${summarizeWindowCandidates(windows)}.`,
+		);
 	}
 	if (partialMatches.length === 1) return partialMatches[0];
+	const clearWinner = chooseRankedWindowOrUndefined(partialMatches);
+	if (clearWinner) return clearWinner;
 
-	const candidates = partialMatches.map((window) => window.title || "(untitled)").join(", ");
-	throw new Error(`Window title '${windowTitle}' is ambiguous in app '${appName}' (${candidates}).`);
+	throw new Error(
+		`Window title '${windowTitle}' is ambiguous in app '${appName}'. Candidates: ${summarizeWindowCandidates(partialMatches)}.`,
+	);
 }
 
 function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget {
@@ -906,6 +902,18 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 	return resolved;
 }
 
+function matchesScreenshotSelection(target: ResolvedTarget, selection: ScreenshotParams): boolean {
+	const appQuery = trimOrUndefined(selection.app);
+	const windowTitleQuery = trimOrUndefined(selection.windowTitle);
+	if (appQuery && !normalizeText(target.appName).includes(normalizeText(appQuery))) {
+		return false;
+	}
+	if (windowTitleQuery && normalizeText(target.windowTitle) !== normalizeText(windowTitleQuery)) {
+		return false;
+	}
+	return true;
+}
+
 async function resolveTargetForScreenshot(selection: ScreenshotParams, signal?: AbortSignal): Promise<ResolvedTarget> {
 	const appQuery = trimOrUndefined(selection.app);
 	const windowTitleQuery = trimOrUndefined(selection.windowTitle);
@@ -957,9 +965,15 @@ async function resolveTargetForScreenshot(selection: ScreenshotParams, signal?: 
 		throw new Error(`Window '${query}' was not found in any running app.`);
 	}
 	if (matches.length > 1) {
-		const options = matches
+		const ranked = [...matches].sort((a, b) => scoreWindow(b.window) - scoreWindow(a.window));
+		if (ranked.length > 1 && scoreWindow(ranked[0].window) >= scoreWindow(ranked[1].window) + 25) {
+			const resolved = toResolvedTarget(ranked[0].app, ranked[0].window);
+			setCurrentTarget(resolved);
+			return resolved;
+		}
+		const options = ranked
 			.slice(0, 6)
-			.map((match) => `${match.app.appName} — ${match.window.title || "(untitled)"}`)
+			.map((match) => `${match.app.appName} — ${summarizeWindowCandidate(match.window)}`)
 			.join(", ");
 		throw new Error(`Window title '${query}' is ambiguous (${options}). Specify app as well.`);
 	}
@@ -1100,7 +1114,12 @@ async function captureCurrentTarget(signal?: AbortSignal, priorActivation = empt
 	};
 }
 
-function buildToolResult(tool: string, summary: string, result: CaptureResult): AgentToolResult<ComputerUseDetails> {
+function buildToolResult(
+	tool: string,
+	summary: string,
+	result: CaptureResult,
+	execution: ExecutionTrace,
+): AgentToolResult<ComputerUseDetails> {
 	const details: ComputerUseDetails = {
 		tool,
 		target: {
@@ -1119,13 +1138,7 @@ function buildToolResult(tool: string, summary: string, result: CaptureResult): 
 			coordinateSpace: "window-relative-screenshot-pixels",
 		},
 		activation: result.activation,
-		ghostCursor: runtimeState.ghostCursor
-			? {
-				x: runtimeState.ghostCursor.x,
-				y: runtimeState.ghostCursor.y,
-				coordinateSpace: "window-relative-screenshot-pixels",
-			}
-			: undefined,
+		execution,
 	};
 
 	return {
@@ -1141,9 +1154,8 @@ async function runCoordinateAction(
 	tool: string,
 	capture: CurrentCapture,
 	signal: AbortSignal | undefined,
-	dispatch: (target: ResolvedTarget) => Promise<void>,
+	dispatch: (target: ResolvedTarget) => Promise<ExecutionTrace>,
 	summaryFactory: (target: ResolvedTarget) => string,
-	ghostCursor?: MousePositionResult,
 ): Promise<AgentToolResult<ComputerUseDetails>> {
 	const currentTarget = await resolveCurrentTarget(signal);
 	let activation = emptyActivation();
@@ -1151,15 +1163,12 @@ async function runCoordinateAction(
 
 	try {
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		if (ghostCursor) {
-			updateGhostCursor(ghostCursor);
-		}
-		await dispatch(readyTarget);
+		const execution = await dispatch(readyTarget);
 		stateMayHaveChanged = true;
 
 		await sleep(ACTION_SETTLE_MS, signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
-		return buildToolResult(tool, summaryFactory(captureResult.target), captureResult);
+		return buildToolResult(tool, summaryFactory(captureResult.target), captureResult, execution);
 	} catch (error) {
 		if (stateMayHaveChanged) {
 			throw addRefreshHint(error);
@@ -1174,16 +1183,20 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 		windowTitle: trimOrUndefined(params.windowTitle),
 	};
 
-	await resolveTargetForScreenshot(selection, signal);
+	const requestedTarget = await resolveTargetForScreenshot(selection, signal);
 	const captureResult = await captureCurrentTarget(signal);
+	if (!matchesScreenshotSelection(captureResult.target, selection)) {
+		throw new Error(
+			`Screenshot target drifted from the requested selection. Requested ${requestedTarget.appName} — ${requestedTarget.windowTitle}, captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Call screenshot again or specify a more exact window title.`,
+		);
+	}
 	const summary = `Captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned updated screenshot. Coordinates are window-relative screenshot pixels.`;
-	return buildToolResult("screenshot", summary, captureResult);
+	return buildToolResult("screenshot", summary, captureResult, { strategy: "screenshot", fallbackUsed: false });
 }
 
 async function performClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	const capture = validateCaptureId(params.captureId);
 	ensurePointIsInCapture(params.x, params.y, capture);
-	const button = params.button ?? "left";
 
 	return await runCoordinateAction(
 		"click",
@@ -1191,10 +1204,29 @@ async function performClick(params: ClickParams, signal?: AbortSignal): Promise<
 		signal,
 		async (target) => {
 			let clickedViaAX = false;
-			if (button === "left") {
+			let focusedViaAX = false;
+			try {
+				const axResult = await bridgeCommand<AxPressAtPointResult>(
+					"axPressAtPoint",
+					{
+						windowId: target.windowId,
+						pid: target.pid,
+						x: params.x,
+						y: params.y,
+						captureWidth: capture.width,
+						captureHeight: capture.height,
+					},
+					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+				);
+				clickedViaAX = toBoolean(axResult?.pressed);
+			} catch {
+				clickedViaAX = false;
+			}
+
+			if (!clickedViaAX) {
 				try {
-					const axResult = await bridgeCommand<AxPressAtPointResult>(
-						"axPressAtPoint",
+					const focusResult = await bridgeCommand<AxFocusResult>(
+						"axFocusAtPoint",
 						{
 							windowId: target.windowId,
 							pid: target.pid,
@@ -1205,162 +1237,25 @@ async function performClick(params: ClickParams, signal?: AbortSignal): Promise<
 						},
 						{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 					);
-					clickedViaAX = toBoolean(axResult?.pressed);
+					focusedViaAX = toBoolean(focusResult?.focused);
 				} catch {
-					clickedViaAX = false;
+					focusedViaAX = false;
 				}
 			}
 
-			if (!clickedViaAX) {
-				await bridgeCommand(
-					"mouseClick",
-					{
-						windowId: target.windowId,
-						pid: target.pid,
-						x: params.x,
-						y: params.y,
-						button,
-						clicks: 1,
-						captureWidth: capture.width,
-						captureHeight: capture.height,
-					},
-					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-				);
+			if (!clickedViaAX && !focusedViaAX) {
+				throw new Error(`AX click/focus could not be completed at (${Math.round(params.x)},${Math.round(params.y)}).`);
 			}
+
+			return {
+				strategy: clickedViaAX ? "ax_press" : "ax_focus",
+				axAttempted: true,
+				axSucceeded: true,
+				fallbackUsed: false,
+			};
 		},
 		(target) =>
 			`Clicked at (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}. Returned updated screenshot. Coordinates are window-relative screenshot pixels.`,
-		{ x: params.x, y: params.y },
-	);
-}
-
-async function performDoubleClick(
-	params: DoubleClickParams,
-	signal?: AbortSignal,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	const capture = validateCaptureId(params.captureId);
-	ensurePointIsInCapture(params.x, params.y, capture);
-
-	return await runCoordinateAction(
-		"double_click",
-		capture,
-		signal,
-		async (target) => {
-			await bridgeCommand(
-				"mouseClick",
-				{
-					windowId: target.windowId,
-					pid: target.pid,
-					x: params.x,
-					y: params.y,
-					button: "left",
-					clicks: 2,
-					captureWidth: capture.width,
-					captureHeight: capture.height,
-				},
-				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-			);
-		},
-		(target) =>
-			`Double-clicked at (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}. Returned updated screenshot. Coordinates are window-relative screenshot pixels.`,
-		{ x: params.x, y: params.y },
-	);
-}
-
-async function performMoveMouse(
-	params: MoveMouseParams,
-	signal?: AbortSignal,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	const capture = validateCaptureId(params.captureId);
-	ensurePointIsInCapture(params.x, params.y, capture);
-
-	return await runCoordinateAction(
-		"move_mouse",
-		capture,
-		signal,
-		async (target) => {
-			await bridgeCommand(
-				"mouseMove",
-				{
-					windowId: target.windowId,
-					pid: target.pid,
-					x: params.x,
-					y: params.y,
-					captureWidth: capture.width,
-					captureHeight: capture.height,
-				},
-				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-			);
-		},
-		(target) =>
-			`Moved mouse to (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}. Returned updated screenshot.`,
-		{ x: params.x, y: params.y },
-	);
-}
-
-async function performDrag(params: DragParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
-	if (!Array.isArray(params.path) || params.path.length < 2) {
-		throw new Error("Drag path must contain at least two points.");
-	}
-
-	const capture = validateCaptureId(params.captureId);
-	for (const [index, point] of params.path.entries()) {
-		ensurePointIsInCapture(point.x, point.y, capture, `Drag path point ${index + 1}`);
-	}
-
-	return await runCoordinateAction(
-		"drag",
-		capture,
-		signal,
-		async (target) => {
-			await bridgeCommand(
-				"mouseDrag",
-				{
-					windowId: target.windowId,
-					pid: target.pid,
-					path: params.path,
-					captureWidth: capture.width,
-					captureHeight: capture.height,
-				},
-				{ signal, timeoutMs: Math.max(COMMAND_TIMEOUT_MS, params.path.length * 120) },
-			);
-		},
-		(target) => `Dragged across ${params.path.length} points in ${target.appName} — ${target.windowTitle}. Returned updated screenshot.`,
-		{ x: params.path[params.path.length - 1].x, y: params.path[params.path.length - 1].y },
-	);
-}
-
-async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
-	const capture = validateCaptureId(params.captureId);
-	ensurePointIsInCapture(params.x, params.y, capture);
-
-	if (!Number.isFinite(params.scrollX) || !Number.isFinite(params.scrollY)) {
-		throw new Error("scrollX and scrollY must be finite numbers.");
-	}
-
-	return await runCoordinateAction(
-		"scroll",
-		capture,
-		signal,
-		async (target) => {
-			await bridgeCommand(
-				"mouseScroll",
-				{
-					windowId: target.windowId,
-					pid: target.pid,
-					x: params.x,
-					y: params.y,
-					scrollX: params.scrollX,
-					scrollY: params.scrollY,
-					captureWidth: capture.width,
-					captureHeight: capture.height,
-				},
-				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-			);
-		},
-		(target) =>
-			`Scrolled at (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}. Returned updated screenshot.`,
-		{ x: params.x, y: params.y },
 	);
 }
 
@@ -1374,6 +1269,7 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
 
 		let typed = false;
+		let execution: ExecutionTrace = { strategy: "ax_set_value", axAttempted: true, axSucceeded: false, fallbackUsed: false };
 		const focused = await bridgeCommand<FocusedElementResult>(
 			"focusedElement",
 			{ pid: readyTarget.pid },
@@ -1391,151 +1287,21 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 				);
 				typed = true;
+				execution = { strategy: "ax_set_value", axAttempted: true, axSucceeded: true, fallbackUsed: false };
 			} catch {
 				// fall through to clipboard/raw typing path
 			}
 		}
 
 		if (!typed) {
-			const clipboardResult = await bridgeCommand<any>("getClipboard", {}, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(
-				() => undefined,
-			);
-			const previousClipboard = toOptionalString(clipboardResult?.value);
-			let clipboardChanged = false;
-
-			try {
-				await bridgeCommand("setClipboard", { value: text }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
-				clipboardChanged = true;
-				await bridgeCommand(
-					"keypress",
-					{ keys: ["CMD", "V"], pid: readyTarget.pid },
-					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-				);
-				typed = true;
-			} catch {
-				try {
-					await bridgeCommand(
-						"typeText",
-						{ text, pid: readyTarget.pid },
-						{
-							signal,
-							timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)),
-						},
-					);
-					typed = true;
-				} catch {
-					typed = false;
-				}
-			} finally {
-				if (clipboardChanged && previousClipboard !== undefined) {
-					await bridgeCommand("setClipboard", { value: previousClipboard }, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(
-						() => undefined,
-					);
-				}
-			}
-		}
-
-		if (!typed) {
-			throw new Error(
-				"Typing failed through AX text setting, clipboard paste, and raw key events. Click the intended field and try again.",
-			);
+			throw new Error("AX text entry could not be completed for the currently focused control.");
 		}
 
 		stateMayHaveChanged = true;
 		await sleep(ACTION_SETTLE_MS, signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
 		const summary = `Typed text in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned updated screenshot.`;
-		return buildToolResult("type_text", summary, captureResult);
-	} catch (error) {
-		if (stateMayHaveChanged) {
-			throw addRefreshHint(error);
-		}
-		throw normalizeError(error);
-	}
-}
-
-function normalizeKeyToken(token: string): string {
-	const normalized = token.trim().toUpperCase();
-	switch (normalized) {
-		case "COMMAND":
-		case "CMD":
-		case "META":
-			return "CMD";
-		case "CONTROL":
-		case "CTRL":
-			return "CTRL";
-		case "ALT":
-		case "OPTION":
-		case "OPT":
-			return "ALT";
-		case "RETURN":
-			return "ENTER";
-		case "ESC":
-			return "ESCAPE";
-		default:
-			return normalized;
-	}
-}
-
-function splitShortcut(text: string): string[] {
-	return text
-		.split(/[+,]/g)
-		.map((token) => token.trim())
-		.filter(Boolean);
-}
-
-export function normalizeKeysInput(input: string[] | string): string[] {
-	const tokens: string[] = [];
-	if (typeof input === "string") {
-		tokens.push(...splitShortcut(input));
-	} else {
-		for (const item of input) {
-			if (typeof item !== "string") continue;
-			if (item.includes("+") || item.includes(",")) {
-				tokens.push(...splitShortcut(item));
-			} else {
-				tokens.push(item.trim());
-			}
-		}
-	}
-
-	const normalized = tokens.map(normalizeKeyToken).filter(Boolean);
-	if (normalized.length === 0) {
-		throw new Error("keys must contain at least one key.");
-	}
-	return normalized;
-}
-
-export function prepareKeypressArguments(args: unknown): { keys: string[] } {
-	const raw = typeof args === "object" && args !== null ? (args as any).keys : undefined;
-	if (Array.isArray(raw)) {
-		return { keys: normalizeKeysInput(raw) };
-	}
-	if (typeof raw === "string") {
-		return { keys: normalizeKeysInput(raw) };
-	}
-	if (typeof args === "string") {
-		return { keys: normalizeKeysInput(args) };
-	}
-	throw new Error("keypress expects { keys: string[] } or shortcut text like 'cmd+l'.");
-}
-
-async function performKeypress(params: KeypressParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
-	const keys = normalizeKeysInput(params.keys);
-	const currentTarget = await resolveCurrentTarget(signal);
-	let activation = emptyActivation();
-	let stateMayHaveChanged = false;
-
-	try {
-		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-
-		await bridgeCommand("keypress", { keys, pid: readyTarget.pid }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
-		stateMayHaveChanged = true;
-
-		await sleep(ACTION_SETTLE_MS, signal);
-		const captureResult = await captureCurrentTarget(signal, activation);
-		const summary = `Pressed ${keys.join("+")} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned updated screenshot.`;
-		return buildToolResult("keypress", summary, captureResult);
+		return buildToolResult("type_text", summary, captureResult, execution);
 	} catch (error) {
 		if (stateMayHaveChanged) {
 			throw addRefreshHint(error);
@@ -1558,7 +1324,7 @@ async function performWait(params: WaitParams, signal?: AbortSignal): Promise<Ag
 	await sleep(ms, signal);
 	const captureResult = await captureCurrentTarget(signal);
 	const summary = `Waited ${ms}ms in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned updated screenshot.`;
-	return buildToolResult("wait", summary, captureResult);
+	return buildToolResult("wait", summary, captureResult, { strategy: "wait", fallbackUsed: false });
 }
 
 async function executeTool<T>(ctx: ExtensionContext, signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
@@ -1590,46 +1356,6 @@ export async function executeClick(
 	return await executeTool(ctx, signal, () => performClick(params, signal));
 }
 
-export async function executeDoubleClick(
-	_toolCallId: string,
-	params: DoubleClickParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performDoubleClick(params, signal));
-}
-
-export async function executeMoveMouse(
-	_toolCallId: string,
-	params: MoveMouseParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performMoveMouse(params, signal));
-}
-
-export async function executeDrag(
-	_toolCallId: string,
-	params: DragParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performDrag(params, signal));
-}
-
-export async function executeScroll(
-	_toolCallId: string,
-	params: ScrollParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performScroll(params, signal));
-}
-
 export async function executeTypeText(
 	_toolCallId: string,
 	params: TypeTextParams,
@@ -1638,16 +1364,6 @@ export async function executeTypeText(
 	ctx: ExtensionContext,
 ): Promise<AgentToolResult<ComputerUseDetails>> {
 	return await executeTool(ctx, signal, () => performTypeText(params, signal));
-}
-
-export async function executeKeypress(
-	_toolCallId: string,
-	params: KeypressParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performKeypress(params, signal));
 }
 
 export async function executeWait(
@@ -1663,7 +1379,6 @@ export async function executeWait(
 export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	runtimeState.currentTarget = undefined;
 	runtimeState.currentCapture = undefined;
-	runtimeState.ghostCursor = undefined;
 
 	for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
 		if ((entry as any)?.type !== "message") continue;
@@ -1701,12 +1416,6 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 			timestamp: Number.isFinite(details.capture.timestamp) ? details.capture.timestamp : Date.now(),
 		};
 
-		if (details.ghostCursor) {
-			runtimeState.ghostCursor = {
-				x: Math.max(0, Math.round(toFiniteNumber(details.ghostCursor.x, 0))),
-				y: Math.max(0, Math.round(toFiniteNumber(details.ghostCursor.y, 0))),
-			};
-		}
 		break;
 	}
 }
@@ -1717,7 +1426,6 @@ export function stopBridge(): void {
 	const helper = runtimeState.helper;
 	runtimeState.helper = undefined;
 	runtimeState.helperStdoutBuffer = "";
-	runtimeState.ghostCursor = undefined;
 
 	if (helper && helper.exitCode === null && !helper.killed) {
 		helper.kill("SIGTERM");

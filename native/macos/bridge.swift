@@ -43,53 +43,16 @@ private struct CGWindowCandidate {
 	let isOnscreen: Bool
 }
 
-private struct MouseMapping {
-	let button: CGMouseButton
-	let downType: CGEventType
-	let upType: CGEventType
-	let buttonNumber: Int64
+final class Box<T> {
+	var value: T
+	init(_ value: T) {
+		self.value = value
+	}
 }
 
 final class Bridge {
 	private let refStore = AXRefStore()
 	private var stdinBuffer = Data()
-
-	private let keyCodeMap: [String: CGKeyCode] = [
-		"A": 0, "S": 1, "D": 2, "F": 3, "H": 4, "G": 5,
-		"Z": 6, "X": 7, "C": 8, "V": 9, "B": 11,
-		"Q": 12, "W": 13, "E": 14, "R": 15, "Y": 16, "T": 17,
-		"1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
-		"=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29,
-		"]": 30, "O": 31, "U": 32, "[": 33, "I": 34, "P": 35,
-		"L": 37, "J": 38, "'": 39, "K": 40, ";": 41, "\\": 42,
-		",": 43, "/": 44, "N": 45, "M": 46, ".": 47, "`": 50,
-		"ENTER": 36, "RETURN": 36,
-		"TAB": 48,
-		"SPACE": 49,
-		"DELETE": 51,
-		"FORWARD_DELETE": 117,
-		"ESCAPE": 53,
-		"LEFT": 123,
-		"RIGHT": 124,
-		"DOWN": 125,
-		"UP": 126,
-		"HOME": 115,
-		"END": 119,
-		"PAGEUP": 116,
-		"PAGEDOWN": 121,
-		"F1": 122,
-		"F2": 120,
-		"F3": 99,
-		"F4": 118,
-		"F5": 96,
-		"F6": 97,
-		"F7": 98,
-		"F8": 100,
-		"F9": 101,
-		"F10": 109,
-		"F11": 103,
-		"F12": 111,
-	]
 
 	func run() {
 		while true {
@@ -204,30 +167,28 @@ final class Bridge {
 			return try listWindows(pid: Int32(try intArg(request, "pid")))
 		case "getFrontmost":
 			return try getFrontmost()
+		case "getUserContext":
+			return try getUserContext()
 		case "screenshot":
 			return try screenshot(request)
-		case "mouseMove":
-			return try mouseMove(request)
-		case "mouseClick":
-			return try mouseClick(request)
 		case "axPressAtPoint":
 			return try axPressAtPoint(request)
-		case "mouseDrag":
-			return try mouseDrag(request)
-		case "mouseScroll":
-			return try mouseScroll(request)
+		case "axDescribeAtPoint":
+			return try axDescribeAtPoint(request)
+		case "axFindTextInput":
+			return try axFindTextInput(request)
+		case "axFocusTextInput":
+			return try axFocusTextInput(request)
+		case "axFindFocusableElement":
+			return try axFindFocusableElement(request)
+		case "axFindActionableElement":
+			return try axFindActionableElement(request)
+		case "axFocusAtPoint":
+			return try axFocusAtPoint(request)
 		case "focusedElement":
 			return try focusedElement(request)
 		case "setValue":
 			return try setValue(request)
-		case "keypress":
-			return try keypress(request)
-		case "typeText":
-			return try typeText(request)
-		case "getClipboard":
-			return getClipboard()
-		case "setClipboard":
-			return try setClipboard(request)
 		case "getMousePosition":
 			return getMousePosition()
 		default:
@@ -357,6 +318,40 @@ final class Bridge {
 		return result
 	}
 
+	private func getUserContext() throws -> [String: Any] {
+		guard let app = NSWorkspace.shared.frontmostApplication else {
+			throw BridgeFailure(message: "No frontmost app available", code: "frontmost_unavailable")
+		}
+		let pid = app.processIdentifier
+		let appElement = AXUIElementCreateApplication(pid)
+		let focusedWindow = copyAttribute(appElement, attribute: kAXFocusedWindowAttribute as CFString).flatMap(asAXElement)
+		let focusedElement = copyAttribute(appElement, attribute: kAXFocusedUIElementAttribute as CFString).flatMap(asAXElement)
+		var result: [String: Any] = [
+			"appName": app.localizedName ?? "Unknown App",
+			"pid": Int(pid),
+		]
+		if let bundleId = app.bundleIdentifier {
+			result["bundleId"] = bundleId
+		}
+		if let window = focusedWindow {
+			result["window"] = [
+				"title": stringAttribute(window, attribute: kAXTitleAttribute as CFString) ?? "",
+				"role": stringAttribute(window, attribute: kAXRoleAttribute as CFString) ?? "",
+				"subrole": stringAttribute(window, attribute: kAXSubroleAttribute as CFString) ?? "",
+			]
+		}
+		if let element = focusedElement {
+			result["focusedElement"] = [
+				"role": stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? "",
+				"subrole": stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? "",
+				"title": stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? "",
+				"description": stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? "",
+				"value": stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? "",
+			]
+		}
+		return result
+	}
+
 	private func scoreWindow(_ window: [String: Any]) -> Int {
 		var score = 0
 		if (window["isFocused"] as? Bool) == true { score += 100 }
@@ -416,38 +411,6 @@ final class Bridge {
 		return try captureWindow(windowId: windowId)
 	}
 
-	private func mouseMove(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "mouseMove requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseMove(to: point, pid: targetPid)
-		return ["moved": true]
-	}
-
-	private func mouseClick(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "mouseClick requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let clicks = max(1, (try? intArg(request, "clicks")) ?? 1)
-		let buttonName = (try? stringArg(request, "button")) ?? "left"
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseClick(at: point, buttonName: buttonName, clickCount: clicks, pid: targetPid)
-		return ["clicked": true]
-	}
-
 	private func axPressAtPoint(_ request: [String: Any]) throws -> [String: Any] {
 		let windowId = UInt32(try intArg(request, "windowId"))
 		let x = try doubleArg(request, "x")
@@ -459,29 +422,195 @@ final class Bridge {
 		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
 
 		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		let systemWide = AXUIElementCreateSystemWide()
-		var hitElement: AXUIElement?
-		let status = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hitElement)
-		guard status == .success, let hitElement else {
+		guard let hitElement = hitTestElement(at: point) else {
 			return ["pressed": false, "reason": "hit_test_failed"]
 		}
 
-		return pressElementOrAncestor(startingAt: hitElement, targetPid: targetPid)
+		let result = performActionOrAncestor(startingAt: hitElement, action: kAXPressAction as CFString, targetPid: targetPid)
+		var output: [String: Any] = [
+			"pressed": result["performed"] as? Bool ?? false,
+		]
+		if let reason = result["reason"] as? String {
+			output["reason"] = reason
+		}
+		if let ownerPid = result["ownerPid"] {
+			output["ownerPid"] = ownerPid
+		}
+		return output
 	}
 
-	private func pressElementOrAncestor(startingAt element: AXUIElement, targetPid: Int32) -> [String: Any] {
+	private func axDescribeAtPoint(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		let x = try doubleArg(request, "x")
+		let y = try doubleArg(request, "y")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "axDescribeAtPoint requires pid in non-intrusive mode", code: "pid_required")
+		}
+		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
+		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+
+		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
+		guard let hitElement = hitTestElement(at: point) else {
+			return ["exists": false, "reason": "hit_test_failed"]
+		}
+
+		return describeElementOrAncestor(startingAt: hitElement, targetPid: targetPid)
+	}
+
+	private func axFindTextInput(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		guard let window = windowElement(pid: pid, windowId: windowId) else {
+			return ["found": false, "reason": "window_not_found"]
+		}
+		let textRoles: Set<String> = [
+			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
+		]
+		let elements = collectDescendants(startingAt: window, maxDepth: 8)
+		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
+			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			var valueSettable = DarwinBoolean(false)
+			let valueStatus = AXUIElementIsAttributeSettable(candidate, kAXValueAttribute as CFString, &valueSettable)
+			let canSetValue = valueStatus == .success && valueSettable.boolValue
+			guard textRoles.contains(role) || canSetValue else { return nil }
+			return (candidate, self.scoreTextInputElement(candidate, role: role))
+		}.sorted { $0.1 > $1.1 }
+		guard let best = ranked.first else {
+			return ["found": false, "reason": "no_text_input"]
+		}
+		return rankedElementPayload(best: best, ranked: ranked, key: "found")
+	}
+
+	private func axFocusTextInput(_ request: [String: Any]) throws -> [String: Any] {
+		let found = try axFindTextInput(request)
+		guard (found["found"] as? Bool) == true, let elementRef = found["elementRef"] as? String else {
+			return found
+		}
+		guard let element = refStore.element(for: elementRef) else {
+			return ["focused": false, "reason": "element_ref_invalid"]
+		}
+		var settable = DarwinBoolean(false)
+		let status = AXUIElementIsAttributeSettable(element, kAXFocusedAttribute as CFString, &settable)
+		guard status == .success && settable.boolValue else {
+			var payload = found
+			payload["focused"] = false
+			payload["reason"] = "not_focusable"
+			return payload
+		}
+		let setStatus = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+		var payload = found
+		payload["focused"] = (setStatus == .success)
+		if setStatus != .success {
+			payload["reason"] = "focus_failed"
+		}
+		return payload
+	}
+
+	private func axFindFocusableElement(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let preferredRoles = Set((request["roles"] as? [String] ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+		guard let window = windowElement(pid: pid, windowId: windowId) else {
+			return ["found": false, "reason": "window_not_found"]
+		}
+		let elements = collectDescendants(startingAt: window, maxDepth: 8)
+		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
+			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			if !preferredRoles.isEmpty && !preferredRoles.contains(role) { return nil }
+			var focusedSettable = DarwinBoolean(false)
+			let focusStatus = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &focusedSettable)
+			let canFocus = focusStatus == .success && focusedSettable.boolValue
+			let canPress = self.supportsPressAction(candidate)
+			guard canFocus || canPress else { return nil }
+			return (candidate, self.scoreFocusableElement(candidate, role: role, canFocus: canFocus, canPress: canPress, preferredRoles: preferredRoles))
+		}.sorted { $0.1 > $1.1 }
+		guard let best = ranked.first else {
+			return ["found": false, "reason": "no_focusable_element"]
+		}
+		return rankedElementPayload(best: best, ranked: ranked, key: "found")
+	}
+
+	private func axFindActionableElement(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		guard let window = windowElement(pid: pid, windowId: windowId) else {
+			return ["found": false, "reason": "window_not_found"]
+		}
+		let preferredRoles = Set((request["roles"] as? [String] ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+		let elements = collectDescendants(startingAt: window, maxDepth: 8)
+		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
+			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			if !preferredRoles.isEmpty && !preferredRoles.contains(role) { return nil }
+			let actions = self.actionNames(candidate)
+			guard !actions.isEmpty else { return nil }
+			return (candidate, self.scoreActionableElement(candidate, role: role, actions: actions, preferredRoles: preferredRoles))
+		}.sorted { $0.1 > $1.1 }
+		guard let best = ranked.first else {
+			return ["found": false, "reason": "no_actionable_element"]
+		}
+		return rankedElementPayload(best: best, ranked: ranked, key: "found")
+	}
+
+	private func axFocusAtPoint(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		let x = try doubleArg(request, "x")
+		let y = try doubleArg(request, "y")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "axFocusAtPoint requires pid in non-intrusive mode", code: "pid_required")
+		}
+		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
+		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+
+		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
+		guard let hitElement = hitTestElement(at: point) else {
+			return ["focused": false, "reason": "hit_test_failed"]
+		}
+
+		return focusElementOrAncestor(startingAt: hitElement, targetPid: targetPid)
+	}
+
+	private func hitTestElement(at point: CGPoint) -> AXUIElement? {
+		let systemWide = AXUIElementCreateSystemWide()
+		var hitElement: AXUIElement?
+		let status = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hitElement)
+		guard status == .success, let hitElement else { return nil }
+		return hitElement
+	}
+
+	private func axActionName(_ actionName: String) throws -> CFString {
+		switch actionName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+		case "press":
+			return kAXPressAction as CFString
+		case "increment":
+			return kAXIncrementAction as CFString
+		case "decrement":
+			return kAXDecrementAction as CFString
+		case "confirm":
+			return kAXConfirmAction as CFString
+		case "cancel":
+			return kAXCancelAction as CFString
+		case "showmenu", "show_menu", "menu":
+			return kAXShowMenuAction as CFString
+		case "pick":
+			return kAXPickAction as CFString
+		default:
+			throw BridgeFailure(message: "Unsupported AX action '\(actionName)'", code: "invalid_args")
+		}
+	}
+
+	private func performActionOrAncestor(startingAt element: AXUIElement, action: CFString, targetPid: Int32) -> [String: Any] {
 		var current: AXUIElement? = element
 		var depth = 0
 
 		while let candidate = current, depth < 10 {
 			if let pid = pidForElement(candidate), pid != targetPid {
-				return ["pressed": false, "reason": "pid_mismatch", "ownerPid": Int(pid)]
+				return ["performed": false, "reason": "pid_mismatch", "ownerPid": Int(pid)]
 			}
 
-			if supportsPressAction(candidate) {
-				let actionStatus = AXUIElementPerformAction(candidate, kAXPressAction as CFString)
+			if supportsAction(candidate, action: action) {
+				let actionStatus = AXUIElementPerformAction(candidate, action)
 				if actionStatus == .success {
-					return ["pressed": true]
+					return ["performed": true]
 				}
 			}
 
@@ -489,7 +618,258 @@ final class Bridge {
 			depth += 1
 		}
 
-		return ["pressed": false, "reason": "no_press_action"]
+		return ["performed": false, "reason": "no_matching_action"]
+	}
+
+	private func describeElementOrAncestor(startingAt element: AXUIElement, targetPid: Int32) -> [String: Any] {
+		var current: AXUIElement? = element
+		var depth = 0
+		var chain: [[String: Any]] = []
+
+		while let candidate = current, depth < 10 {
+			let pid = pidForElement(candidate)
+			let role = stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			let subrole = stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
+			let title = stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
+			let valueString = stringAttribute(candidate, attribute: kAXValueAttribute as CFString) ?? ""
+			var focusedSettable = DarwinBoolean(false)
+			let focusStatus = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &focusedSettable)
+			var valueSettable = DarwinBoolean(false)
+			let valueStatus = AXUIElementIsAttributeSettable(candidate, kAXValueAttribute as CFString, &valueSettable)
+			let actions = actionNames(candidate)
+			chain.append([
+				"depth": depth,
+				"pid": pid as Any,
+				"role": role,
+				"subrole": subrole,
+				"title": title,
+				"value": valueString,
+				"actions": actions,
+				"focusSettable": focusStatus == .success && focusedSettable.boolValue,
+				"valueSettable": valueStatus == .success && valueSettable.boolValue,
+			])
+			if let pid, pid != targetPid {
+				return ["exists": true, "reason": "pid_mismatch", "ownerPid": Int(pid), "chain": chain]
+			}
+			current = parentElement(candidate)
+			depth += 1
+		}
+
+		return ["exists": true, "chain": chain]
+	}
+
+	private func focusElementOrAncestor(startingAt element: AXUIElement, targetPid: Int32) -> [String: Any] {
+		var current: AXUIElement? = element
+		var depth = 0
+
+		while let candidate = current, depth < 10 {
+			if let pid = pidForElement(candidate), pid != targetPid {
+				return ["focused": false, "reason": "pid_mismatch", "ownerPid": Int(pid)]
+			}
+
+			var settable = DarwinBoolean(false)
+			let status = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &settable)
+			if status == .success && settable.boolValue {
+				let setStatus = AXUIElementSetAttributeValue(candidate, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+				if setStatus == .success {
+					return ["focused": true]
+				}
+			}
+
+			current = parentElement(candidate)
+			depth += 1
+		}
+
+		return ["focused": false, "reason": "no_focusable_ancestor"]
+	}
+
+	private func windowElement(pid: Int32, windowId: UInt32?) -> AXUIElement? {
+		let appElement = AXUIElementCreateApplication(pid)
+		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
+		guard !windows.isEmpty else { return nil }
+		guard let windowId else {
+			return windows.first
+		}
+		let candidates = cgWindowCandidates(pid: pid)
+		for window in windows {
+			let title = stringAttribute(window, attribute: kAXTitleAttribute as CFString) ?? ""
+			let frame = frameForWindow(window)
+			if let candidate = bestCandidate(frame: frame, title: title, candidates: candidates, usedIds: []), candidate.windowId == windowId {
+				return window
+			}
+		}
+		return windows.first
+	}
+
+	private func findDescendant(startingAt root: AXUIElement, maxDepth: Int, predicate: (AXUIElement) -> Bool) -> AXUIElement? {
+		collectDescendants(startingAt: root, maxDepth: maxDepth).first(where: predicate)
+	}
+
+	private func collectDescendants(startingAt root: AXUIElement, maxDepth: Int) -> [AXUIElement] {
+		var queue: [(AXUIElement, Int)] = [(root, 0)]
+		var index = 0
+		var output: [AXUIElement] = []
+		while index < queue.count {
+			let (element, depth) = queue[index]
+			index += 1
+			output.append(element)
+			if depth >= maxDepth { continue }
+			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
+			for child in children {
+				queue.append((child, depth + 1))
+			}
+		}
+		return output
+	}
+
+	private func scoreTextInputElement(_ element: AXUIElement, role: String) -> Double {
+		var score = 0.0
+		if role == "AXSearchField" { score += 120 }
+		if role == "AXTextField" { score += 100 }
+		if role == "AXComboBox" { score += 80 }
+		if role == "AXTextArea" || role == "AXTextView" || role == "AXEditableText" { score += 70 }
+		if role == "AXSecureTextField" { score -= 40 }
+		if let frame = frameForElement(element) {
+			score += min(120, Double(frame.width * frame.height) / 5000.0)
+			if frame.width > 40 && frame.height > 16 { score += 20 }
+			if frame.origin.y < 220 { score += 15 }
+		} else {
+			score -= 100
+		}
+		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
+		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+		if !title.isEmpty { score += 10 }
+		if !value.isEmpty { score += 5 }
+		return score
+	}
+
+	private func scoreFocusableElement(
+		_ element: AXUIElement,
+		role: String,
+		canFocus: Bool,
+		canPress: Bool,
+		preferredRoles: Set<String>
+	) -> Double {
+		var score = 0.0
+		if canPress { score += 80 }
+		if canFocus { score += 70 }
+		if !preferredRoles.isEmpty && preferredRoles.contains(role) { score += 40 }
+		switch role {
+		case "AXButton": score += 60
+		case "AXTextField", "AXSearchField", "AXTextArea", "AXTextView": score += 50
+		case "AXList", "AXOutline", "AXRow", "AXCell", "AXLink": score += 35
+		case "AXGroup", "AXToolbar", "AXWindow", "AXApplication": score -= 60
+		default: break
+		}
+		if let frame = frameForElement(element) {
+			score += min(100, Double(frame.width * frame.height) / 6000.0)
+			if frame.width > 24 && frame.height > 14 { score += 10 }
+		} else {
+			score -= 100
+		}
+		if !actionNames(element).isEmpty { score += 10 }
+		return score
+	}
+
+	private func scoreActionableElement(
+		_ element: AXUIElement,
+		role: String,
+		actions: [String],
+		preferredRoles: Set<String>
+	) -> Double {
+		var score = 0.0
+		if !preferredRoles.isEmpty && preferredRoles.contains(role) { score += 40 }
+		if actions.contains(kAXPressAction as String) { score += 100 }
+		if actions.contains(kAXShowMenuAction as String) { score += 50 }
+		if actions.contains(kAXPickAction as String) { score += 45 }
+		if actions.contains(kAXConfirmAction as String) { score += 35 }
+		switch role {
+		case "AXButton": score += 70
+		case "AXLink": score += 60
+		case "AXRow", "AXCell", "AXList", "AXOutline": score += 40
+		case "AXGroup", "AXToolbar", "AXWindow", "AXApplication": score -= 60
+		default: break
+		}
+		if let frame = frameForElement(element) {
+			score += min(100, Double(frame.width * frame.height) / 6000.0)
+			if frame.width > 20 && frame.height > 14 { score += 10 }
+		} else {
+			score -= 100
+		}
+		if !actions.isEmpty { score += Double(min(actions.count, 5) * 4) }
+		return score
+	}
+
+	private func frameForElement(_ element: AXUIElement) -> CGRect? {
+		let origin = pointAttribute(element, attribute: kAXPositionAttribute as CFString)
+		let size = sizeAttribute(element, attribute: kAXSizeAttribute as CFString)
+		guard let origin, let size, size.width > 0, size.height > 0 else { return nil }
+		return CGRect(origin: origin, size: size)
+	}
+
+	private func rankedElementPayload(best: (AXUIElement, Double), ranked: [(AXUIElement, Double)], key: String) -> [String: Any] {
+		var payload = elementPayload(element: best.0, key: key, score: best.1)
+		payload["confidence"] = confidenceLabel(ranked)
+		payload["candidates"] = Array(ranked.prefix(3)).map { candidate, score in
+			candidateSummary(element: candidate, score: score)
+		}
+		return payload
+	}
+
+	private func confidenceLabel(_ ranked: [(AXUIElement, Double)]) -> String {
+		guard let first = ranked.first else { return "none" }
+		guard ranked.count > 1 else { return "high" }
+		let delta = first.1 - ranked[1].1
+		if delta >= 40 { return "high" }
+		if delta >= 15 { return "medium" }
+		return "low"
+	}
+
+	private func candidateSummary(element: AXUIElement, score: Double) -> [String: Any] {
+		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
+		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
+		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+		var summary: [String: Any] = [
+			"role": role,
+			"subrole": subrole,
+			"title": title,
+			"value": value,
+			"score": score,
+			"actions": actionNames(element),
+		]
+		if let frame = frameForElement(element) {
+			summary["frame"] = ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height]
+		}
+		return summary
+	}
+
+	private func elementPayload(element: AXUIElement, key: String, score: Double? = nil) -> [String: Any] {
+		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
+		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
+		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+		let frame = frameForElement(element)
+		let centerX = frame.map { $0.midX } ?? 0
+		let centerY = frame.map { $0.midY } ?? 0
+		var payload: [String: Any] = [
+			key: true,
+			"elementRef": refStore.storeElement(element),
+			"role": role,
+			"subrole": subrole,
+			"title": title,
+			"value": value,
+			"actions": actionNames(element),
+			"x": centerX,
+			"y": centerY,
+		]
+		if let frame {
+			payload["frame"] = ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height]
+		}
+		if let score {
+			payload["score"] = score
+		}
+		return payload
 	}
 
 	private func pidForElement(_ element: AXUIElement) -> Int32? {
@@ -507,52 +887,19 @@ final class Bridge {
 	}
 
 	private func supportsPressAction(_ element: AXUIElement) -> Bool {
+		supportsAction(element, action: kAXPressAction as CFString)
+	}
+
+	private func actionNames(_ element: AXUIElement) -> [String] {
 		var actionsValue: CFArray?
 		let status = AXUIElementCopyActionNames(element, &actionsValue)
-		guard status == .success else { return false }
-		guard let actionsArray = actionsValue as? [AnyObject] else { return false }
-		let actionNames = actionsArray.compactMap { $0 as? String }
-		return actionNames.contains(kAXPressAction as String)
+		guard status == .success else { return [] }
+		guard let actionsArray = actionsValue as? [AnyObject] else { return [] }
+		return actionsArray.compactMap { $0 as? String }
 	}
 
-	private func mouseDrag(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "mouseDrag requires pid in non-intrusive mode", code: "pid_required")
-		}
-		guard let path = request["path"] as? [[String: Any]], path.count >= 2 else {
-			throw BridgeFailure(message: "mouseDrag requires path with at least two points", code: "invalid_args")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-
-		let points = try path.map { point -> CGPoint in
-			guard let x = number(point["x"]), let y = number(point["y"]) else {
-				throw BridgeFailure(message: "mouseDrag path points must include x and y", code: "invalid_args")
-			}
-			return try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		}
-
-		try postMouseDrag(points: points, pid: targetPid)
-		return ["dragged": true]
-	}
-
-	private func mouseScroll(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "mouseScroll requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let scrollX = Int32(try doubleArg(request, "scrollX"))
-		let scrollY = Int32(try doubleArg(request, "scrollY"))
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseMove(to: point, pid: targetPid)
-		try postMouseScroll(scrollX: scrollX, scrollY: scrollY, pid: targetPid)
-		return ["scrolled": true]
+	private func supportsAction(_ element: AXUIElement, action: CFString) -> Bool {
+		actionNames(element).contains(action as String)
 	}
 
 	private func focusedElement(_ request: [String: Any]) throws -> [String: Any] {
@@ -608,71 +955,6 @@ final class Bridge {
 			throw BridgeFailure(message: "Failed to set value (AX error \(status.rawValue))", code: "set_value_failed")
 		}
 		return ["set": true]
-	}
-
-	private func keypress(_ request: [String: Any]) throws -> [String: Any] {
-		guard let keys = request["keys"] as? [String], !keys.isEmpty else {
-			throw BridgeFailure(message: "keypress requires non-empty keys array", code: "invalid_args")
-		}
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "keypress requires pid in non-intrusive mode", code: "pid_required")
-		}
-
-		var flags: CGEventFlags = []
-		var primary: String?
-
-		for token in keys.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }) {
-			switch token {
-			case "CMD", "COMMAND", "META":
-				flags.insert(.maskCommand)
-			case "CTRL", "CONTROL":
-				flags.insert(.maskControl)
-			case "ALT", "OPTION", "OPT":
-				flags.insert(.maskAlternate)
-			case "SHIFT":
-				flags.insert(.maskShift)
-			case "FN":
-				flags.insert(.maskSecondaryFn)
-			default:
-				primary = token
-			}
-		}
-
-		guard let primary else {
-			throw BridgeFailure(message: "keypress requires a non-modifier key", code: "invalid_args")
-		}
-
-		if let keyCode = keyCodeMap[primary] {
-			try postKeyEvent(keyCode: keyCode, flags: flags, pid: targetPid)
-		} else if primary.count == 1 {
-			try postUnicodeText(primary, flags: flags, pid: targetPid)
-		} else {
-			throw BridgeFailure(message: "Unsupported key '\(primary)'", code: "invalid_args")
-		}
-
-		return ["pressed": true]
-	}
-
-	private func typeText(_ request: [String: Any]) throws -> [String: Any] {
-		let text = try stringArg(request, "text")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "typeText requires pid in non-intrusive mode", code: "pid_required")
-		}
-		try postUnicodeText(text, flags: [], pid: targetPid)
-		return ["typed": true]
-	}
-
-	private func getClipboard() -> [String: Any] {
-		let value = NSPasteboard.general.string(forType: .string) ?? ""
-		return ["value": value]
-	}
-
-	private func setClipboard(_ request: [String: Any]) throws -> [String: Any] {
-		let value = try stringArg(request, "value")
-		let pasteboard = NSPasteboard.general
-		pasteboard.clearContents()
-		let written = pasteboard.setString(value, forType: .string)
-		return ["set": written]
 	}
 
 	private func getMousePosition() -> [String: Any] {
@@ -862,8 +1144,8 @@ final class Bridge {
 		}
 
 		let semaphore = DispatchSemaphore(value: 0)
-		var capturedImage: CGImage?
-		var capturedError: Error?
+		let capturedImage = Box<CGImage?>(nil)
+		let capturedError = Box<Error?>(nil)
 
 		let task = Task {
 			defer { semaphore.signal() }
@@ -884,9 +1166,9 @@ final class Bridge {
 				}
 
 				let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-				capturedImage = image
+				capturedImage.value = image
 			} catch {
-				capturedError = error
+				capturedError.value = error
 			}
 		}
 
@@ -895,14 +1177,14 @@ final class Bridge {
 			throw BridgeFailure(message: "Screenshot timed out while capturing window \(windowId)", code: "screenshot_timeout")
 		}
 
-		if let error = capturedError {
+		if let error = capturedError.value {
 			if let failure = error as? BridgeFailure {
 				throw failure
 			}
 			throw BridgeFailure(message: "Screenshot failed: \(error.localizedDescription)", code: "screenshot_failed")
 		}
 
-		guard let image = capturedImage else {
+		guard let image = capturedImage.value else {
 			throw BridgeFailure(message: "Screenshot failed", code: "screenshot_failed")
 		}
 
@@ -939,7 +1221,7 @@ final class Bridge {
 	@available(macOS 14.0, *)
 	private func currentWindowBoundsViaScreenCaptureKit(windowId: UInt32) -> CGRect? {
 		let semaphore = DispatchSemaphore(value: 0)
-		var output: CGRect?
+		let output = Box<CGRect?>(nil)
 
 		let task = Task {
 			defer { semaphore.signal() }
@@ -949,10 +1231,10 @@ final class Bridge {
 				}
 				let shareable = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
 				if let window = shareable.windows.first(where: { $0.windowID == windowId }) {
-					output = window.frame
+					output.value = window.frame
 				}
 			} catch {
-				output = nil
+				output.value = nil
 			}
 		}
 
@@ -960,7 +1242,7 @@ final class Bridge {
 			task.cancel()
 			return nil
 		}
-		return output
+		return output.value
 	}
 
 	private func mapWindowPoint(
@@ -981,179 +1263,6 @@ final class Bridge {
 		return CGPoint(x: screenX, y: screenY)
 	}
 
-	private func mouseMapping(for buttonName: String) throws -> MouseMapping {
-		switch buttonName.lowercased() {
-		case "left":
-			return MouseMapping(button: .left, downType: .leftMouseDown, upType: .leftMouseUp, buttonNumber: 0)
-		case "right":
-			return MouseMapping(button: .right, downType: .rightMouseDown, upType: .rightMouseUp, buttonNumber: 1)
-		case "wheel", "middle":
-			return MouseMapping(button: .center, downType: .otherMouseDown, upType: .otherMouseUp, buttonNumber: 2)
-		case "back":
-			return MouseMapping(button: .center, downType: .otherMouseDown, upType: .otherMouseUp, buttonNumber: 3)
-		case "forward":
-			return MouseMapping(button: .center, downType: .otherMouseDown, upType: .otherMouseUp, buttonNumber: 4)
-		default:
-			throw BridgeFailure(message: "Unsupported mouse button '\(buttonName)'", code: "invalid_args")
-		}
-	}
-
-	private func postEvent(_ event: CGEvent, pid: Int32) {
-		event.postToPid(pid)
-	}
-
-	private func postMouseMove(to point: CGPoint, pid: Int32) throws {
-		guard let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) else {
-			throw BridgeFailure(message: "Failed to create mouse move event", code: "input_failed")
-		}
-		postEvent(move, pid: pid)
-	}
-
-	private func postMouseClick(at point: CGPoint, buttonName: String, clickCount: Int, pid: Int32) throws {
-		let mapping = try mouseMapping(for: buttonName)
-		try postMouseMove(to: point, pid: pid)
-
-		for _ in 0..<max(1, clickCount) {
-			guard let down = CGEvent(
-				mouseEventSource: nil,
-				mouseType: mapping.downType,
-				mouseCursorPosition: point,
-				mouseButton: mapping.button
-			), let up = CGEvent(
-				mouseEventSource: nil,
-				mouseType: mapping.upType,
-				mouseCursorPosition: point,
-				mouseButton: mapping.button
-			) else {
-				throw BridgeFailure(message: "Failed to create mouse click event", code: "input_failed")
-			}
-
-			down.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
-			up.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
-			down.setIntegerValueField(.mouseEventButtonNumber, value: mapping.buttonNumber)
-			up.setIntegerValueField(.mouseEventButtonNumber, value: mapping.buttonNumber)
-
-			postEvent(down, pid: pid)
-			usleep(12_000)
-			postEvent(up, pid: pid)
-			usleep(45_000)
-		}
-	}
-
-	private func postMouseDrag(points: [CGPoint], pid: Int32) throws {
-		guard let first = points.first, let last = points.last else {
-			throw BridgeFailure(message: "Drag path is empty", code: "invalid_args")
-		}
-
-		guard let down = CGEvent(
-			mouseEventSource: nil,
-			mouseType: .leftMouseDown,
-			mouseCursorPosition: first,
-			mouseButton: .left
-		) else {
-			throw BridgeFailure(message: "Failed to start drag", code: "input_failed")
-		}
-		postEvent(down, pid: pid)
-		usleep(12_000)
-
-		for point in points.dropFirst() {
-			guard let drag = CGEvent(
-				mouseEventSource: nil,
-				mouseType: .leftMouseDragged,
-				mouseCursorPosition: point,
-				mouseButton: .left
-			) else {
-				throw BridgeFailure(message: "Failed during drag", code: "input_failed")
-			}
-			postEvent(drag, pid: pid)
-			usleep(8_000)
-		}
-
-		guard let up = CGEvent(
-			mouseEventSource: nil,
-			mouseType: .leftMouseUp,
-			mouseCursorPosition: last,
-			mouseButton: .left
-		) else {
-			throw BridgeFailure(message: "Failed to finish drag", code: "input_failed")
-		}
-		postEvent(up, pid: pid)
-	}
-
-	private func postMouseScroll(scrollX: Int32, scrollY: Int32, pid: Int32) throws {
-		if let event = CGEvent(
-			scrollWheelEvent2Source: nil,
-			units: .pixel,
-			wheelCount: 2,
-			wheel1: scrollY,
-			wheel2: scrollX,
-			wheel3: 0
-		) {
-			postEvent(event, pid: pid)
-			return
-		}
-
-		if let fallback = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: scrollY, wheel2: 0, wheel3: 0) {
-			postEvent(fallback, pid: pid)
-			return
-		}
-
-		throw BridgeFailure(message: "Failed to create scroll event", code: "input_failed")
-	}
-
-	private func postKeyEvent(keyCode: CGKeyCode, flags: CGEventFlags, pid: Int32) throws {
-		guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
-			let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
-		else {
-			throw BridgeFailure(message: "Failed to create key event", code: "input_failed")
-		}
-
-		down.flags = flags
-		up.flags = flags
-		postEvent(down, pid: pid)
-		usleep(10_000)
-		postEvent(up, pid: pid)
-	}
-
-	private func postUnicodeText(_ text: String, flags: CGEventFlags, pid: Int32) throws {
-		for scalar in text.unicodeScalars {
-			let char = String(scalar)
-			guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-				let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-			else {
-				throw BridgeFailure(message: "Failed to create unicode key event", code: "input_failed")
-			}
-
-			down.flags = flags
-			up.flags = flags
-			setUnicodeString(event: down, text: char)
-			setUnicodeString(event: up, text: char)
-			postEvent(down, pid: pid)
-			usleep(8_000)
-			postEvent(up, pid: pid)
-		}
-	}
-
-	private func setUnicodeString(event: CGEvent, text: String) {
-		var utf16 = Array(text.utf16)
-		utf16.withUnsafeMutableBufferPointer { buffer in
-			guard let base = buffer.baseAddress else { return }
-			event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
-		}
-	}
-
-	private func number(_ value: Any?) -> Double? {
-		if let number = value as? NSNumber {
-			return number.doubleValue
-		}
-		if let value = value as? Double {
-			return value
-		}
-		if let value = value as? Int {
-			return Double(value)
-		}
-		return nil
-	}
 }
 
 let bridge = Bridge()
