@@ -69,6 +69,24 @@ Required permissions:
 - Accessibility
 - Screen Recording
 
+### Local development
+
+If you want to work on a local checkout:
+
+```bash
+npm install
+# optional: build the helper into the installed helper path
+node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridge
+```
+
+To run the checkout in Pi without loading another installed copy at the same time:
+
+```bash
+pi --no-extensions -e .
+```
+
+For benchmark and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md) and `benchmarks/README.md`.
+
 ### Helper build
 
 If you need to build the helper manually:
