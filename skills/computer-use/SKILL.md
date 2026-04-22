@@ -20,6 +20,8 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 ## Practical rules
 
 - All action tools operate on the **current controlled window**.
+- For browsers, prefer a **separate window** for agent work, not a new tab in the user's current window.
+- In strict AX mode, do not bootstrap a new browser window; use an already-open dedicated browser window instead.
 - Coordinates are **window-relative screenshot pixels** (top-left origin).
 - `captureId` is optional. If provided and stale, refresh with `screenshot`.
 - `wait({ ms })` pauses and then returns a fresh screenshot for polling/loading states.

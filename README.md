@@ -21,6 +21,14 @@ Public tools:
 
 Default mode has built-in screenshot/vision grounding and uses AX-first actions with compatibility fallback when semantic AX control is not enough.
 
+## Release notes
+
+### v0.1.2
+
+- Browser computer use now prefers creating a new window instead of reusing the user's current browser window/tab context
+- When an isolated browser window is created, pi-computer-use automatically switches focus back to the user's original window
+- During the brief window-switch transition, pi-computer-use temporarily suppresses input to prevent accidental typing/clicking in the wrong window
+
 Opt-in stealth mode (`PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`) keeps the same public surface, but blocks non-AX fallback paths and stays AX-only.
 
 ## Requirements
@@ -102,6 +110,10 @@ Grant both permissions to the helper at:
 
 - Target platform: macOS only
 - `screenshot` should be called first to choose a target window
+- Browser targeting prefers an isolated browser window instead of reusing the user's current tabbed window
+- When an isolated browser window is created, focus is restored to the user's original window immediately afterward
+- During the brief restore/switch phase, input is temporarily suppressed to prevent accidental input in the wrong window
+- In strict AX mode, isolated browser-window bootstrap is blocked because it is not AX-only; open a dedicated browser window first
 - Successful actions return a fresh screenshot for the next step
 - The helper uses a non-intrusive strategy where possible instead of taking over your cursor globally
 - Accessibility is mandatory for practical use: actions depend on it

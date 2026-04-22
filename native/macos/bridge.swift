@@ -50,8 +50,129 @@ final class Box<T> {
 	}
 }
 
+final class InputSuppressionGuard {
+	private let lock = NSLock()
+	private var eventTap: CFMachPort?
+	private var eventTapSource: CFRunLoopSource?
+	private var tapRunLoop: CFRunLoop?
+	private var tapThread: Thread?
+
+	func begin() throws {
+		lock.lock()
+		if eventTap != nil {
+			lock.unlock()
+			return
+		}
+		lock.unlock()
+
+		let eventTypes: [CGEventType] = [
+			.keyDown,
+			.keyUp,
+			.flagsChanged,
+			.leftMouseDown,
+			.leftMouseUp,
+			.rightMouseDown,
+			.rightMouseUp,
+			.otherMouseDown,
+			.otherMouseUp,
+			.mouseMoved,
+			.leftMouseDragged,
+			.rightMouseDragged,
+			.otherMouseDragged,
+			.scrollWheel,
+			.tabletPointer,
+			.tabletProximity,
+		]
+		let mask = eventTypes.reduce(CGEventMask(0)) { partial, type in
+			partial | (CGEventMask(1) << CGEventMask(type.rawValue))
+		}
+
+		let callback: CGEventTapCallBack = { _proxy, type, event, userInfo in
+			guard let userInfo else { return Unmanaged.passUnretained(event) }
+			let inputGuard = Unmanaged<InputSuppressionGuard>.fromOpaque(userInfo).takeUnretainedValue()
+			if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+				inputGuard.reenableTap()
+				return Unmanaged.passUnretained(event)
+			}
+			return nil
+		}
+
+		guard let tap = CGEvent.tapCreate(
+			tap: .cgSessionEventTap,
+			place: .headInsertEventTap,
+			options: .defaultTap,
+			eventsOfInterest: mask,
+			callback: callback,
+			userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+		) else {
+			throw BridgeFailure(message: "Failed to create input suppression event tap", code: "input_suppression_unavailable")
+		}
+
+		lock.lock()
+		eventTap = tap
+		lock.unlock()
+		let thread = Thread { [weak self] in
+			guard let self else { return }
+			let runLoop = CFRunLoopGetCurrent()
+			self.lock.lock()
+			self.tapRunLoop = runLoop
+			self.eventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+			if let source = self.eventTapSource {
+				CFRunLoopAddSource(runLoop, source, .commonModes)
+			}
+			CGEvent.tapEnable(tap: tap, enable: true)
+			self.lock.unlock()
+			CFRunLoopRun()
+		}
+		thread.name = "pi-computer-use-input-suppression"
+		lock.lock()
+		tapThread = thread
+		lock.unlock()
+		thread.start()
+
+		let deadline = Date().addingTimeInterval(1.0)
+		while tapRunLoop == nil && Date() < deadline {
+			Thread.sleep(forTimeInterval: 0.01)
+		}
+		if tapRunLoop == nil {
+			throw BridgeFailure(message: "Timed out starting input suppression", code: "input_suppression_timeout")
+		}
+	}
+
+	func end() {
+		lock.lock()
+		let tap = eventTap
+		let source = eventTapSource
+		let runLoop = tapRunLoop
+		eventTap = nil
+		eventTapSource = nil
+		tapRunLoop = nil
+		tapThread = nil
+		lock.unlock()
+
+		if let tap {
+			CGEvent.tapEnable(tap: tap, enable: false)
+		}
+		if let source, let runLoop {
+			CFRunLoopRemoveSource(runLoop, source, .commonModes)
+			CFRunLoopStop(runLoop)
+		}
+	}
+
+	func reenableTap() {
+		lock.lock()
+		let tap = eventTap
+		lock.unlock()
+		if let tap {
+			CGEvent.tapEnable(tap: tap, enable: true)
+		}
+	}
+
+}
+
 final class Bridge {
 	private let refStore = AXRefStore()
+	private let inputSuppressionGuard = InputSuppressionGuard()
 	private var stdinBuffer = Data()
 
 	func run() {
@@ -169,6 +290,12 @@ final class Bridge {
 			return try getFrontmost()
 		case "getUserContext":
 			return try getUserContext()
+		case "beginInputSuppression":
+			return try beginInputSuppression()
+		case "endInputSuppression":
+			return endInputSuppression()
+		case "restoreUserFocus":
+			return try restoreUserFocus(request)
 		case "screenshot":
 			return try screenshot(request)
 		case "mouseClick":
@@ -205,6 +332,13 @@ final class Bridge {
 			return value
 		}
 		throw BridgeFailure(message: "Missing string argument '\(key)'", code: "invalid_args")
+	}
+
+	private func optionalStringArg(_ request: [String: Any], _ key: String) -> String? {
+		if let value = request[key] as? String {
+			return value
+		}
+		return nil
 	}
 
 	private func intArg(_ request: [String: Any], _ key: String) throws -> Int {
@@ -354,6 +488,53 @@ final class Bridge {
 			]
 		}
 		return result
+	}
+
+	private func beginInputSuppression() throws -> [String: Any] {
+		try inputSuppressionGuard.begin()
+		return ["active": true]
+	}
+
+	private func endInputSuppression() -> [String: Any] {
+		inputSuppressionGuard.end()
+		return ["active": false]
+	}
+
+	private func restoreUserFocus(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		let targetTitle = optionalStringArg(request, "windowTitle")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+		guard let app = NSRunningApplication(processIdentifier: pid) else {
+			throw BridgeFailure(message: "App with pid \(pid) is no longer running", code: "app_not_found")
+		}
+
+		let appRestored = app.activate(options: [.activateIgnoringOtherApps])
+		var restoredWindowTitle = ""
+		var windowRestored = false
+
+		if !targetTitle.isEmpty {
+			let appElement = AXUIElementCreateApplication(pid)
+			let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
+			let normalizedTarget = targetTitle.lowercased()
+			if let match = windows.first(where: {
+				(stringAttribute($0, attribute: kAXTitleAttribute as CFString) ?? "")
+					.trimmingCharacters(in: .whitespacesAndNewlines)
+					.lowercased() == normalizedTarget
+			}) {
+				restoredWindowTitle = stringAttribute(match, attribute: kAXTitleAttribute as CFString) ?? ""
+				let setMainStatus = AXUIElementSetAttributeValue(match, kAXMainAttribute as CFString, kCFBooleanTrue)
+				let setFocusedStatus = AXUIElementSetAttributeValue(match, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+				let raiseStatus = AXUIElementPerformAction(match, kAXRaiseAction as CFString)
+				windowRestored = setMainStatus == .success || setFocusedStatus == .success || raiseStatus == .success
+			}
+		}
+
+		return [
+			"restored": appRestored || windowRestored,
+			"appRestored": appRestored,
+			"windowRestored": windowRestored,
+			"appName": app.localizedName ?? "Unknown App",
+			"windowTitle": restoredWindowTitle,
+		]
 	}
 
 	private func scoreWindow(_ window: [String: Any]) -> Int {

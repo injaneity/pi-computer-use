@@ -18,6 +18,8 @@ const screenshotTool = defineTool({
 	promptGuidelines: [
 		"Call screenshot first to choose a window and get coordinates.",
 		"Call screenshot(app, windowTitle) to switch the controlled window.",
+		"For browsers, prefer a separate window for agent work instead of opening a new tab in the user's current window.",
+		"In strict AX mode, do not bootstrap a new browser window; target an existing dedicated browser window instead.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({

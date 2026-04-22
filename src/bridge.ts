@@ -100,6 +100,7 @@ interface FramePoints {
 
 interface HelperWindow {
 	windowId?: number;
+	windowRef?: string;
 	title: string;
 	framePoints: FramePoints;
 	scaleFactor: number;
@@ -115,6 +116,14 @@ interface FrontmostResult {
 	pid: number;
 	windowTitle?: string;
 	windowId?: number;
+}
+
+interface RestoreUserFocusResult {
+	restored: boolean;
+	appRestored?: boolean;
+	windowRestored?: boolean;
+	appName?: string;
+	windowTitle?: string;
 }
 
 interface ScreenshotPayload {
@@ -191,6 +200,55 @@ const DEFAULT_WAIT_MS = 1_000;
 
 const RECOVERABLE_SCREENSHOT_ERROR_CODES = new Set(["screenshot_timeout", "window_not_found"]);
 const STRICT_AX_MODE = process.env.PI_COMPUTER_USE_STEALTH === "1" || process.env.PI_COMPUTER_USE_STRICT_AX === "1";
+const BROWSER_BUNDLE_IDS = new Set([
+	"com.apple.Safari",
+	"com.google.Chrome",
+	"org.chromium.Chromium",
+	"company.thebrowser.Browser",
+	"com.brave.Browser",
+	"com.microsoft.edgemac",
+	"com.vivaldi.Vivaldi",
+	"net.imput.helium",
+	"org.mozilla.firefox",
+]);
+const BROWSER_APP_NAMES = new Set([
+	"safari",
+	"google chrome",
+	"chrome",
+	"chromium",
+	"arc",
+	"brave browser",
+	"brave",
+	"microsoft edge",
+	"edge",
+	"vivaldi",
+	"helium",
+	"firefox",
+]);
+const CHROME_FAMILY_BUNDLE_IDS = new Set([
+	"com.google.Chrome",
+	"org.chromium.Chromium",
+	"company.thebrowser.Browser",
+	"com.brave.Browser",
+	"com.microsoft.edgemac",
+	"com.vivaldi.Vivaldi",
+	"net.imput.helium",
+]);
+const CHROME_FAMILY_APP_NAMES = new Set([
+	"google chrome",
+	"chrome",
+	"chromium",
+	"arc",
+	"brave browser",
+	"brave",
+	"microsoft edge",
+	"edge",
+	"vivaldi",
+	"helium",
+]);
+const BROWSER_WINDOW_OPEN_TIMEOUT_MS = 10_000;
+const BROWSER_WINDOW_OPEN_POLL_MS = 200;
+const BROWSER_WINDOW_OPEN_ATTEMPTS = 12;
 
 export const HELPER_STABLE_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
 
@@ -694,6 +752,7 @@ function parseWindows(result: unknown): HelperWindow[] {
 
 	return array.map((raw) => ({
 		windowId: Number.isFinite((raw as any)?.windowId) ? Math.trunc((raw as any).windowId) : undefined,
+		windowRef: toOptionalString((raw as any)?.windowRef),
 		title: toOptionalString((raw as any)?.title) ?? "",
 		framePoints: parseFramePoints(raw),
 		scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
@@ -728,6 +787,137 @@ async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
 		windowTitle: toOptionalString(result?.windowTitle),
 		windowId: Number.isFinite(result?.windowId) ? Math.trunc(result.windowId) : undefined,
 	};
+}
+
+async function beginInputSuppression(signal?: AbortSignal): Promise<void> {
+	await bridgeCommand("beginInputSuppression", {}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
+}
+
+async function endInputSuppression(signal?: AbortSignal): Promise<void> {
+	await bridgeCommand("endInputSuppression", {}, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(() => undefined);
+}
+
+async function restoreUserFocus(target: FrontmostResult, signal?: AbortSignal): Promise<void> {
+	const restoreResult = await bridgeCommand<RestoreUserFocusResult>(
+		"restoreUserFocus",
+		{ pid: target.pid, windowTitle: target.windowTitle },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch(() => undefined);
+
+	if (STRICT_AX_MODE || toBoolean(restoreResult?.windowRestored) || toBoolean(restoreResult?.appRestored)) {
+		return;
+	}
+
+	const activateTarget = target.bundleId
+		? `application id "${escapeAppleScriptString(target.bundleId)}"`
+		: `application "${escapeAppleScriptString(target.appName)}"`;
+	await runAppleScript([`tell ${activateTarget} to activate`], signal).catch(() => undefined);
+}
+
+function isBrowserApp(appName: string, bundleId?: string): boolean {
+	return BROWSER_BUNDLE_IDS.has(bundleId ?? "") || BROWSER_APP_NAMES.has(normalizeText(appName));
+}
+
+function windowIdentity(window: HelperWindow): string {
+	if (window.windowId && window.windowId > 0) {
+		return `id:${window.windowId}`;
+	}
+	if (window.windowRef) {
+		return `ref:${window.windowRef}`;
+	}
+	const { x, y, w, h } = window.framePoints;
+	return `title:${normalizeText(window.title)}|frame:${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`;
+}
+
+function escapeAppleScriptString(value: string): string {
+	return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+}
+
+function buildBrowserNewWindowAppleScript(app: HelperApp): string[] | undefined {
+	const normalizedName = normalizeText(app.appName);
+	const target = app.bundleId
+		? `application id "${escapeAppleScriptString(app.bundleId)}"`
+		: `application "${escapeAppleScriptString(app.appName)}"`;
+
+	if (app.bundleId === "com.apple.Safari" || normalizedName === "safari") {
+		return [`tell ${target} to make new document`];
+	}
+
+	if (CHROME_FAMILY_BUNDLE_IDS.has(app.bundleId ?? "") || CHROME_FAMILY_APP_NAMES.has(normalizedName)) {
+		return [`tell ${target} to make new window`];
+	}
+
+	if (app.bundleId === "org.mozilla.firefox" || normalizedName === "firefox") {
+		return [
+			`tell ${target} to activate`,
+			'tell application "System Events" to keystroke "n" using command down',
+		];
+	}
+
+	return undefined;
+}
+
+async function runAppleScript(lines: string[], signal?: AbortSignal): Promise<void> {
+	const args = lines.flatMap((line) => ["-e", line]);
+	await runProcess("osascript", args, BROWSER_WINDOW_OPEN_TIMEOUT_MS, signal);
+}
+
+function findNewWindow(before: HelperWindow[], after: HelperWindow[]): HelperWindow | undefined {
+	const previous = new Set(before.map(windowIdentity));
+	const added = after.filter((window) => !previous.has(windowIdentity(window)));
+	if (added.length > 0) {
+		return choosePreferredWindow(added, "browser");
+	}
+
+	const promoted = after.filter((window) => {
+		const match = before.find((candidate) => windowIdentity(candidate) === windowIdentity(window));
+		if (!match) return false;
+		return (window.isFocused && !match.isFocused) || (window.isMain && !match.isMain);
+	});
+	if (promoted.length > 0) {
+		return choosePreferredWindow(promoted, "browser");
+	}
+
+	return undefined;
+}
+
+async function openIsolatedBrowserWindow(app: HelperApp, signal?: AbortSignal): Promise<HelperWindow | undefined> {
+	const script = buildBrowserNewWindowAppleScript(app);
+	if (!script) {
+		return undefined;
+	}
+	if (STRICT_AX_MODE) {
+		strictModeBlock(
+			`Strict AX mode cannot create an isolated browser window for '${app.appName}' because that bootstrap is not AX-only. Open a dedicated browser window first, then call screenshot again.`,
+		);
+	}
+
+	const previousFrontmost = await getFrontmost(signal).catch(() => undefined);
+	const before = await listWindows(app.pid, signal);
+	await runAppleScript(script, signal);
+
+	await beginInputSuppression(signal);
+	try {
+		for (let attempt = 0; attempt < BROWSER_WINDOW_OPEN_ATTEMPTS; attempt += 1) {
+			await sleep(BROWSER_WINDOW_OPEN_POLL_MS, signal);
+			const after = await listWindows(app.pid, signal);
+			const created = findNewWindow(before, after);
+			if (created) {
+				return created;
+			}
+			const focused = after.find((window) => window.isFocused) ?? after.find((window) => window.isMain);
+			if (focused && !before.some((window) => windowIdentity(window) === windowIdentity(focused))) {
+				return focused;
+			}
+		}
+
+		return undefined;
+	} finally {
+		if (previousFrontmost) {
+			await restoreUserFocus(previousFrontmost, signal);
+		}
+		await endInputSuppression(signal);
+	}
 }
 
 function choosePreferredWindow(windows: HelperWindow[], appName: string): HelperWindow {
@@ -902,6 +1092,15 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 		throw new Error("No frontmost controllable window was found. Open an app window and call screenshot again.");
 	}
 
+	if (isBrowserApp(app.appName, app.bundleId)) {
+		const isolated = await openIsolatedBrowserWindow(app, signal);
+		if (isolated) {
+			const resolved = toResolvedTarget(app, isolated);
+			setCurrentTarget(resolved);
+			return resolved;
+		}
+	}
+
 	let selected = windows.find((window) => window.windowId !== undefined && window.windowId === frontmost.windowId);
 	if (!selected && frontmost.windowTitle) {
 		selected = windows.find((window) => normalizeText(window.title) === normalizeText(frontmost.windowTitle));
@@ -940,14 +1139,32 @@ async function resolveTargetForScreenshot(selection: ScreenshotParams, signal?: 
 
 	if (appQuery) {
 		const app = chooseAppByQuery(apps, appQuery);
-		const windows = await listWindows(app.pid, signal);
+		let windows = await listWindows(app.pid, signal);
 		if (!windows.length) {
 			throw new Error(`No controllable window was found in app '${app.appName}'.`);
 		}
 
-		const window = windowTitleQuery
-			? chooseWindowByTitle(windows, windowTitleQuery, app.appName)
-			: choosePreferredWindow(windows, app.appName);
+		let window: HelperWindow;
+		if (windowTitleQuery) {
+			window = chooseWindowByTitle(windows, windowTitleQuery, app.appName);
+		} else if (isBrowserApp(app.appName, app.bundleId)) {
+			const current = runtimeState.currentTarget;
+			const currentBrowserWindow =
+				current && current.pid === app.pid ? windows.find((candidate) => candidate.windowId === current.windowId) : undefined;
+			if (currentBrowserWindow) {
+				window = currentBrowserWindow;
+			} else {
+				const isolated = await openIsolatedBrowserWindow(app, signal);
+				if (isolated) {
+					window = isolated;
+				} else {
+					windows = await listWindows(app.pid, signal);
+					window = choosePreferredWindow(windows, app.appName);
+				}
+			}
+		} else {
+			window = choosePreferredWindow(windows, app.appName);
+		}
 
 		const resolved = toResolvedTarget(app, window);
 		setCurrentTarget(resolved);
