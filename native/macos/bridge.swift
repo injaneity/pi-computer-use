@@ -300,6 +300,14 @@ final class Bridge {
 			return try screenshot(request)
 		case "mouseClick":
 			return try mouseClick(request)
+		case "mouseMove":
+			return try mouseMove(request)
+		case "mouseDrag":
+			return try mouseDrag(request)
+		case "scrollWheel":
+			return try scrollWheel(request)
+		case "keyPress":
+			return try keyPress(request)
 		case "axPressAtPoint":
 			return try axPressAtPoint(request)
 		case "axDescribeAtPoint":
@@ -513,7 +521,7 @@ final class Bridge {
 			throw BridgeFailure(message: "App with pid \(pid) is no longer running", code: "app_not_found")
 		}
 
-		let appRestored = app.activate(options: [.activateIgnoringOtherApps])
+		let appRestored = app.activate()
 		var restoredWindowTitle = ""
 		var windowRestored = false
 
@@ -611,9 +619,74 @@ final class Bridge {
 		}
 		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
 		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+		let button = mouseButton(optionalStringArg(request, "button") ?? "left")
+		let clickCount = max(1, min(3, optionalIntArg(request, "clickCount") ?? 1))
 		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseClick(at: point, pid: targetPid)
+		try postMouseClick(at: point, pid: targetPid, button: button, clickCount: clickCount)
 		return ["clicked": true]
+	}
+
+	private func mouseMove(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		let x = try doubleArg(request, "x")
+		let y = try doubleArg(request, "y")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "mouseMove requires pid in non-intrusive mode", code: "pid_required")
+		}
+		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
+		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
+		try postMouseMove(to: point, pid: targetPid)
+		return ["moved": true]
+	}
+
+	private func mouseDrag(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "mouseDrag requires pid in non-intrusive mode", code: "pid_required")
+		}
+		guard let rawPath = request["path"] as? [[String: Any]], rawPath.count >= 2 else {
+			throw BridgeFailure(message: "mouseDrag requires a path with at least two points", code: "invalid_args")
+		}
+		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
+		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+		let points = try rawPath.map { rawPoint -> CGPoint in
+			guard let x = (rawPoint["x"] as? NSNumber)?.doubleValue,
+				let y = (rawPoint["y"] as? NSNumber)?.doubleValue
+			else {
+				throw BridgeFailure(message: "mouseDrag path entries must include numeric x and y", code: "invalid_args")
+			}
+			return try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
+		}
+		try postMouseDrag(points: points, pid: targetPid)
+		return ["dragged": true]
+	}
+
+	private func scrollWheel(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		let x = try doubleArg(request, "x")
+		let y = try doubleArg(request, "y")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "scrollWheel requires pid in non-intrusive mode", code: "pid_required")
+		}
+		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
+		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+		let scrollX = optionalIntArg(request, "scrollX") ?? 0
+		let scrollY = optionalIntArg(request, "scrollY") ?? 0
+		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
+		try postScrollWheel(at: point, deltaX: scrollX, deltaY: scrollY, pid: targetPid)
+		return ["scrolled": true]
+	}
+
+	private func keyPress(_ request: [String: Any]) throws -> [String: Any] {
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "keyPress requires pid in non-intrusive mode", code: "pid_required")
+		}
+		guard let keys = request["keys"] as? [String], !keys.isEmpty else {
+			throw BridgeFailure(message: "keyPress requires at least one key", code: "invalid_args")
+		}
+		try postKeyPress(keys: keys, pid: targetPid)
+		return ["pressed": true]
 	}
 
 	private func axPressAtPoint(_ request: [String: Any]) throws -> [String: Any] {
@@ -1629,17 +1702,197 @@ final class Bridge {
 		postEvent(move, pid: pid)
 	}
 
-	private func postMouseClick(at point: CGPoint, pid: Int32) throws {
-		try postMouseMove(to: point, pid: pid)
-		guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
-			let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
-		else {
-			throw BridgeFailure(message: "Failed to create mouse click event", code: "input_failed")
+	private func mouseButton(_ name: String) -> CGMouseButton {
+		switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+		case "right":
+			return .right
+		case "middle", "center":
+			return .center
+		default:
+			return .left
 		}
-		down.setIntegerValueField(.mouseEventClickState, value: 1)
-		up.setIntegerValueField(.mouseEventClickState, value: 1)
+	}
+
+	private func mouseDownType(for button: CGMouseButton) -> CGEventType {
+		switch button {
+		case .right:
+			return .rightMouseDown
+		case .center:
+			return .otherMouseDown
+		default:
+			return .leftMouseDown
+		}
+	}
+
+	private func mouseUpType(for button: CGMouseButton) -> CGEventType {
+		switch button {
+		case .right:
+			return .rightMouseUp
+		case .center:
+			return .otherMouseUp
+		default:
+			return .leftMouseUp
+		}
+	}
+
+	private func mouseDraggedType(for button: CGMouseButton) -> CGEventType {
+		switch button {
+		case .right:
+			return .rightMouseDragged
+		case .center:
+			return .otherMouseDragged
+		default:
+			return .leftMouseDragged
+		}
+	}
+
+	private func postMouseClick(at point: CGPoint, pid: Int32, button: CGMouseButton = .left, clickCount: Int = 1) throws {
+		try postMouseMove(to: point, pid: pid)
+		for index in 1...max(1, clickCount) {
+			guard let down = CGEvent(mouseEventSource: nil, mouseType: mouseDownType(for: button), mouseCursorPosition: point, mouseButton: button),
+				let up = CGEvent(mouseEventSource: nil, mouseType: mouseUpType(for: button), mouseCursorPosition: point, mouseButton: button)
+			else {
+				throw BridgeFailure(message: "Failed to create mouse click event", code: "input_failed")
+			}
+			down.setIntegerValueField(.mouseEventClickState, value: Int64(index))
+			up.setIntegerValueField(.mouseEventClickState, value: Int64(index))
+			postEvent(down, pid: pid)
+			usleep(12_000)
+			postEvent(up, pid: pid)
+			if index < clickCount {
+				usleep(70_000)
+			}
+		}
+	}
+
+	private func postMouseDrag(points: [CGPoint], pid: Int32) throws {
+		guard points.count >= 2, let first = points.first else {
+			throw BridgeFailure(message: "Drag requires at least two points", code: "invalid_args")
+		}
+		try postMouseMove(to: first, pid: pid)
+		guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: first, mouseButton: .left) else {
+			throw BridgeFailure(message: "Failed to create mouse down event", code: "input_failed")
+		}
 		postEvent(down, pid: pid)
 		usleep(12_000)
+
+		for point in points.dropFirst() {
+			guard let drag = CGEvent(mouseEventSource: nil, mouseType: mouseDraggedType(for: .left), mouseCursorPosition: point, mouseButton: .left) else {
+				throw BridgeFailure(message: "Failed to create mouse drag event", code: "input_failed")
+			}
+			postEvent(drag, pid: pid)
+			usleep(8_000)
+		}
+
+		guard let last = points.last,
+			let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: last, mouseButton: .left)
+		else {
+			throw BridgeFailure(message: "Failed to create mouse up event", code: "input_failed")
+		}
+		postEvent(up, pid: pid)
+	}
+
+	private func postScrollWheel(at point: CGPoint, deltaX: Int, deltaY: Int, pid: Int32) throws {
+		try postMouseMove(to: point, pid: pid)
+		guard let event = CGEvent(
+			scrollWheelEvent2Source: nil,
+			units: .pixel,
+			wheelCount: 2,
+			wheel1: Int32(-deltaY),
+			wheel2: Int32(deltaX),
+			wheel3: 0
+		) else {
+			throw BridgeFailure(message: "Failed to create scroll event", code: "input_failed")
+		}
+		event.location = point
+		postEvent(event, pid: pid)
+	}
+
+	private func modifierFlag(_ key: String) -> CGEventFlags? {
+		switch key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+		case "cmd", "command", "meta":
+			return .maskCommand
+		case "ctrl", "control":
+			return .maskControl
+		case "shift":
+			return .maskShift
+		case "option", "alt":
+			return .maskAlternate
+		default:
+			return nil
+		}
+	}
+
+	private func keyCode(_ key: String) -> CGKeyCode? {
+		let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		let table: [String: CGKeyCode] = [
+			"a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11,
+			"q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
+			"6": 22, "5": 23, "=": 24, "+": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29,
+			"]": 30, "o": 31, "u": 32, "[": 33, "i": 34, "p": 35, "return": 36, "enter": 36,
+			"l": 37, "j": 38, "'": 39, "\"": 39, "k": 40, ";": 41, "\\": 42, ",": 43, "/": 44,
+			"n": 45, "m": 46, ".": 47, "tab": 48, "space": 49, " ": 49, "`": 50, "~": 50,
+			"backspace": 51, "delete": 51, "del": 51, "esc": 53, "escape": 53,
+			"f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100,
+			"f9": 101, "f10": 109, "f11": 103, "f12": 111,
+			"home": 115, "pageup": 116, "page_up": 116, "page down": 121, "pagedown": 121, "page_down": 121,
+			"forwarddelete": 117, "forward_delete": 117, "end": 119,
+			"left": 123, "arrowleft": 123, "arrow_left": 123,
+			"right": 124, "arrowright": 124, "arrow_right": 124,
+			"down": 125, "arrowdown": 125, "arrow_down": 125,
+			"up": 126, "arrowup": 126, "arrow_up": 126,
+		]
+		return table[normalized]
+	}
+
+	private func keyChord(_ keys: [String]) -> (flags: CGEventFlags, key: String)? {
+		guard keys.count >= 2 else { return nil }
+		var flags = CGEventFlags()
+		for key in keys.dropLast() {
+			guard let flag = modifierFlag(key) else {
+				return nil
+			}
+			flags.insert(flag)
+		}
+		return (flags, keys.last ?? "")
+	}
+
+	private func postKeyPress(keys: [String], pid: Int32) throws {
+		if let chord = keyChord(keys) {
+			try postKey(chord.key, flags: chord.flags, pid: pid)
+			return
+		}
+
+		for key in keys {
+			let parts = key
+				.split(separator: "+")
+				.map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+				.filter { !$0.isEmpty }
+			if let chord = keyChord(parts) {
+				try postKey(chord.key, flags: chord.flags, pid: pid)
+			} else {
+				try postKey(key, flags: [], pid: pid)
+			}
+		}
+	}
+
+	private func postKey(_ key: String, flags: CGEventFlags, pid: Int32) throws {
+		guard let code = keyCode(key) else {
+			if key.count == 1 {
+				try postUnicodeText(key, pid: pid)
+				return
+			}
+			throw BridgeFailure(message: "Unsupported key '\(key)'", code: "invalid_args")
+		}
+		guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
+			let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
+		else {
+			throw BridgeFailure(message: "Failed to create key event", code: "input_failed")
+		}
+		down.flags = flags
+		up.flags = flags
+		postEvent(down, pid: pid)
+		usleep(8_000)
 		postEvent(up, pid: pid)
 	}
 

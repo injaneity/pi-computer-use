@@ -572,14 +572,14 @@ async function main() {
 	}
 
 	if (shouldRunSection("actions")) {
-	if (SAFE_ONLY_QA) {
-		skip("User top-level view preserved on screenshot", "Skipped in safe-only QA mode.");
-		skip("Click action + capture refresh", "Skipped in safe-only QA mode because it activates Finder.");
-		skip("Removed pointer tools", "double_click, move_mouse, drag, scroll, and keypress were removed from the semantic-only runtime.");
-		skip("Wait action", "Skipped in safe-only QA mode because it depends on prepared target state.");
-		skip("Type text + clipboard restore", "Skipped in safe-only QA mode because it activates Finder.");
-		skip("Minimized window fallback", "Minimized-window fallback was removed from the semantic-only runtime.");
-	} else {
+		if (SAFE_ONLY_QA) {
+			skip("User top-level view preserved on screenshot", "Skipped in safe-only QA mode.");
+			skip("Click action + capture refresh", "Skipped in safe-only QA mode because it activates Finder.");
+			skip("Pointer and keyboard tools", "Skipped in safe-only QA mode because they can affect the foreground app.");
+			skip("Wait action", "Skipped in safe-only QA mode because it depends on prepared target state.");
+			skip("Type text + clipboard restore", "Skipped in safe-only QA mode because it activates Finder.");
+			skip("Minimized window fallback", "Minimized-window fallback was removed from the semantic-only runtime.");
+		} else {
 	try {
 		activateApp("Finder");
 		await sleep(250);
@@ -688,7 +688,7 @@ async function main() {
 		}
 	}
 
-	skip("Removed pointer tools", "double_click, move_mouse, drag, scroll, and keypress were removed from the semantic-only runtime.");
+	skip("Pointer and keyboard tools", "double_click, move_mouse, drag, scroll, and keypress are exposed but still need foreground-affecting manual QA.");
 
 	try {
 		const waitResult = await executeWait("qa-wait", {}, undefined, undefined, ctx);
