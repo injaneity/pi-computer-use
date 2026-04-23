@@ -915,6 +915,11 @@ final class Bridge {
 			var score = 0.0
 			if isText {
 				score += self.scoreTextInputElement(candidate, role: role)
+				if canSetValue {
+					score += 160
+				} else {
+					score -= 80
+				}
 			}
 			if canFocus || canPress {
 				score += self.scoreFocusableElement(candidate, role: role, canFocus: canFocus, canPress: canPress, preferredRoles: Set<String>())
@@ -1274,6 +1279,15 @@ final class Bridge {
 		let frame = frameForElement(element)
 		let centerX = frame.map { $0.midX } ?? 0
 		let centerY = frame.map { $0.midY } ?? 0
+		var valueSettable = DarwinBoolean(false)
+		let valueStatus = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &valueSettable)
+		var focusedSettable = DarwinBoolean(false)
+		let focusedStatus = AXUIElementIsAttributeSettable(element, kAXFocusedAttribute as CFString, &focusedSettable)
+		let actions = actionNames(element)
+		let canSetValue = valueStatus == .success && valueSettable.boolValue
+		let textRoles: Set<String> = [
+			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
+		]
 		var payload: [String: Any] = [
 			key: true,
 			"elementRef": refStore.storeElement(element),
@@ -1282,7 +1296,11 @@ final class Bridge {
 			"title": title,
 			"description": description,
 			"value": value,
-			"actions": actionNames(element),
+			"actions": actions,
+			"isTextInput": textRoles.contains(role) || canSetValue,
+			"canSetValue": canSetValue,
+			"canFocus": focusedStatus == .success && focusedSettable.boolValue,
+			"canPress": actions.contains(kAXPressAction as String),
 			"x": centerX,
 			"y": centerY,
 		]

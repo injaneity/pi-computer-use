@@ -69,6 +69,8 @@ type CaseRecord = {
 	axOnly?: boolean;
 	axExecution?: boolean;
 	fallbackUsed?: boolean;
+	stealthCompatible?: boolean;
+	executionVariant?: string;
 	details?: string;
 };
 
@@ -238,7 +240,7 @@ function prepareAppWindow(appName: string): void {
 	}
 }
 
-function summarizeResult(result: any): { hasImage: boolean; axTargets: number; fallbackUsed: boolean; axExecution: boolean } {
+function summarizeResult(result: any): { hasImage: boolean; axTargets: number; fallbackUsed: boolean; axExecution: boolean; stealthCompatible: boolean; executionVariant: string } {
 	const content = Array.isArray(result?.content) ? result.content : [];
 	const details = result?.details ?? {};
 	return {
@@ -246,6 +248,8 @@ function summarizeResult(result: any): { hasImage: boolean; axTargets: number; f
 		axTargets: Array.isArray(details?.axTargets) ? details.axTargets.length : 0,
 		fallbackUsed: details?.execution?.fallbackUsed === true,
 		axExecution: details?.execution?.axSucceeded === true || String(details?.execution?.strategy ?? "").startsWith("ax_"),
+		stealthCompatible: details?.execution?.stealthCompatible === true,
+		executionVariant: String(details?.execution?.variant ?? "unknown"),
 	};
 }
 
@@ -261,6 +265,15 @@ function preferredAxTarget(details: any): any | undefined {
 		if (match) return match;
 	}
 	return targets.find((target: any) => Array.isArray(target?.actions) && target.actions.includes("AXPress")) ?? targets[0];
+}
+
+function preferredTextTarget(details: any): any | undefined {
+	const targets = Array.isArray(details?.axTargets) ? details.axTargets : [];
+	return targets.find((target: any) =>
+		["AXTextField", "AXSearchField", "AXTextArea", "AXTextView", "AXEditableText", "AXComboBox"].includes(String(target?.role ?? "")) &&
+		target?.canSetValue === true &&
+		typeof target?.ref === "string"
+	);
 }
 
 function captureCenter(details: any): { x: number; y: number } {
@@ -310,6 +323,7 @@ function metrics(records: CaseRecord[]) {
 		axOnlyRatio: ratio(executed, (record) => record.axOnly === true),
 		visionFallbackRatio: ratio(executed, (record) => record.hasImage === true),
 		axExecutionRatio: ratio(targeting, (record) => record.axExecution === true && record.fallbackUsed !== true),
+		stealthCompatibleRatio: ratio(executed, (record) => record.stealthCompatible === true),
 		navigationAxOnlyRatio: ratio(navigation, (record) => record.axOnly === true),
 		targetingAxOnlyRatio: ratio(targeting, (record) => record.axOnly === true && record.axExecution === true),
 		primitivePassRatio: ratio(primitives, (record) => record.status === "PASS"),
@@ -357,7 +371,9 @@ async function benchmarkCase(
 				axOnly: !summary.hasImage,
 				axExecution: summary.axExecution,
 				fallbackUsed: summary.fallbackUsed,
-				details: `axTargets=${summary.axTargets} hasImage=${summary.hasImage} axExecution=${summary.axExecution} fallback=${summary.fallbackUsed}`,
+				stealthCompatible: summary.stealthCompatible,
+				executionVariant: summary.executionVariant,
+				details: `axTargets=${summary.axTargets} hasImage=${summary.hasImage} axExecution=${summary.axExecution} fallback=${summary.fallbackUsed} variant=${summary.executionVariant} stealthCompatible=${summary.stealthCompatible}`,
 			}),
 			result,
 		};
@@ -478,19 +494,20 @@ async function main() {
 			};
 
 			await runTextEditCase("TextEdit-set-text", "set_text", async () => {
-				return await executeSetText("bench-TextEdit-set-text", { text: "pi-computer-use benchmark set_text" }, undefined, undefined, ctx);
+				const textTarget = preferredTextTarget(currentDetails);
+				return await executeSetText("bench-TextEdit-set-text", { text: "pi-computer-use benchmark set_text", ref: textTarget?.ref }, undefined, undefined, ctx);
 			});
 
 			if (STRICT_AX_MODE) {
-				if (target?.ref) {
+				const textTarget = preferredTextTarget(currentDetails);
+				if (textTarget?.ref) {
 					await runTextEditCase("TextEdit-batch-ax", "computer_actions", async () => {
 						return await executeComputerActions(
 							"bench-TextEdit-batch-ax",
 							{
 								captureId: currentDetails.capture.captureId,
 								actions: [
-									{ type: "click", ref: target.ref },
-									{ type: "set_text", text: "pi-computer-use benchmark AX batch" },
+									{ type: "set_text", ref: textTarget.ref, text: "pi-computer-use benchmark AX batch" },
 								],
 							},
 							undefined,
@@ -536,6 +553,7 @@ async function main() {
 					return await executeScroll("bench-TextEdit-scroll", { x: point.x, y: point.y, scrollY: 120, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
 				});
 				await runTextEditCase("TextEdit-batch", "computer_actions", async () => {
+					const textTarget = preferredTextTarget(currentDetails);
 					return await executeComputerActions(
 						"bench-TextEdit-batch",
 						{
@@ -543,7 +561,7 @@ async function main() {
 							actions: [
 								{ type: "move_mouse", x: point.x, y: point.y },
 								{ type: "click", x: point.x, y: point.y },
-								{ type: "set_text", text: "pi-computer-use benchmark batch" },
+								{ type: "set_text", ref: textTarget?.ref, text: "pi-computer-use benchmark batch" },
 								{ type: "keypress", keys: ["Enter"] },
 								{ type: "type_text", text: "batch insertion" },
 							],

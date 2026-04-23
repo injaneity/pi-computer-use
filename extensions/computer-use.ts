@@ -24,7 +24,7 @@ const screenshotTool = defineTool({
 	promptSnippet: "Capture and select a macOS window. Call this first and to switch windows.",
 	promptGuidelines: [
 		"Call screenshot first to choose a window and inspect the latest UI state.",
-		"If screenshot returns AX targets, prefer those targets over coordinate clicks.",
+		"If screenshot returns AX targets, prefer refs for click and set_text before coordinate or focus-based actions.",
 		"Call screenshot(app, windowTitle) to switch the controlled window.",
 		"For browsers, prefer a separate window for agent work instead of opening a new tab in the user's current window.",
 		"In strict AX mode, do not bootstrap a new browser window; target an existing dedicated browser window instead.",
@@ -182,7 +182,7 @@ const typeTextTool = defineTool({
 	promptSnippet: "Type into the focused control in the current window.",
 	promptGuidelines: [
 		"Click a field first if needed, then call type_text.",
-		"This inserts at the current cursor/selection. Use set_text when you need to replace the whole focused value.",
+		"This inserts at the current cursor/selection. Use set_text with ref when you need to replace a whole AX text value.",
 		"Returns the latest semantic state and attaches an image only when fallback is needed.",
 	],
 	executionMode: "sequential",
@@ -197,16 +197,18 @@ const typeTextTool = defineTool({
 const setTextTool = defineTool({
 	name: "set_text",
 	label: "Set Text",
-	description: "Replace the value of the currently focused AX text control.",
-	promptSnippet: "Replace the focused text control value using AX set-value semantics.",
+	description: "Replace an AX text control value by ref, or the currently focused text control when no ref is provided.",
+	promptSnippet: "Replace a text control value using AX set-value semantics. Prefer refs from the latest screenshot.",
 	promptGuidelines: [
 		"Use this when you need replacement semantics rather than insertion.",
-		"Click a field first if needed, then call set_text.",
+		"Prefer set_text with ref from the latest screenshot when a matching text field is available.",
+		"If no ref is available, click a field first if needed, then call set_text.",
 		"For Enter, Tab, backspace, or shortcuts, use keypress.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
 		text: Type.String({ description: "Replacement text value" }),
+		ref: Type.Optional(Type.String({ description: "Optional AX text target ref from the latest screenshot, e.g. @e1" })),
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeSetText(toolCallId, params, signal, onUpdate, ctx);
@@ -281,6 +283,7 @@ const batchedActionSchema = Type.Union([
 	Type.Object({
 		type: Type.Literal("set_text"),
 		text: Type.String(),
+		ref: Type.Optional(Type.String()),
 	}),
 	Type.Object({
 		type: Type.Literal("wait"),
@@ -297,6 +300,7 @@ const computerActionsTool = defineTool({
 		"Use this to save turns/tokens when the next actions are obvious from the latest screenshot.",
 		"Do not batch when you need to inspect the result of an intermediate action before deciding the next action.",
 		"Coordinates and refs come from the latest screenshot; the tool returns one state update after all actions finish.",
+		"Per-action metadata reports whether each action used the stealth or default implementation variant.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({

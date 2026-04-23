@@ -28,6 +28,7 @@ export interface TypeTextParams {
 
 export interface SetTextParams {
 	text: string;
+	ref?: string;
 }
 
 export interface KeypressParams {
@@ -95,6 +96,8 @@ interface ActivationFlags {
 	raised: boolean;
 }
 
+type ExecutionVariant = "stealth" | "default";
+
 interface ExecutionTrace {
 	strategy:
 		| "screenshot"
@@ -113,6 +116,10 @@ interface ExecutionTrace {
 	axAttempted?: boolean;
 	axSucceeded?: boolean;
 	fallbackUsed?: boolean;
+	runtimeMode?: ExecutionVariant;
+	variant?: ExecutionVariant;
+	stealthCompatible?: boolean;
+	nonStealthReason?: string;
 	actionCount?: number;
 	completedActionCount?: number;
 	actions?: BatchActionTrace[];
@@ -126,6 +133,10 @@ interface BatchActionTrace {
 	axAttempted?: boolean;
 	axSucceeded?: boolean;
 	fallbackUsed?: boolean;
+	runtimeMode?: ExecutionVariant;
+	variant?: ExecutionVariant;
+	stealthCompatible?: boolean;
+	nonStealthReason?: string;
 }
 
 export interface ComputerUseDetails {
@@ -233,6 +244,10 @@ interface HelperAxTarget {
 	description?: string;
 	value?: string;
 	actions?: string[];
+	isTextInput?: boolean;
+	canSetValue?: boolean;
+	canFocus?: boolean;
+	canPress?: boolean;
 	x?: number;
 	y?: number;
 	score?: number;
@@ -264,6 +279,10 @@ interface AxTarget {
 	description: string;
 	value: string;
 	actions: string[];
+	isTextInput: boolean;
+	canSetValue: boolean;
+	canFocus: boolean;
+	canPress: boolean;
 	x: number;
 	y: number;
 	score?: number;
@@ -406,8 +425,26 @@ function isRecoverableScreenshotError(error: unknown): error is HelperCommandErr
 	return error instanceof HelperCommandError && !!error.code && RECOVERABLE_SCREENSHOT_ERROR_CODES.has(error.code);
 }
 
+function currentRuntimeMode(): ExecutionVariant {
+	return STRICT_AX_MODE ? "stealth" : "default";
+}
+
+function executionTrace(
+	strategy: ExecutionTrace["strategy"],
+	variant: ExecutionVariant,
+	metadata: Omit<ExecutionTrace, "strategy" | "runtimeMode" | "variant" | "stealthCompatible"> = {},
+): ExecutionTrace {
+	return {
+		strategy,
+		runtimeMode: currentRuntimeMode(),
+		variant,
+		stealthCompatible: variant === "stealth",
+		...metadata,
+	};
+}
+
 function strictModeBlock(message: string): never {
-	throw new Error(`${message} Strict AX mode is enabled, so non-AX fallback is blocked.`);
+	throw new Error(`${message} Stealth/strict AX mode is enabled, so non-AX, foreground-focus, and cursor fallbacks are blocked.`);
 }
 
 function addRefreshHint(error: unknown): Error {
@@ -577,6 +614,10 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				description: toOptionalString(target?.description) ?? "",
 				value: toOptionalString(target?.value) ?? "",
 				actions,
+				isTextInput: toBoolean(target?.isTextInput),
+				canSetValue: toBoolean(target?.canSetValue),
+				canFocus: toBoolean(target?.canFocus),
+				canPress: toBoolean(target?.canPress),
 				x: toFiniteNumber(target?.x, 0),
 				y: toFiniteNumber(target?.y, 0),
 				score: Number.isFinite(target?.score) ? Number(target.score) : undefined,
@@ -587,12 +628,25 @@ function parseAxTargets(result: unknown): AxTarget[] {
 
 function formatAxTargetLabel(target: AxTarget): string {
 	const label = target.title || target.description || target.value || "(unlabeled)";
-	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""} ${JSON.stringify(label)}`;
+	const capabilities = [
+		target.canSetValue ? "setValue" : undefined,
+		target.canPress ? "press" : undefined,
+		target.canFocus ? "focus" : undefined,
+	].filter((item): item is string => Boolean(item));
+	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
+}
+
+function axTargetByRef(ref: string): AxTarget {
+	const axTarget = runtimeState.currentAxTargets?.find((candidate) => candidate.ref === ref);
+	if (!axTarget) {
+		throw new Error(`AX target '${ref}' is not available for the latest screenshot. Call screenshot again.`);
+	}
+	return axTarget;
 }
 
 function imageFallbackReason(tool: string, result: CaptureResult, execution: ExecutionTrace): string | undefined {
 	if (execution.fallbackUsed === true) {
-		return "The action used a non-semantic fallback path, so an image is attached for recovery."
+		return "The action used a fallback path, so an image is attached for recovery."
 	}
 	if (result.axTargets.length === 0) {
 		return "No useful AX targets were found, so an image is attached for vision fallback."
@@ -1645,7 +1699,7 @@ async function buildToolResult(
 		execution,
 	};
 	const axTargetText = result.axTargets.length
-		? `\n\nPrefer these AX targets over coordinate clicks when one matches your intent:\n${result.axTargets.map(formatAxTargetLabel).join("\n")}`
+		? `\n\nPrefer these AX targets over coordinate clicks or focus-based text replacement when one matches your intent:\n${result.axTargets.map(formatAxTargetLabel).join("\n")}`
 		: "";
 	const fallbackText = fallbackReason ? `\n\n${fallbackReason}` : "";
 	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${axTargetText}${fallbackText}` }];
@@ -1672,10 +1726,7 @@ async function dispatchClick(
 		if (button !== "left") {
 			throw new Error(`AX target refs only support left-button clicks. Use coordinates for ${button}-click.`);
 		}
-		const axTarget = runtimeState.currentAxTargets?.find((candidate) => candidate.ref === ref);
-		if (!axTarget) {
-			throw new Error(`AX target '${ref}' is not available for the latest screenshot. Call screenshot again.`);
-		}
+		const axTarget = axTargetByRef(ref);
 
 		let clickedViaAX = false;
 		let focusedViaAX = false;
@@ -1713,12 +1764,11 @@ async function dispatchClick(
 			throw new Error(`AX click/focus could not be completed for ${ref}.`);
 		}
 
-		return {
-			strategy: clickedViaAX ? "ax_press" : "ax_focus",
+		return executionTrace(clickedViaAX ? "ax_press" : "ax_focus", "stealth", {
 			axAttempted: true,
 			axSucceeded: true,
 			fallbackUsed: false,
-		};
+		});
 	}
 
 	if (!Number.isFinite(x) || !Number.isFinite(y)) {
@@ -1789,12 +1839,17 @@ async function dispatchClick(
 		);
 	}
 
-	return {
-		strategy: clickedViaAX ? "ax_press" : focusedViaAX ? "ax_focus" : clickCount > 1 ? "coordinate_event_double_click" : "coordinate_event_click",
-		axAttempted: canTryAX,
-		axSucceeded: clickedViaAX || focusedViaAX,
-		fallbackUsed: canTryAX && !clickedViaAX && !focusedViaAX,
-	};
+	const usedAxPath = clickedViaAX || focusedViaAX;
+	return executionTrace(
+		clickedViaAX ? "ax_press" : focusedViaAX ? "ax_focus" : clickCount > 1 ? "coordinate_event_double_click" : "coordinate_event_click",
+		usedAxPath ? "stealth" : "default",
+		{
+			axAttempted: canTryAX,
+			axSucceeded: usedAxPath,
+			fallbackUsed: canTryAX && !usedAxPath,
+			nonStealthReason: usedAxPath ? undefined : "coordinate_mouse_click_requires_pointer_event",
+		},
+	);
 }
 
 async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
@@ -1807,11 +1862,15 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 		{ text, pid: target.pid },
 		{ signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) },
 	);
-	return { strategy: "raw_key_text", axAttempted: false, axSucceeded: false, fallbackUsed: false };
+	return executionTrace("raw_key_text", "default", {
+		axAttempted: false,
+		axSucceeded: false,
+		fallbackUsed: false,
+		nonStealthReason: "raw_text_insertion_requires_keyboard_focus",
+	});
 }
 
-async function dispatchSetText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
-	await focusControlledWindow(target, signal);
+async function focusedTextElementRef(target: ResolvedTarget, signal?: AbortSignal): Promise<string | undefined> {
 	const focused: FocusedElementResult = await bridgeCommand<FocusedElementResult>(
 		"focusedElement",
 		{ pid: target.pid, windowId: target.windowId },
@@ -1819,18 +1878,87 @@ async function dispatchSetText(text: string, target: ResolvedTarget, signal?: Ab
 	).catch(() => ({ exists: false } as FocusedElementResult));
 
 	if (!focused.exists || !focused.isTextInput || !focused.canSetValue || !focused.elementRef) {
-		throw new Error("AX value replacement requires a focused text control. Click a text field first, then call set_text.");
+		return undefined;
 	}
+	return focused.elementRef;
+}
 
+async function setAxValue(elementRef: string, text: string, signal?: AbortSignal): Promise<void> {
 	await bridgeCommand(
 		"setValue",
 		{
-			elementRef: focused.elementRef,
+			elementRef,
 			value: text,
 		},
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
-	return { strategy: "ax_set_value", axAttempted: true, axSucceeded: true, fallbackUsed: false };
+}
+
+async function focusAxElement(elementRef: string, target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
+	const result = await bridgeCommand<AxFocusResult>(
+		"axFocusElement",
+		{ elementRef, pid: target.pid },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch(() => undefined);
+	return toBoolean(result?.focused);
+}
+
+async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
+	const ref = trimOrUndefined(params.ref);
+	if (ref) {
+		const axTarget = axTargetByRef(ref);
+		if (axTarget.canSetValue !== false) {
+			try {
+				await setAxValue(axTarget.elementRef, params.text, signal);
+				return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
+			} catch (error) {
+				if (STRICT_AX_MODE) {
+					throw normalizeError(error);
+				}
+			}
+		}
+
+		if (STRICT_AX_MODE) {
+			strictModeBlock(`AX target '${ref}' does not expose a directly settable AX value.`);
+		}
+
+		const focusedViaRef = await focusAxElement(axTarget.elementRef, target, signal);
+		if (focusedViaRef) {
+			const focusedElementRef = await focusedTextElementRef(target, signal);
+			if (focusedElementRef) {
+				await setAxValue(focusedElementRef, params.text, signal);
+				return executionTrace("ax_set_value", "default", {
+					axAttempted: true,
+					axSucceeded: true,
+					fallbackUsed: true,
+					nonStealthReason: "set_text_ref_requires_focus_fallback",
+				});
+			}
+		}
+	}
+
+	const focusedElementRef = await focusedTextElementRef(target, signal);
+	if (focusedElementRef) {
+		await setAxValue(focusedElementRef, params.text, signal);
+		return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
+	}
+
+	if (STRICT_AX_MODE) {
+		strictModeBlock("set_text in stealth mode requires a text AX ref from the latest screenshot or an already-focused text control.");
+	}
+
+	await focusControlledWindow(target, signal);
+	const focusedAfterWindowFocus = await focusedTextElementRef(target, signal);
+	if (!focusedAfterWindowFocus) {
+		throw new Error("AX value replacement requires a text AX ref or focused text control. Use set_text with ref from the latest screenshot when available.");
+	}
+	await setAxValue(focusedAfterWindowFocus, params.text, signal);
+	return executionTrace("ax_set_value", "default", {
+		axAttempted: true,
+		axSucceeded: true,
+		fallbackUsed: true,
+		nonStealthReason: "set_text_without_ref_requires_window_focus_fallback",
+	});
 }
 
 async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
@@ -1843,7 +1971,12 @@ async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, 
 	}
 	await focusControlledWindow(target, signal);
 	await bridgeCommand("keyPress", { keys, pid: target.pid }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
-	return { strategy: "raw_keypress", axAttempted: false, axSucceeded: false, fallbackUsed: false };
+	return executionTrace("raw_keypress", "default", {
+		axAttempted: false,
+		axSucceeded: false,
+		fallbackUsed: false,
+		nonStealthReason: "keypress_requires_keyboard_focus",
+	});
 }
 
 async function dispatchScroll(
@@ -1877,7 +2010,12 @@ async function dispatchScroll(
 		},
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
-	return { strategy: "coordinate_event_scroll", axAttempted: false, axSucceeded: false, fallbackUsed: false };
+	return executionTrace("coordinate_event_scroll", "default", {
+		axAttempted: false,
+		axSucceeded: false,
+		fallbackUsed: false,
+		nonStealthReason: "coordinate_scroll_requires_pointer_event",
+	});
 }
 
 async function dispatchMoveMouse(
@@ -1897,7 +2035,12 @@ async function dispatchMoveMouse(
 		{ windowId: target.windowId, pid: target.pid, x, y, captureWidth: capture.width, captureHeight: capture.height },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
-	return { strategy: "coordinate_event_move", axAttempted: false, axSucceeded: false, fallbackUsed: false };
+	return executionTrace("coordinate_event_move", "default", {
+		axAttempted: false,
+		axSucceeded: false,
+		fallbackUsed: false,
+		nonStealthReason: "mouse_move_requires_cursor_control",
+	});
 }
 
 async function dispatchDrag(
@@ -1915,7 +2058,12 @@ async function dispatchDrag(
 		{ windowId: target.windowId, pid: target.pid, path, captureWidth: capture.width, captureHeight: capture.height },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
-	return { strategy: "coordinate_event_drag", axAttempted: false, axSucceeded: false, fallbackUsed: false };
+	return executionTrace("coordinate_event_drag", "default", {
+		axAttempted: false,
+		axSucceeded: false,
+		fallbackUsed: false,
+		nonStealthReason: "drag_requires_pointer_event",
+	});
 }
 
 async function runCoordinateAction(
@@ -1959,7 +2107,7 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 		);
 	}
 	const summary = `Captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-	return await buildToolResult("screenshot", summary, captureResult, { strategy: "screenshot", fallbackUsed: false }, signal);
+	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal);
 }
 
 async function performClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
@@ -2016,12 +2164,12 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 
 	try {
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		const execution = await dispatchSetText(text, readyTarget, signal);
+		const execution = await dispatchSetText({ ...params, text }, readyTarget, signal);
 
 		stateMayHaveChanged = true;
 		await sleep(ACTION_SETTLE_MS, signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
-		const summary = `Set focused text value in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
+		const summary = `Set text value in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("set_text", summary, captureResult, execution, signal);
 	} catch (error) {
 		if (stateMayHaveChanged) {
@@ -2131,14 +2279,14 @@ async function dispatchComputerAction(
 		case "type_text":
 			return await dispatchTypeText(action.text, target, signal);
 		case "set_text":
-			return await dispatchSetText(action.text, target, signal);
+			return await dispatchSetText(action, target, signal);
 		case "wait": {
 			const msRaw = action.ms ?? DEFAULT_WAIT_MS;
 			if (!Number.isFinite(msRaw) || msRaw < 0) {
 				throw new Error("wait.ms must be a non-negative number.");
 			}
 			await sleep(Math.min(60_000, Math.round(msRaw)), signal);
-			return { strategy: "wait", fallbackUsed: false };
+			return executionTrace("wait", "stealth", { fallbackUsed: false });
 		}
 		default:
 			throw new Error(`Unsupported computer action '${(action as any)?.type ?? "unknown"}'.`);
@@ -2168,6 +2316,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 		let axAttempted = false;
 		let axSucceeded = false;
 		let fallbackUsed = false;
+		let stealthCompatible = true;
+		const nonStealthReasons = new Set<string>();
 		const actionTraces: BatchActionTrace[] = [];
 
 		for (let index = 0; index < actions.length; index += 1) {
@@ -2194,6 +2344,10 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 				axAttempted: trace.axAttempted,
 				axSucceeded: trace.axSucceeded,
 				fallbackUsed: trace.fallbackUsed,
+				runtimeMode: trace.runtimeMode,
+				variant: trace.variant,
+				stealthCompatible: trace.stealthCompatible,
+				nonStealthReason: trace.nonStealthReason,
 			});
 			if (actionMayChangeState(action)) {
 				stateMayHaveChanged = true;
@@ -2201,6 +2355,10 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 			axAttempted ||= trace.axAttempted === true;
 			axSucceeded ||= trace.axSucceeded === true;
 			fallbackUsed ||= trace.fallbackUsed === true;
+			stealthCompatible &&= trace.stealthCompatible === true;
+			if (trace.nonStealthReason) {
+				nonStealthReasons.add(trace.nonStealthReason);
+			}
 			if (index + 1 < actions.length && action?.type !== "wait") {
 				await sleep(BATCH_ACTION_GAP_MS, signal);
 			}
@@ -2208,15 +2366,15 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 
 		await sleep(ACTION_SETTLE_MS, signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
-		const execution: ExecutionTrace = {
-			strategy: "batch",
+		const execution = executionTrace("batch", stealthCompatible ? "stealth" : "default", {
 			actionCount: actions.length,
 			completedActionCount: actionTraces.length,
 			actions: actionTraces,
 			axAttempted,
 			axSucceeded,
 			fallbackUsed,
-		};
+			nonStealthReason: nonStealthReasons.size > 0 ? [...nonStealthReasons].join(",") : undefined,
+		});
 		const summary = `Executed ${actions.length} computer action${actions.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("computer_actions", summary, captureResult, execution, signal);
 	} catch (error) {
@@ -2243,7 +2401,7 @@ async function performWait(params: WaitParams, signal?: AbortSignal): Promise<Ag
 	await sleep(ms, signal);
 	const captureResult = await captureCurrentTarget(signal);
 	const summary = `Waited ${ms}ms in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-	return await buildToolResult("wait", summary, captureResult, { strategy: "wait", fallbackUsed: false }, signal);
+	return await buildToolResult("wait", summary, captureResult, executionTrace("wait", "stealth", { fallbackUsed: false }), signal);
 }
 
 async function executeTool<T>(ctx: ExtensionContext, signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {

@@ -150,11 +150,14 @@ function axTargets(details: any): any[] {
 	return Array.isArray(details?.axTargets) ? details.axTargets : [];
 }
 
+const TEXT_INPUT_ROLES = ["AXTextField", "AXSearchField", "AXTextArea", "AXTextView", "AXEditableText", "AXComboBox"];
+
 function pickAxTarget(details: any, roles?: string[]): any {
 	const targets = axTargets(details);
 	assert(targets.length > 0, "No AX targets returned on screenshot details");
 	if (roles && roles.length > 0) {
-		const match = targets.find((target) => roles.includes(String(target?.role ?? "")));
+		const matches = targets.filter((target) => roles.includes(String(target?.role ?? "")));
+		const match = matches.find((target) => target?.canSetValue === true) ?? matches[0];
 		if (match) return match;
 	}
 	return targets[0];
@@ -187,6 +190,9 @@ function ensureStrictInvariants(name: string, result: any, expectedUserContext: 
 	assert(details.activation?.activated === false, `${name}: strict mode activated app unexpectedly`);
 	assert(details.activation?.raised === false, `${name}: strict mode raised window unexpectedly`);
 	assert(details.activation?.unminimized === false, `${name}: strict mode unminimized window unexpectedly`);
+	assert(details.execution?.runtimeMode === "stealth", `${name}: strict mode did not record stealth runtime mode`);
+	assert(details.execution?.variant === "stealth", `${name}: strict mode used non-stealth implementation variant '${details.execution?.variant ?? "unknown"}'`);
+	assert(details.execution?.stealthCompatible === true, `${name}: strict mode result was not marked stealth-compatible`);
 	const currentContext = getUserContext();
 	assert(currentContext?.appName === expectedUserContext?.appName, `${name}: strict mode changed frontmost app from '${expectedUserContext?.appName}' to '${currentContext?.appName}'`);
 	assert(userContextSignature(currentContext) === userContextSignature(expectedUserContext), `${name}: strict mode changed user keyboard focus/window context`);
@@ -767,7 +773,8 @@ async function main() {
 			latestHeight = latest.height;
 			latestDetails = latest.details;
 
-			const setResult = await executeSetText("qa-set-text", { text: "pi-computer-use set_text QA" }, undefined, undefined, ctx);
+			const setTextTarget = pickAxTarget(latestDetails, TEXT_INPUT_ROLES);
+			const setResult = await executeSetText("qa-set-text", { ref: setTextTarget.ref, text: "pi-computer-use set_text QA" }, undefined, undefined, ctx);
 			ensureAxExecution("set_text", setResult, ["ax_set_value"]);
 			latest = updateLatestFromResult(setResult);
 			latestCaptureId = latest.captureId;
@@ -827,6 +834,7 @@ async function main() {
 			latestHeight = latest.height;
 			latestDetails = latest.details;
 
+			const batchSetTextTarget = pickAxTarget(latestDetails, TEXT_INPUT_ROLES);
 			const batchResult = await executeComputerActions(
 				"qa-computer-actions",
 				{
@@ -834,7 +842,7 @@ async function main() {
 					actions: [
 						{ type: "move_mouse", x: safeX, y: safeY },
 						{ type: "click", x: safeX, y: safeY },
-						{ type: "set_text", text: "pi-computer-use batch QA" },
+						{ type: "set_text", ref: batchSetTextTarget.ref, text: "pi-computer-use batch QA" },
 						{ type: "keypress", keys: ["Enter"] },
 						{ type: "type_text", text: "batched insert" },
 					],
@@ -895,28 +903,28 @@ async function main() {
 				return { x: centerX(), y: centerY() };
 			}
 		})();
-		const clickResult = await executeClick(
-			"qa-focus-text",
-			{ x: textTarget.x, y: textTarget.y, captureId: latestCaptureId },
-			undefined,
-			undefined,
-			ctx,
-		);
-		if (STRICT_AX_MODE) {
-			ensureAxExecution("focus click", clickResult, ["ax_press", "ax_focus"]);
+		const textRefTarget = pickAxTarget(latestDetails, TEXT_INPUT_ROLES);
+		if (!STRICT_AX_MODE) {
+			const clickResult = await executeClick(
+				"qa-focus-text",
+				{ x: textTarget.x, y: textTarget.y, captureId: latestCaptureId },
+				undefined,
+				undefined,
+				ctx,
+			);
+			textLatest = updateLatestFromResult(clickResult);
+			latestCaptureId = textLatest.captureId;
+			latestWidth = textLatest.width;
+			latestHeight = textLatest.height;
+			latestDetails = textLatest.details;
+			await assertUserContextPreserved("focus click", userFrontmostApp, baselineMouse);
 		}
-		textLatest = updateLatestFromResult(clickResult);
-		latestCaptureId = textLatest.captureId;
-		latestWidth = textLatest.width;
-		latestHeight = textLatest.height;
-		latestDetails = textLatest.details;
-		await assertUserContextPreserved("focus click", userFrontmostApp, baselineMouse);
 
 		const sentinel = `PI_CLIPBOARD_SENTINEL_${Date.now()}`;
 		runCommand("bash", ["-lc", `printf %s '${sentinel.replace(/'/g, "'\\''")}' | pbcopy`]);
 
 		const textResult = STRICT_AX_MODE
-			? await executeSetText("qa-set-text-strict", { text: "pi-computer-use manual QA text" }, undefined, undefined, ctx)
+			? await executeSetText("qa-set-text-strict", { ref: textRefTarget.ref, text: "pi-computer-use manual QA text" }, undefined, undefined, ctx)
 			: await executeTypeText(
 					"qa-type",
 					{ text: "pi-computer-use manual QA text" },
