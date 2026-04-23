@@ -1544,7 +1544,17 @@ async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal): 
 		result.capture.width = recovered.image.width;
 		result.capture.height = recovered.image.height;
 		result.capture.scaleFactor = recovered.image.scaleFactor;
+		result.axTargets = parseAxTargets(
+			await bridgeCommand(
+				"axListTargets",
+				{ pid: result.target.pid, windowId: result.target.windowId, limit: 12 },
+				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+			).catch(() => []),
+		);
 	}
+	setCurrentTarget(result.target);
+	runtimeState.currentCapture = result.capture;
+	runtimeState.currentAxTargets = result.axTargets;
 }
 
 async function captureCurrentTarget(signal?: AbortSignal, priorActivation = emptyActivation()): Promise<CaptureResult> {
@@ -1581,6 +1591,11 @@ async function buildToolResult(
 	execution: ExecutionTrace,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<ComputerUseDetails>> {
+	const fallbackReason = imageFallbackReason(tool, result, execution);
+	if (fallbackReason) {
+		await ensureCaptureImage(result, signal);
+	}
+
 	const details: ComputerUseDetails = {
 		tool,
 		target: {
@@ -1602,14 +1617,12 @@ async function buildToolResult(
 		activation: result.activation,
 		execution,
 	};
-	const fallbackReason = imageFallbackReason(tool, result, execution);
 	const axTargetText = result.axTargets.length
 		? `\n\nPrefer these AX targets over coordinate clicks when one matches your intent:\n${result.axTargets.map(formatAxTargetLabel).join("\n")}`
 		: "";
 	const fallbackText = fallbackReason ? `\n\n${fallbackReason}` : "";
 	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${axTargetText}${fallbackText}` }];
 	if (fallbackReason) {
-		await ensureCaptureImage(result, signal);
 		content.push({ type: "image", data: result.image!.pngBase64, mimeType: "image/png" });
 	}
 
