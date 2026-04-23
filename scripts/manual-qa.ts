@@ -832,6 +832,7 @@ async function main() {
 				{
 					captureId: latestCaptureId,
 					actions: [
+						{ type: "move_mouse", x: safeX, y: safeY },
 						{ type: "click", x: safeX, y: safeY },
 						{ type: "set_text", text: "pi-computer-use batch QA" },
 						{ type: "keypress", keys: ["Enter"] },
@@ -843,9 +844,9 @@ async function main() {
 				ctx,
 			);
 			ensureExecutionStrategy("computer_actions", batchResult, "batch");
-			assert(batchResult.details?.execution?.actionCount === 4, "computer_actions: expected actionCount=4");
-			assert(batchResult.details?.execution?.completedActionCount === 4, "computer_actions: expected completedActionCount=4");
-			assert(Array.isArray(batchResult.details?.execution?.actions) && batchResult.details.execution.actions.length === 4, "computer_actions: expected four per-action traces");
+			assert(batchResult.details?.execution?.actionCount === 5, "computer_actions: expected actionCount=5");
+			assert(batchResult.details?.execution?.completedActionCount === 5, "computer_actions: expected completedActionCount=5");
+			assert(Array.isArray(batchResult.details?.execution?.actions) && batchResult.details.execution.actions.length === 5, "computer_actions: expected five per-action traces");
 			latest = updateLatestFromResult(batchResult);
 			latestCaptureId = latest.captureId;
 			latestWidth = latest.width;
