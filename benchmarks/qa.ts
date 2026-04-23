@@ -541,6 +541,7 @@ async function main() {
 						{
 							captureId: currentDetails.capture.captureId,
 							actions: [
+								{ type: "move_mouse", x: point.x, y: point.y },
 								{ type: "click", x: point.x, y: point.y },
 								{ type: "set_text", text: "pi-computer-use benchmark batch" },
 								{ type: "keypress", keys: ["Enter"] },

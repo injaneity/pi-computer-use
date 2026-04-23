@@ -250,7 +250,7 @@ const batchedActionSchema = Type.Union([
 		captureId: Type.Optional(Type.String()),
 	}),
 	Type.Object({
-		type: Type.Literal("move"),
+		type: Type.Literal("move_mouse"),
 		x: Type.Number(),
 		y: Type.Number(),
 		captureId: Type.Optional(Type.String()),

@@ -56,7 +56,7 @@ export interface DragParams {
 export type ComputerAction =
 	| ({ type: "click" } & ClickParams)
 	| ({ type: "double_click" } & ClickParams)
-	| ({ type: "move" } & MoveMouseParams)
+	| ({ type: "move_mouse" } & MoveMouseParams)
 	| ({ type: "drag" } & DragParams)
 	| ({ type: "scroll" } & ScrollParams)
 	| ({ type: "keypress" } & KeypressParams)
@@ -2077,7 +2077,7 @@ async function dispatchComputerAction(
 			return await dispatchClick(action, capture, target, signal);
 		case "double_click":
 			return await dispatchClick({ ...action, clickCount: 2 }, capture, target, signal);
-		case "move":
+		case "move_mouse":
 			return await dispatchMoveMouse(action, capture, target, signal);
 		case "drag":
 			return await dispatchDrag(action, capture, target, signal);
