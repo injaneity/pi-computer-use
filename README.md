@@ -13,7 +13,7 @@ Codex-style computer use for Pi on macOS with AX-first semantic targeting, seman
 - Public tools: `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`
 - AX target refs in tool results, e.g. `@e1`, for semantic targeting
 - `click({ ref: "@eN" })` support alongside coordinate clicks
-- Batched actions via `computer_actions`, returning one post-action semantic state update
+- Batched actions via `computer_actions`, returning one post-action semantic state update plus per-action execution metadata
 - Full pointer/keyboard primitive coverage for common GUI flows: click, double-click, move, drag, scroll, keypress, text insert, and AX text replacement
 - Semantic-first turn updates with image attachment fallback only when needed
 - AX-first execution with optional strict AX-only mode via `PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`

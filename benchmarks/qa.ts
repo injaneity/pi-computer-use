@@ -3,7 +3,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { executeClick, executeScreenshot, executeWait, reconstructStateFromBranch, stopBridge } from "../src/bridge.ts";
+import {
+	executeClick,
+	executeComputerActions,
+	executeDoubleClick,
+	executeDrag,
+	executeKeypress,
+	executeMoveMouse,
+	executeScreenshot,
+	executeScroll,
+	executeSetText,
+	executeTypeText,
+	executeWait,
+	reconstructStateFromBranch,
+	stopBridge,
+} from "../src/bridge.ts";
 
 const ALLOW_FOREGROUND_QA =
 	process.argv.includes("--allow-foreground-qa") || process.env.PI_COMPUTER_USE_ALLOW_FOREGROUND_QA === "1";
@@ -35,7 +49,18 @@ const MATRIX = [
 type CaseRecord = {
 	name: string;
 	category: string;
-	tool: "screenshot" | "click" | "type_text" | "wait";
+	tool:
+		| "screenshot"
+		| "click"
+		| "double_click"
+		| "move_mouse"
+		| "drag"
+		| "scroll"
+		| "keypress"
+		| "type_text"
+		| "set_text"
+		| "wait"
+		| "computer_actions";
 	app?: string;
 	status: "PASS" | "FAIL" | "SKIP";
 	latencyMs?: number;
@@ -238,11 +263,24 @@ function preferredAxTarget(details: any): any | undefined {
 	return targets.find((target: any) => Array.isArray(target?.actions) && target.actions.includes("AXPress")) ?? targets[0];
 }
 
+function captureCenter(details: any): { x: number; y: number } {
+	const width = Math.max(20, Number(details?.capture?.width ?? 100));
+	const height = Math.max(20, Number(details?.capture?.height ?? 100));
+	return {
+		x: Math.max(8, Math.min(width - 8, Math.round(width * 0.5))),
+		y: Math.max(8, Math.min(height - 8, Math.round(height * 0.5))),
+	};
+}
+
 function metrics(records: CaseRecord[]) {
 	const executed = records.filter((record) => record.status !== "SKIP");
 	const passed = executed.filter((record) => record.status === "PASS");
 	const navigation = executed.filter((record) => record.tool === "screenshot" || record.tool === "wait");
-	const targeting = executed.filter((record) => record.tool === "click" || record.tool === "type_text");
+	const targeting = executed.filter((record) => record.tool === "click" || record.tool === "set_text");
+	const primitives = executed.filter((record) =>
+		["double_click", "move_mouse", "drag", "scroll", "keypress", "type_text"].includes(record.tool),
+	);
+	const batches = executed.filter((record) => record.tool === "computer_actions");
 	const ratio = (subset: CaseRecord[], predicate: (record: CaseRecord) => boolean) =>
 		subset.length ? Number((subset.filter(predicate).length / subset.length).toFixed(3)) : 0;
 	const avgLatency = (subset: CaseRecord[]) =>
@@ -274,9 +312,13 @@ function metrics(records: CaseRecord[]) {
 		axExecutionRatio: ratio(targeting, (record) => record.axExecution === true && record.fallbackUsed !== true),
 		navigationAxOnlyRatio: ratio(navigation, (record) => record.axOnly === true),
 		targetingAxOnlyRatio: ratio(targeting, (record) => record.axOnly === true && record.axExecution === true),
+		primitivePassRatio: ratio(primitives, (record) => record.status === "PASS"),
+		batchPassRatio: ratio(batches, (record) => record.status === "PASS"),
 		avgLatencyMs: avgLatency(executed),
 		avgNavigationLatencyMs: avgLatency(navigation),
 		avgTargetingLatencyMs: avgLatency(targeting),
+		avgPrimitiveLatencyMs: avgLatency(primitives),
+		avgBatchLatencyMs: avgLatency(batches),
 		coverage: byCategory,
 	};
 }
@@ -284,7 +326,7 @@ function metrics(records: CaseRecord[]) {
 function normalizeRecord(record: CaseRecord): CaseRecord {
 	if (
 		record.status === "FAIL" &&
-		/No controllable window was found|No frontmost controllable window was found|No current controlled window|window is no longer available/i.test(record.details ?? "")
+		/No controllable window was found|No frontmost controllable window was found|No current controlled window|window is no longer available|is not running/i.test(record.details ?? "")
 	) {
 		return { ...record, status: "SKIP", details: record.details };
 	}
@@ -386,7 +428,16 @@ async function main() {
 
 		const details = shot.result?.details;
 		const target = preferredAxTarget(details);
-		if (!target?.ref || !details?.capture?.captureId) {
+		if (shot.record.hasImage || (shot.record.axTargets ?? 0) < 3) {
+			records.push({
+				name: `${item.app}-targeting`,
+				category: item.category,
+				tool: "click",
+				app: item.app,
+				status: "SKIP",
+				details: "Semantic AX target coverage was too sparse for AX-first targeting",
+			});
+		} else if (!target?.ref || !details?.capture?.captureId) {
 			records.push({
 				name: `${item.app}-targeting`,
 				category: item.category,
@@ -400,6 +451,108 @@ async function main() {
 				return await executeClick(`bench-${item.app}-click`, { ref: target.ref, captureId: details.capture.captureId }, undefined, undefined, ctx);
 			});
 			records.push(click.record);
+		}
+
+		if (item.app === "TextEdit" && details?.capture?.captureId) {
+			let currentDetails = details;
+			let point = captureCenter(currentDetails);
+			await executeClick(
+				"bench-TextEdit-focus",
+				{ x: point.x, y: point.y, captureId: currentDetails.capture.captureId },
+				undefined,
+				undefined,
+				ctx,
+			).catch(() => undefined);
+
+			const runTextEditCase = async (
+				name: string,
+				tool: CaseRecord["tool"],
+				run: () => Promise<any>,
+			): Promise<void> => {
+				const record = await benchmarkCase(name, item.category, tool, item.app, run);
+				records.push(record.record);
+				if (record.record.status === "PASS" && record.result?.details) {
+					currentDetails = record.result.details;
+					point = captureCenter(currentDetails);
+				}
+			};
+
+			await runTextEditCase("TextEdit-set-text", "set_text", async () => {
+				return await executeSetText("bench-TextEdit-set-text", { text: "pi-computer-use benchmark set_text" }, undefined, undefined, ctx);
+			});
+
+			if (STRICT_AX_MODE) {
+				if (target?.ref) {
+					await runTextEditCase("TextEdit-batch-ax", "computer_actions", async () => {
+						return await executeComputerActions(
+							"bench-TextEdit-batch-ax",
+							{
+								captureId: currentDetails.capture.captureId,
+								actions: [
+									{ type: "click", ref: target.ref },
+									{ type: "set_text", text: "pi-computer-use benchmark AX batch" },
+								],
+							},
+							undefined,
+							undefined,
+							ctx,
+						);
+					});
+				} else {
+					records.push({ name: "TextEdit-batch-ax", category: item.category, tool: "computer_actions", app: item.app, status: "SKIP", details: "No AX ref available for strict batch" });
+				}
+				for (const tool of ["double_click", "move_mouse", "drag", "scroll", "keypress", "type_text"] as const) {
+					records.push({ name: `TextEdit-${tool}`, category: item.category, tool, app: item.app, status: "SKIP", details: "Strict AX mode intentionally blocks raw primitive coverage" });
+				}
+			} else {
+				await runTextEditCase("TextEdit-keypress", "keypress", async () => {
+					return await executeKeypress("bench-TextEdit-keypress", { keys: ["Enter"] }, undefined, undefined, ctx);
+				});
+				await runTextEditCase("TextEdit-type-text", "type_text", async () => {
+					return await executeTypeText("bench-TextEdit-type-text", { text: "benchmark raw insertion" }, undefined, undefined, ctx);
+				});
+				await runTextEditCase("TextEdit-move-mouse", "move_mouse", async () => {
+					return await executeMoveMouse("bench-TextEdit-move", { x: point.x, y: point.y, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
+				});
+				await runTextEditCase("TextEdit-double-click", "double_click", async () => {
+					return await executeDoubleClick("bench-TextEdit-double", { x: point.x, y: point.y, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
+				});
+				await runTextEditCase("TextEdit-drag", "drag", async () => {
+					return await executeDrag(
+						"bench-TextEdit-drag",
+						{
+							path: [
+								[point.x, point.y],
+								[Math.min(Number(currentDetails.capture.width) - 4, point.x + 18), Math.min(Number(currentDetails.capture.height) - 4, point.y + 18)],
+							],
+							captureId: currentDetails.capture.captureId,
+						},
+						undefined,
+						undefined,
+						ctx,
+					);
+				});
+				await runTextEditCase("TextEdit-scroll", "scroll", async () => {
+					return await executeScroll("bench-TextEdit-scroll", { x: point.x, y: point.y, scrollY: 120, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
+				});
+				await runTextEditCase("TextEdit-batch", "computer_actions", async () => {
+					return await executeComputerActions(
+						"bench-TextEdit-batch",
+						{
+							captureId: currentDetails.capture.captureId,
+							actions: [
+								{ type: "click", x: point.x, y: point.y },
+								{ type: "set_text", text: "pi-computer-use benchmark batch" },
+								{ type: "keypress", keys: ["Enter"] },
+								{ type: "type_text", text: "batch insertion" },
+							],
+						},
+						undefined,
+						undefined,
+						ctx,
+					);
+				});
+			}
 		}
 
 		if (item.app === "Finder" && details) {

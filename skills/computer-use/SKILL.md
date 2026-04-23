@@ -30,7 +30,7 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 - `type_text` inserts text at the current cursor/selection. Use `set_text` only when you need to replace the focused AX text value.
 - `scroll`, `move_mouse`, `drag`, `double_click`, and coordinate clicks use screenshot-relative coordinates from the latest screenshot.
 - For shortcut sequences, use chord strings like `keypress({ keys: ["Command+L", "Enter"] })`; reserve `["Command", "L"]` for a single chord call.
-- `computer_actions` executes one to twenty actions and returns one state update. Do not batch if the next action depends on seeing an intermediate result.
+- `computer_actions` executes one to twenty actions and returns one state update plus per-action execution metadata. Do not batch if the next action depends on seeing an intermediate result.
 - `wait({ ms })` pauses and then returns the latest semantic state for polling/loading states.
 - Accessibility permission is mandatory for actions.
 - Screen Recording permission is mandatory for screenshots and model vision context.

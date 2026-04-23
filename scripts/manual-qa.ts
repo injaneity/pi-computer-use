@@ -15,7 +15,21 @@ const SELECTED_SECTIONS = new Set(
 		.map((value) => value.trim().toLowerCase())
 		.filter(Boolean),
 );
-import { executeClick, executeScreenshot, executeTypeText, executeWait, reconstructStateFromBranch, stopBridge } from "../src/bridge.ts";
+import {
+	executeClick,
+	executeComputerActions,
+	executeDoubleClick,
+	executeDrag,
+	executeKeypress,
+	executeMoveMouse,
+	executeScreenshot,
+	executeScroll,
+	executeSetText,
+	executeTypeText,
+	executeWait,
+	reconstructStateFromBranch,
+	stopBridge,
+} from "../src/bridge.ts";
 
 type ResultRecord = {
 	name: string;
@@ -114,6 +128,22 @@ function ensureAxExecution(name: string, result: any, allowedStrategies?: string
 	if (allowedStrategies && allowedStrategies.length > 0) {
 		assert(allowedStrategies.includes(String(execution.strategy)), `${name}: unexpected execution strategy '${execution.strategy}'`);
 	}
+}
+
+function ensureExecutionStrategy(name: string, result: any, expectedStrategy: string): void {
+	const execution = result?.details?.execution;
+	assert(execution && typeof execution === "object", `${name}: missing execution metadata`);
+	assert(execution.strategy === expectedStrategy, `${name}: expected strategy '${expectedStrategy}', got '${execution.strategy ?? "unknown"}'`);
+}
+
+function updateLatestFromResult(result: any): { captureId: string; width: number; height: number; details: any } {
+	const normalized = ensureImageResult(String(result?.details?.tool ?? "tool result"), result);
+	return {
+		captureId: normalized.captureId,
+		width: normalized.width,
+		height: normalized.height,
+		details: result.details,
+	};
 }
 
 function axTargets(details: any): any[] {
@@ -575,9 +605,9 @@ async function main() {
 		if (SAFE_ONLY_QA) {
 			skip("User top-level view preserved on screenshot", "Skipped in safe-only QA mode.");
 			skip("Click action + capture refresh", "Skipped in safe-only QA mode because it activates Finder.");
-			skip("Pointer and keyboard tools", "Skipped in safe-only QA mode because they can affect the foreground app.");
+			skip("Pointer, keyboard, and batch tools", "Skipped in safe-only QA mode because they can affect the foreground app.");
 			skip("Wait action", "Skipped in safe-only QA mode because it depends on prepared target state.");
-			skip("Type text + clipboard restore", "Skipped in safe-only QA mode because it activates Finder.");
+			skip("Text input primitives + clipboard", "Skipped in safe-only QA mode because it activates Finder.");
 			skip("Minimized window fallback", "Minimized-window fallback was removed from the semantic-only runtime.");
 		} else {
 	try {
@@ -688,7 +718,146 @@ async function main() {
 		}
 	}
 
-	skip("Pointer and keyboard tools", "double_click, move_mouse, drag, scroll, and keypress are exposed but still need foreground-affecting manual QA.");
+	try {
+		activateApp("Finder");
+		await sleep(250);
+		userFrontmostApp = getFrontmostAppName();
+		baselineUserContext = getUserContext();
+		baselineMouse = getMousePosition();
+
+		const textEditShot = await executeScreenshot("qa-expanded-actions-textedit", { app: "TextEdit" }, undefined, undefined, ctx);
+		let latest = updateLatestFromResult(textEditShot);
+		latestCaptureId = latest.captureId;
+		latestWidth = latest.width;
+		latestHeight = latest.height;
+		latestDetails = latest.details;
+
+		const textTarget = (() => {
+			try {
+				return axFindTextInput(latestDetails);
+			} catch {
+				return { x: centerX(), y: centerY() };
+			}
+		})();
+		const safeX = Math.max(8, Math.min(latestWidth - 8, Math.round(textTarget.x)));
+		const safeY = Math.max(8, Math.min(latestHeight - 8, Math.round(textTarget.y)));
+
+		if (STRICT_AX_MODE) {
+			const blockedActions: Array<[string, () => Promise<any>]> = [
+				["move_mouse", () => executeMoveMouse("qa-strict-move-block", { x: safeX, y: safeY, captureId: latestCaptureId }, undefined, undefined, ctx)],
+				["scroll", () => executeScroll("qa-strict-scroll-block", { x: safeX, y: safeY, scrollY: 120, captureId: latestCaptureId }, undefined, undefined, ctx)],
+				["drag", () => executeDrag("qa-strict-drag-block", { path: [[safeX, safeY], [Math.min(latestWidth - 4, safeX + 12), Math.min(latestHeight - 4, safeY + 12)]], captureId: latestCaptureId }, undefined, undefined, ctx)],
+				["keypress", () => executeKeypress("qa-strict-keypress-block", { keys: ["Escape"] }, undefined, undefined, ctx)],
+			];
+			for (const [name, run] of blockedActions) {
+				try {
+					await run();
+					throw new Error(`${name} unexpectedly succeeded in strict AX mode`);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					assert(/Strict AX mode/i.test(message), `${name}: expected strict-mode block, got '${message}'`);
+				}
+			}
+			pass("Pointer, keyboard, and batch tools", "Strict mode blocks raw pointer/keyboard primitives as expected");
+		} else {
+			const focusClick = await executeClick("qa-expanded-focus-text", { x: safeX, y: safeY, captureId: latestCaptureId }, undefined, undefined, ctx);
+			latest = updateLatestFromResult(focusClick);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			const setResult = await executeSetText("qa-set-text", { text: "pi-computer-use set_text QA" }, undefined, undefined, ctx);
+			ensureAxExecution("set_text", setResult, ["ax_set_value"]);
+			latest = updateLatestFromResult(setResult);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			const keyResult = await executeKeypress("qa-keypress", { keys: ["Enter"] }, undefined, undefined, ctx);
+			ensureExecutionStrategy("keypress", keyResult, "raw_keypress");
+			latest = updateLatestFromResult(keyResult);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			const moveResult = await executeMoveMouse("qa-move-mouse", { x: safeX, y: safeY, captureId: latestCaptureId }, undefined, undefined, ctx);
+			ensureExecutionStrategy("move_mouse", moveResult, "coordinate_event_move");
+			latest = updateLatestFromResult(moveResult);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			const doubleClickResult = await executeDoubleClick("qa-double-click", { x: safeX, y: safeY, captureId: latestCaptureId }, undefined, undefined, ctx);
+			ensureExecutionStrategy("double_click", doubleClickResult, "coordinate_event_double_click");
+			latest = updateLatestFromResult(doubleClickResult);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			const dragResult = await executeDrag(
+				"qa-drag",
+				{
+					path: [
+						[safeX, safeY],
+						[Math.min(latestWidth - 4, safeX + 18), Math.min(latestHeight - 4, safeY + 18)],
+					],
+					captureId: latestCaptureId,
+				},
+				undefined,
+				undefined,
+				ctx,
+			);
+			ensureExecutionStrategy("drag", dragResult, "coordinate_event_drag");
+			latest = updateLatestFromResult(dragResult);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			const scrollResult = await executeScroll("qa-scroll", { x: safeX, y: safeY, scrollY: 120, captureId: latestCaptureId }, undefined, undefined, ctx);
+			ensureExecutionStrategy("scroll", scrollResult, "coordinate_event_scroll");
+			latest = updateLatestFromResult(scrollResult);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			const batchResult = await executeComputerActions(
+				"qa-computer-actions",
+				{
+					captureId: latestCaptureId,
+					actions: [
+						{ type: "click", x: safeX, y: safeY },
+						{ type: "set_text", text: "pi-computer-use batch QA" },
+						{ type: "keypress", keys: ["Enter"] },
+						{ type: "type_text", text: "batched insert" },
+					],
+				},
+				undefined,
+				undefined,
+				ctx,
+			);
+			ensureExecutionStrategy("computer_actions", batchResult, "batch");
+			assert(batchResult.details?.execution?.actionCount === 4, "computer_actions: expected actionCount=4");
+			assert(batchResult.details?.execution?.completedActionCount === 4, "computer_actions: expected completedActionCount=4");
+			assert(Array.isArray(batchResult.details?.execution?.actions) && batchResult.details.execution.actions.length === 4, "computer_actions: expected four per-action traces");
+			latest = updateLatestFromResult(batchResult);
+			latestCaptureId = latest.captureId;
+			latestWidth = latest.width;
+			latestHeight = latest.height;
+			latestDetails = latest.details;
+
+			await assertUserContextPreserved("expanded action tools", userFrontmostApp, baselineMouse);
+			pass("Pointer, keyboard, and batch tools", "set_text, keypress, move_mouse, double_click, drag, scroll, and computer_actions");
+		}
+	} catch (error) {
+		fail("Pointer, keyboard, and batch tools", error);
+	}
 
 	try {
 		const waitResult = await executeWait("qa-wait", {}, undefined, undefined, ctx);
@@ -711,42 +880,60 @@ async function main() {
 		baselineUserContext = getUserContext();
 		baselineMouse = getMousePosition();
 
-		if (!STRICT_AX_MODE) {
-			const textTarget = { x: centerX(), y: centerY() };
-			const clickResult = await executeClick(
-				"qa-focus-text",
-				{ x: textTarget.x, y: textTarget.y },
-				undefined,
-				undefined,
-				ctx,
-			);
-			const clickNorm = ensureImageResult("focus click", clickResult);
-			latestCaptureId = clickNorm.captureId;
-			latestWidth = clickNorm.width;
-			latestHeight = clickNorm.height;
-			latestDetails = clickResult.details;
-			await assertUserContextPreserved("focus click", userFrontmostApp, baselineMouse);
-		}
+		const textInputShot = await executeScreenshot("qa-text-input-textedit", { app: "TextEdit" }, undefined, undefined, ctx);
+		let textLatest = updateLatestFromResult(textInputShot);
+		latestCaptureId = textLatest.captureId;
+		latestWidth = textLatest.width;
+		latestHeight = textLatest.height;
+		latestDetails = textLatest.details;
 
-		const sentinel = `PI_CLIPBOARD_SENTINEL_${Date.now()}`;
-		runCommand("bash", ["-lc", `printf %s '${sentinel.replace(/'/g, "'\\''")}' | pbcopy`]);
-
-		const typeResult = await executeTypeText(
-			"qa-type",
-			{ text: "pi-computer-use manual QA text" },
+		const textTarget = (() => {
+			try {
+				return axFindTextInput(latestDetails);
+			} catch {
+				return { x: centerX(), y: centerY() };
+			}
+		})();
+		const clickResult = await executeClick(
+			"qa-focus-text",
+			{ x: textTarget.x, y: textTarget.y, captureId: latestCaptureId },
 			undefined,
 			undefined,
 			ctx,
 		);
-		const typeNorm = ensureImageResult("type_text", typeResult);
-		latestCaptureId = typeNorm.captureId;
-		latestWidth = typeNorm.width;
-		latestHeight = typeNorm.height;
-		latestDetails = typeResult.details;
-		await assertUserContextPreserved("type_text", userFrontmostApp, baselineMouse);
 		if (STRICT_AX_MODE) {
-			ensureAxExecution("type_text", typeResult, ["ax_set_value"]);
-			ensureStrictInvariants("type_text", typeResult, baselineUserContext, baselineMouse);
+			ensureAxExecution("focus click", clickResult, ["ax_press", "ax_focus"]);
+		}
+		textLatest = updateLatestFromResult(clickResult);
+		latestCaptureId = textLatest.captureId;
+		latestWidth = textLatest.width;
+		latestHeight = textLatest.height;
+		latestDetails = textLatest.details;
+		await assertUserContextPreserved("focus click", userFrontmostApp, baselineMouse);
+
+		const sentinel = `PI_CLIPBOARD_SENTINEL_${Date.now()}`;
+		runCommand("bash", ["-lc", `printf %s '${sentinel.replace(/'/g, "'\\''")}' | pbcopy`]);
+
+		const textResult = STRICT_AX_MODE
+			? await executeSetText("qa-set-text-strict", { text: "pi-computer-use manual QA text" }, undefined, undefined, ctx)
+			: await executeTypeText(
+					"qa-type",
+					{ text: "pi-computer-use manual QA text" },
+					undefined,
+					undefined,
+					ctx,
+				);
+		const textNorm = ensureImageResult(STRICT_AX_MODE ? "set_text" : "type_text", textResult);
+		latestCaptureId = textNorm.captureId;
+		latestWidth = textNorm.width;
+		latestHeight = textNorm.height;
+		latestDetails = textResult.details;
+		await assertUserContextPreserved(STRICT_AX_MODE ? "set_text" : "type_text", userFrontmostApp, baselineMouse);
+		if (STRICT_AX_MODE) {
+			ensureAxExecution("set_text", textResult, ["ax_set_value"]);
+			ensureStrictInvariants("set_text", textResult, baselineUserContext, baselineMouse);
+		} else {
+			ensureExecutionStrategy("type_text", textResult, "raw_key_text");
 		}
 
 		const clipboardAfter = runCommand("pbpaste", []);
@@ -754,9 +941,9 @@ async function main() {
 			clipboardAfter === sentinel,
 			`Clipboard restore failed. Expected '${sentinel}', got '${clipboardAfter.slice(0, 80)}'`,
 		);
-		pass("Type text + clipboard restore", STRICT_AX_MODE ? "type_text succeeded via AX metadata and clipboard remained intact" : "type_text succeeded and clipboard restored");
+		pass("Text input primitives + clipboard", STRICT_AX_MODE ? "set_text succeeded via AX metadata and clipboard remained intact" : "type_text inserted text and clipboard remained intact");
 	} catch (error) {
-		fail("Type text + clipboard restore", error);
+		fail("Text input primitives + clipboard", error);
 		if (STRICT_AX_MODE) {
 			try {
 				const ax = axDescribeAtPoint(Number(latestDetails?.target?.windowId), Number(latestDetails?.target?.pid), centerX(), centerY(), latestWidth, latestHeight);

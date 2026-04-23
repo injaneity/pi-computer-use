@@ -19,6 +19,7 @@ Use it to answer four questions before and after changes:
    - baseline/frontmost
    - native apps (`TextEdit`, `Finder`, `Reminders`)
    - browsers (`Safari`, `Chrome`, `Firefox`, `Helium`, etc. when available)
+   - expanded TextEdit action surface (`set_text`, raw keyboard/pointer primitives, and `computer_actions`)
 
 ## Commands
 
@@ -66,9 +67,15 @@ Important metrics:
 - `axExecutionRatio`
 - `navigationAxOnlyRatio`
 - `targetingAxOnlyRatio`
+- `primitivePassRatio`
+- `batchPassRatio`
 - `avgLatencyMs`
 - `avgNavigationLatencyMs`
 - `avgTargetingLatencyMs`
+- `avgPrimitiveLatencyMs`
+- `avgBatchLatencyMs`
+
+`axExecutionRatio` and `targetingAxOnlyRatio` intentionally track AX-first targeting actions (`click` and `set_text`). Raw primitives such as `keypress`, `drag`, and `scroll` are measured separately so improved coverage does not hide AX-first regressions.
 
 Current benchmark goals are defined in `benchmarks/config.json`:
 

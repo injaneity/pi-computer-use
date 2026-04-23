@@ -114,6 +114,18 @@ interface ExecutionTrace {
 	axSucceeded?: boolean;
 	fallbackUsed?: boolean;
 	actionCount?: number;
+	completedActionCount?: number;
+	actions?: BatchActionTrace[];
+}
+
+interface BatchActionTrace {
+	index: number;
+	type: string;
+	strategy: ExecutionTrace["strategy"];
+	durationMs: number;
+	axAttempted?: boolean;
+	axSucceeded?: boolean;
+	fallbackUsed?: boolean;
 }
 
 export interface ComputerUseDetails {
@@ -2113,6 +2125,7 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 		let axAttempted = false;
 		let axSucceeded = false;
 		let fallbackUsed = false;
+		const actionTraces: BatchActionTrace[] = [];
 
 		for (let index = 0; index < actions.length; index += 1) {
 			const action = actions[index];
@@ -2123,12 +2136,22 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 				throw new Error(STALE_CAPTURE_ERROR);
 			}
 			let trace: ExecutionTrace;
+			const startedAt = Date.now();
 			try {
 				trace = await dispatchComputerAction(action, capture, readyTarget, signal);
 			} catch (error) {
 				const actionType = (action as any)?.type ?? "unknown";
 				throw new Error(`computer_actions action ${index + 1} (${actionType}) failed: ${normalizeError(error).message}`);
 			}
+			actionTraces.push({
+				index: index + 1,
+				type: action.type,
+				strategy: trace.strategy,
+				durationMs: Math.max(0, Date.now() - startedAt),
+				axAttempted: trace.axAttempted,
+				axSucceeded: trace.axSucceeded,
+				fallbackUsed: trace.fallbackUsed,
+			});
 			if (actionMayChangeState(action)) {
 				stateMayHaveChanged = true;
 			}
@@ -2142,11 +2165,21 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 
 		await sleep(ACTION_SETTLE_MS, signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
-		const execution: ExecutionTrace = { strategy: "batch", actionCount: actions.length, axAttempted, axSucceeded, fallbackUsed };
+		const execution: ExecutionTrace = {
+			strategy: "batch",
+			actionCount: actions.length,
+			completedActionCount: actionTraces.length,
+			actions: actionTraces,
+			axAttempted,
+			axSucceeded,
+			fallbackUsed,
+		};
 		const summary = `Executed ${actions.length} computer action${actions.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("computer_actions", summary, captureResult, execution, signal);
 	} catch (error) {
 		if (stateMayHaveChanged) {
+			await sleep(ACTION_SETTLE_MS, signal).catch(() => undefined);
+			await captureCurrentTarget(signal, activation).catch(() => undefined);
 			throw addRefreshHint(error);
 		}
 		throw normalizeError(error);
