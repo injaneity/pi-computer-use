@@ -209,6 +209,12 @@ interface FocusedElementResult {
 	canSetValue?: boolean;
 }
 
+interface FocusWindowResult {
+	focused: boolean;
+	alreadyFocused?: boolean;
+	reason?: string;
+}
+
 interface AxPressAtPointResult {
 	pressed: boolean;
 	reason?: string;
@@ -1026,6 +1032,19 @@ async function restoreUserFocus(target: FrontmostResult, signal?: AbortSignal): 
 	await runAppleScript([`tell ${activateTarget} to activate`], signal).catch(() => undefined);
 }
 
+async function focusControlledWindow(target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
+	const result = await bridgeCommand<FocusWindowResult>(
+		"focusWindow",
+		{ pid: target.pid, windowId: target.windowId },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	);
+	if (!toBoolean(result?.focused)) {
+		throw new Error(
+			`Unable to focus controlled window '${target.windowTitle}' before input${result?.reason ? `: ${result.reason}` : "."}`,
+		);
+	}
+}
+
 function isBrowserApp(appName: string, bundleId?: string): boolean {
 	return BROWSER_BUNDLE_IDS.has(bundleId ?? "") || BROWSER_APP_NAMES.has(normalizeText(appName));
 }
@@ -1782,6 +1801,7 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 	if (STRICT_AX_MODE) {
 		strictModeBlock("Raw text insertion is not AX-only. Use set_text for AX value replacement.");
 	}
+	await focusControlledWindow(target, signal);
 	await bridgeCommand(
 		"typeText",
 		{ text, pid: target.pid },
@@ -1791,9 +1811,10 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 }
 
 async function dispatchSetText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
+	await focusControlledWindow(target, signal);
 	const focused: FocusedElementResult = await bridgeCommand<FocusedElementResult>(
 		"focusedElement",
-		{ pid: target.pid },
+		{ pid: target.pid, windowId: target.windowId },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	).catch(() => ({ exists: false } as FocusedElementResult));
 
@@ -1820,6 +1841,7 @@ async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, 
 	if (keys.length === 0) {
 		throw new Error("keypress.keys must contain at least one key.");
 	}
+	await focusControlledWindow(target, signal);
 	await bridgeCommand("keyPress", { keys, pid: target.pid }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
 	return { strategy: "raw_keypress", axAttempted: false, axSucceeded: false, fallbackUsed: false };
 }

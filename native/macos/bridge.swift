@@ -296,6 +296,8 @@ final class Bridge {
 			return endInputSuppression()
 		case "restoreUserFocus":
 			return try restoreUserFocus(request)
+		case "focusWindow":
+			return try focusWindow(request)
 		case "screenshot":
 			return try screenshot(request)
 		case "mouseClick":
@@ -549,6 +551,36 @@ final class Bridge {
 			"appName": app.localizedName ?? "Unknown App",
 			"windowTitle": restoredWindowTitle,
 		]
+	}
+
+	private func focusWindow(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		guard let window = windowElement(pid: pid, windowId: windowId) else {
+			return ["focused": false, "reason": "window_not_found"]
+		}
+
+		let appElement = AXUIElementCreateApplication(pid)
+		if let focusedWindow = copyAttribute(appElement, attribute: kAXFocusedWindowAttribute as CFString).flatMap(asAXElement),
+			sameElement(focusedWindow, window)
+		{
+			return ["focused": true, "alreadyFocused": true]
+		}
+
+		let setMainStatus = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+		let setFocusedStatus = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+		let raiseStatus = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+		let focused = setMainStatus == .success || setFocusedStatus == .success || raiseStatus == .success
+		var result: [String: Any] = [
+			"focused": focused,
+			"setMain": setMainStatus == .success,
+			"setFocused": setFocusedStatus == .success,
+			"raised": raiseStatus == .success,
+		]
+		if !focused {
+			result["reason"] = "focus_failed"
+		}
+		return result
 	}
 
 	private func scoreWindow(_ window: [String: Any]) -> Int {
@@ -1085,7 +1117,7 @@ final class Bridge {
 				return window
 			}
 		}
-		return windows.first
+		return nil
 	}
 
 	private func findDescendant(startingAt root: AXUIElement, maxDepth: Int, predicate: (AXUIElement) -> Bool) -> AXUIElement? {
@@ -1277,6 +1309,23 @@ final class Bridge {
 		return asAXElement(value)
 	}
 
+	private func sameElement(_ lhs: AXUIElement, _ rhs: AXUIElement) -> Bool {
+		CFEqual(lhs as CFTypeRef, rhs as CFTypeRef)
+	}
+
+	private func isElement(_ element: AXUIElement, descendantOf ancestor: AXUIElement) -> Bool {
+		var current: AXUIElement? = element
+		var depth = 0
+		while let candidate = current, depth < 20 {
+			if sameElement(candidate, ancestor) {
+				return true
+			}
+			current = parentElement(candidate)
+			depth += 1
+		}
+		return false
+	}
+
 	private func supportsPressAction(_ element: AXUIElement) -> Bool {
 		supportsAction(element, action: kAXPressAction as CFString)
 	}
@@ -1295,11 +1344,20 @@ final class Bridge {
 
 	private func focusedElement(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
 		let app = AXUIElementCreateApplication(pid)
 		guard let focusedValue = copyAttribute(app, attribute: kAXFocusedUIElementAttribute as CFString),
 			let element = asAXElement(focusedValue)
 		else {
 			return ["exists": false]
+		}
+		if let windowId {
+			guard let window = windowElement(pid: pid, windowId: windowId) else {
+				return ["exists": false, "reason": "window_not_found"]
+			}
+			guard isElement(element, descendantOf: window) else {
+				return ["exists": false, "reason": "focused_element_outside_window"]
+			}
 		}
 
 		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
