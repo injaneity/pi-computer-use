@@ -2101,6 +2101,17 @@ function isCommandL(keys: string[]): boolean {
 
 async function focusBrowserAddressField(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
 	if (!isCommandL(keys) || !isBrowserApp(target.appName, target.bundleId)) return false;
+
+	const focusedTextInput = await bridgeCommand<{ focused?: boolean; elementRef?: string }>(
+		"axFocusTextInput",
+		{ pid: target.pid, windowId: target.windowId },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch(() => undefined);
+	if (toBoolean(focusedTextInput?.focused)) {
+		runtimeState.allowNextTypeTextAxReplacement = true;
+		return true;
+	}
+
 	const refreshed = parseAxTargets(
 		await bridgeCommand(
 			"axListTargets",
