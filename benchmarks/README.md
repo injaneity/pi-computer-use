@@ -4,6 +4,8 @@ This directory contains the contributor-facing benchmark harness for `pi-compute
 
 Use it before and after changes that affect semantic targeting, image fallback policy, AX execution, browser handling, or native helper behavior.
 
+For general local setup and helper build instructions, see [../docs/development.md](../docs/development.md).
+
 ## What it measures
 
 The benchmark answers four questions:

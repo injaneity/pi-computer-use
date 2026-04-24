@@ -8,6 +8,8 @@ Thanks for your interest in contributing.
 
 Documentation-only changes are welcome when they make setup, install, local development, benchmarking, or contribution workflow easier to follow.
 
+For detailed local setup, helper builds, and validation, see [docs/development.md](./docs/development.md).
+
 ## Before you start
 
 Please open an issue first.
@@ -60,6 +62,8 @@ npm run benchmark:qa:full
 ```
 
 If you are changing semantic targeting, AX behavior, fallback policy, browser handling, or native helper behavior, save benchmark output and compare against a baseline. See [benchmarks/README.md](./benchmarks/README.md).
+
+For setup or runtime failures, see [docs/troubleshooting.md](./docs/troubleshooting.md).
 
 ## Pull request checklist
 
