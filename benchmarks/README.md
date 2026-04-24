@@ -2,7 +2,11 @@
 
 This directory contains the contributor-facing benchmark harness for `pi-computer-use`.
 
-Use it to answer four questions before and after changes:
+Use it before and after changes that affect semantic targeting, image fallback policy, AX execution, browser handling, or native helper behavior.
+
+## What it measures
+
+The benchmark answers four questions:
 
 1. **AX-only efficacy**
    - navigation efficacy: can `screenshot`/`wait` return semantic AX state without vision fallback?
@@ -23,7 +27,7 @@ Use it to answer four questions before and after changes:
 
 ## Commands
 
-Interactive but non-intrusive default:
+Run the interactive but non-intrusive default:
 
 ```bash
 npx -y tsx benchmarks/qa.ts --allow-foreground-qa
@@ -63,23 +67,30 @@ The benchmark prints a JSON report containing:
 Important metrics:
 
 - `axOnlyRatio`
+- `coreAxOnlyRatio`
 - `visionFallbackRatio`
+- `coreVisionFallbackRatio`
 - `axExecutionRatio`
+- `stealthCompatibleRatio`
 - `navigationAxOnlyRatio`
 - `targetingAxOnlyRatio`
 - `primitivePassRatio`
 - `batchPassRatio`
+- `capabilityPassRatio`
+- `capabilityStealthRatio`
 - `avgLatencyMs`
 - `avgNavigationLatencyMs`
 - `avgTargetingLatencyMs`
 - `avgPrimitiveLatencyMs`
 - `avgBatchLatencyMs`
 
-`axExecutionRatio` and `targetingAxOnlyRatio` intentionally track AX-first targeting actions (`click` and `set_text`). Raw primitives such as `keypress`, `drag`, and `scroll` are measured separately so improved coverage does not hide AX-first regressions.
+`core*` metrics exclude frontier capability probes so experimental coverage does not hide regressions in the main user path.
+
+`axExecutionRatio` and `targetingAxOnlyRatio` intentionally track AX-first targeting actions (`click` and `set_text`). Raw primitives such as `keypress`, `drag`, and `scroll` are measured separately so improved primitive coverage does not hide AX-first targeting regressions.
 
 Current benchmark goals are defined in `benchmarks/config.json`:
 
-- `axOnlyRatio >= 0.8`
+- `coreAxOnlyRatio >= 0.8`
 - `avgLatencyMs <= 7500`
 - `avgTargetingLatencyMs <= 4000`
 
@@ -124,3 +135,5 @@ npx -y tsx benchmarks/qa.ts \
 4. Only claim improvement if the benchmark shows it.
 
 This benchmark should be treated as the official gate for semantic-targeting changes, fallback-policy changes, and AX-vs-vision efficiency claims.
+
+For documentation-only changes, running this benchmark is usually not necessary.
