@@ -115,6 +115,7 @@ interface ExecutionTrace {
 		| "coordinate_event_scroll"
 		| "ax_scroll"
 		| "ax_action"
+		| "browser_open_location"
 		| "ax_set_value"
 		| "raw_keypress"
 		| "raw_key_text";
@@ -313,6 +314,7 @@ interface RuntimeState {
 	currentCapture?: CurrentCapture;
 	currentAxTargets?: AxTarget[];
 	allowNextTypeTextAxReplacement?: boolean;
+	pendingBrowserAddressText?: string;
 	helper?: ChildProcessWithoutNullStreams;
 	helperStdoutBuffer: string;
 	pending: Map<string, PendingRequest>;
@@ -479,6 +481,7 @@ function settleMsForExecution(execution: ExecutionTrace): number {
 			case "ax_set_value":
 				return 80;
 			case "ax_action":
+			case "browser_open_location":
 			case "ax_scroll":
 				return 120;
 			case "ax_press":
@@ -1244,6 +1247,31 @@ async function runAppleScript(lines: string[], signal?: AbortSignal): Promise<vo
 	await runProcess("osascript", args, BROWSER_WINDOW_OPEN_TIMEOUT_MS, signal);
 }
 
+function browserOpenLocationAppleScript(target: ResolvedTarget, url: string): string[] | undefined {
+	if (!isBrowserApp(target.appName, target.bundleId)) return undefined;
+	const appTarget = target.bundleId
+		? `application id "${escapeAppleScriptString(target.bundleId)}"`
+		: `application "${escapeAppleScriptString(target.appName)}"`;
+	const escapedUrl = escapeAppleScriptString(url);
+	const normalizedName = normalizeText(target.appName);
+	if (target.bundleId === "com.apple.Safari" || normalizedName === "safari") {
+		return [`tell ${appTarget} to set URL of front document to "${escapedUrl}"`];
+	}
+	if (CHROME_FAMILY_BUNDLE_IDS.has(target.bundleId ?? "") || CHROME_FAMILY_APP_NAMES.has(normalizedName)) {
+		return [`tell ${appTarget} to set URL of active tab of front window to "${escapedUrl}"`];
+	}
+	return undefined;
+}
+
+async function openBrowserLocationFromPendingAddress(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
+	if (!runtimeState.pendingBrowserAddressText || !["enter", "return"].includes(keys[0]?.trim().toLowerCase())) return false;
+	const script = browserOpenLocationAppleScript(target, runtimeState.pendingBrowserAddressText);
+	if (!script) return false;
+	runtimeState.pendingBrowserAddressText = undefined;
+	await runAppleScript(script, signal);
+	return true;
+}
+
 function findNewWindow(before: HelperWindow[], after: HelperWindow[]): HelperWindow | undefined {
 	const previous = new Set(before.map(windowIdentity));
 	const added = after.filter((window) => !previous.has(windowIdentity(window)));
@@ -1970,6 +1998,9 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 		const focusedElementRef = await focusedTextElementRef(target, signal);
 		if (focusedElementRef) {
 			await setAxValue(focusedElementRef, text, signal);
+			if (isBrowserApp(target.appName, target.bundleId)) {
+				runtimeState.pendingBrowserAddressText = text;
+			}
 			return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 		}
 	}
@@ -2211,6 +2242,11 @@ async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, 
 	const keys = normalizeKeyList(params.keys);
 	if (keys.length === 0) {
 		throw new Error("keypress.keys must contain at least one key.");
+	}
+
+	const openedPendingBrowserLocation = await openBrowserLocationFromPendingAddress(keys, target, signal);
+	if (openedPendingBrowserLocation) {
+		return executionTrace("browser_open_location", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 	}
 
 	const focusedAddressViaAX = await focusBrowserAddressField(keys, target, signal);
