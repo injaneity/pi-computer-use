@@ -276,6 +276,16 @@ function preferredTextTarget(details: any): any | undefined {
 	);
 }
 
+function preferredScrollTarget(details: any): any | undefined {
+	const targets = Array.isArray(details?.axTargets) ? details.axTargets : [];
+	return targets.find((target: any) => target?.canScroll === true && typeof target?.ref === "string");
+}
+
+function preferredAdjustTarget(details: any): any | undefined {
+	const targets = Array.isArray(details?.axTargets) ? details.axTargets : [];
+	return targets.find((target: any) => (target?.canIncrement === true || target?.canDecrement === true) && typeof target?.ref === "string");
+}
+
 function captureCenter(details: any): { x: number; y: number } {
 	const width = Math.max(20, Number(details?.capture?.width ?? 100));
 	const height = Math.max(20, Number(details?.capture?.height ?? 100));
@@ -432,6 +442,14 @@ async function main() {
 			return await executeScreenshot(`bench-${item.app}-shot`, { app: item.app }, undefined, undefined, ctx);
 		});
 		if (
+			STRICT_AX_MODE &&
+			item.category === "browser" &&
+			shot.record.status === "FAIL" &&
+			/String AX mode cannot create an isolated browser window|Strict AX mode cannot create an isolated browser window/.test(String(shot.record.details ?? ""))
+		) {
+			shot.record = { ...shot.record, status: "SKIP", details: "Strict AX mode requires an already-open dedicated browser window" };
+		}
+		if (
 			shot.record.status === "PASS" &&
 			item.app === "Finder" &&
 			shot.record.axTargets === 0 &&
@@ -518,7 +536,39 @@ async function main() {
 				} else {
 					records.push({ name: "TextEdit-batch-ax", category: item.category, tool: "computer_actions", app: item.app, status: "SKIP", details: "No AX ref available for strict batch" });
 				}
-				for (const tool of ["double_click", "move_mouse", "drag", "scroll", "keypress", "type_text"] as const) {
+
+				const scrollTarget = preferredScrollTarget(currentDetails);
+				if (scrollTarget?.ref) {
+					await runTextEditCase("TextEdit-scroll-ax", "scroll", async () => {
+						return await executeScroll("bench-TextEdit-scroll-ax", { ref: scrollTarget.ref, scrollY: 120, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
+					});
+				} else {
+					records.push({ name: "TextEdit-scroll-ax", category: item.category, tool: "scroll", app: item.app, status: "SKIP", details: "No AX scroll ref available" });
+				}
+
+				const adjustTarget = preferredAdjustTarget(currentDetails);
+				if (adjustTarget?.ref) {
+					await runTextEditCase("TextEdit-drag-adjust-ax", "drag", async () => {
+						return await executeDrag(
+							"bench-TextEdit-drag-adjust-ax",
+							{
+								ref: adjustTarget.ref,
+								path: [
+									[point.x, point.y],
+									[Math.min(Number(currentDetails.capture.width) - 4, point.x + 24), point.y],
+								],
+								captureId: currentDetails.capture.captureId,
+							},
+							undefined,
+							undefined,
+							ctx,
+						);
+					});
+				} else {
+					records.push({ name: "TextEdit-drag-adjust-ax", category: item.category, tool: "drag", app: item.app, status: "SKIP", details: "No AX adjustable ref available" });
+				}
+
+				for (const tool of ["double_click", "move_mouse", "keypress", "type_text"] as const) {
 					records.push({ name: `TextEdit-${tool}`, category: item.category, tool, app: item.app, status: "SKIP", details: "Strict AX mode intentionally blocks raw primitive coverage" });
 				}
 			} else {
