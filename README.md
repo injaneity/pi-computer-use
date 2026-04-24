@@ -1,8 +1,10 @@
 # pi-computer-use
 
-![pi-computer-use](./assets/img.jpg)
+<div align="center">
+    <img src="./assets/logo.png" width="75%">
+</div>
 
-Codex-style computer use for Pi on macOS with AX-first semantic targeting, semantic state updates, and image fallback when semantic coverage is weak.
+Codex-style computer use for [Pi](https://pi.dev/) on macOS with AX-first semantic targeting, semantic state updates, and image fallback when semantic coverage is weak.
 
 ## Latest Release
 
@@ -12,7 +14,12 @@ Install:
 - GitHub release: `pi install git:github.com/injaneity/pi-computer-use#v0.1.7`.
 - npm package: `npm install @injaneity/pi-computer-use@0.1.7`.
 
+> [!NOTE]  
 > For setup, development, benchmarks, and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Screenshots
+
+![pi-computer-use](./assets/img.jpg)
 
 ## Features
 
