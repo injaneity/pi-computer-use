@@ -167,6 +167,14 @@ export interface ComputerUseDetails {
 		browser_use: boolean;
 		stealth_mode: boolean;
 	};
+	imageReason?:
+		| "fallback_recovery"
+		| "no_ax_targets"
+		| "sparse_ax_targets"
+		| "weak_ax_targets"
+		| "unlabeled_ax_targets"
+		| "duplicated_ax_labels"
+		| "browser_wait_verification";
 }
 
 interface HelperApp {
@@ -676,15 +684,19 @@ function axTargetByRef(ref: string): AxTarget {
 	return axTarget;
 }
 
-function imageFallbackReason(tool: string, result: CaptureResult, execution: ExecutionTrace): string | undefined {
+function imageFallbackReason(
+	tool: string,
+	result: CaptureResult,
+	execution: ExecutionTrace,
+): { reason: NonNullable<ComputerUseDetails["imageReason"]>; message: string } | undefined {
 	if (execution.fallbackUsed === true) {
-		return "The action used a fallback path, so an image is attached for recovery."
+		return { reason: "fallback_recovery", message: "The action used a fallback path, so an image is attached for recovery." }
 	}
 	if (result.axTargets.length === 0) {
-		return "No useful AX targets were found, so an image is attached for vision fallback."
+		return { reason: "no_ax_targets", message: "No useful AX targets were found, so an image is attached for vision fallback." }
 	}
 	if (result.axTargets.length < 3) {
-		return "Only a few AX targets were found, so an image is attached for extra context."
+		return { reason: "sparse_ax_targets", message: "Only a few AX targets were found, so an image is attached for extra context." }
 	}
 
 	const labels = result.axTargets.map((target) => normalizeText(target.title || target.description || target.value)).filter(Boolean)
@@ -695,19 +707,19 @@ function imageFallbackReason(tool: string, result: CaptureResult, execution: Exe
 		return strongTextRoles.has(target.role) || (!!label && (target.actions.includes("AXPress") || target.role === "AXLink" || target.role === "AXButton"))
 	})
 	if (strongTargets.length === 0) {
-		return "No strong AX targets were found, so an image is attached for vision fallback."
+		return { reason: "weak_ax_targets", message: "No strong AX targets were found, so an image is attached for vision fallback." }
 	}
 	if (result.axTargets.length < 3 && !strongTargets.some((target) => strongTextRoles.has(target.role))) {
-		return "Only a few AX targets were found, so an image is attached for extra context."
+		return { reason: "sparse_ax_targets", message: "Only a few AX targets were found, so an image is attached for extra context." }
 	}
 	if (result.axTargets.length >= 3 && unlabeledCount * 2 > result.axTargets.length) {
-		return "Most AX targets are unlabeled, so an image is attached for vision fallback."
+		return { reason: "unlabeled_ax_targets", message: "Most AX targets are unlabeled, so an image is attached for vision fallback." }
 	}
 	if (labels.length > 3 && new Set(labels).size * 2 <= labels.length) {
-		return "AX target labels are highly duplicated, so an image is attached for extra context."
+		return { reason: "duplicated_ax_labels", message: "AX target labels are highly duplicated, so an image is attached for extra context." }
 	}
 	if (tool === "wait" && isBrowserApp(result.target.appName, result.target.bundleId)) {
-		return "Browser content may have changed visually during wait, so an image is attached for fallback."
+		return { reason: "browser_wait_verification", message: "Browser content may have changed visually during wait, so an image is attached for fallback." }
 	}
 	return undefined
 }
@@ -1743,11 +1755,12 @@ async function buildToolResult(
 		activation: result.activation,
 		execution,
 		config: getComputerUseConfig(),
+		imageReason: fallbackReason?.reason,
 	};
 	const axTargetText = result.axTargets.length
 		? `\n\nPrefer these AX targets over coordinate clicks or focus-based text replacement when one matches your intent:\n${result.axTargets.map(formatAxTargetLabel).join("\n")}`
 		: "";
-	const fallbackText = fallbackReason ? `\n\n${fallbackReason}` : "";
+	const fallbackText = fallbackReason ? `\n\n${fallbackReason.message}` : "";
 	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${axTargetText}${fallbackText}` }];
 	if (fallbackReason) {
 		content.push({ type: "image", data: result.image!.pngBase64, mimeType: "image/png" });
