@@ -309,12 +309,18 @@ interface AxTarget {
 	score?: number;
 }
 
+interface PendingBrowserAddress {
+	text: string;
+	pid: number;
+	windowId: number;
+}
+
 interface RuntimeState {
 	currentTarget?: CurrentTarget;
 	currentCapture?: CurrentCapture;
 	currentAxTargets?: AxTarget[];
 	allowNextTypeTextAxReplacement?: boolean;
-	pendingBrowserAddressText?: string;
+	pendingBrowserAddress?: PendingBrowserAddress;
 	helper?: ChildProcessWithoutNullStreams;
 	helperStdoutBuffer: string;
 	pending: Map<string, PendingRequest>;
@@ -1264,10 +1270,20 @@ function browserOpenLocationAppleScript(target: ResolvedTarget, url: string): st
 }
 
 async function openBrowserLocationFromPendingAddress(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
-	if (!runtimeState.pendingBrowserAddressText || !["enter", "return"].includes(keys[0]?.trim().toLowerCase())) return false;
-	const script = browserOpenLocationAppleScript(target, runtimeState.pendingBrowserAddressText);
+	const isEnter = keys.length === 1 && ["enter", "return"].includes(keys[0]?.trim().toLowerCase());
+	const pending = runtimeState.pendingBrowserAddress;
+	if (!pending) return false;
+	if (!isEnter) {
+		runtimeState.pendingBrowserAddress = undefined;
+		return false;
+	}
+	if (pending.pid !== target.pid || pending.windowId !== target.windowId) {
+		runtimeState.pendingBrowserAddress = undefined;
+		return false;
+	}
+	const script = browserOpenLocationAppleScript(target, pending.text);
 	if (!script) return false;
-	runtimeState.pendingBrowserAddressText = undefined;
+	runtimeState.pendingBrowserAddress = undefined;
 	await runAppleScript(script, signal);
 	return true;
 }
@@ -1999,7 +2015,7 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 		if (focusedElementRef) {
 			await setAxValue(focusedElementRef, text, signal);
 			if (isBrowserApp(target.appName, target.bundleId)) {
-				runtimeState.pendingBrowserAddressText = text;
+				runtimeState.pendingBrowserAddress = { text, pid: target.pid, windowId: target.windowId };
 			}
 			return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 		}
