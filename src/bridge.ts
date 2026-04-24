@@ -2086,6 +2086,42 @@ function semanticActionsForKeys(keys: string[]): string[] {
 	return [];
 }
 
+function windowButtonForSemanticKey(keys: string[], targets: AxTarget[]): AxTarget | undefined {
+	if (keys.length !== 1) return undefined;
+	const key = keys[0].trim().toLowerCase();
+	const buttons = targets.filter((target) => target.canPress && target.role === "AXButton");
+	if (["escape", "esc"].includes(key)) {
+		return buttons.find((target) => ["cancel", "don't save", "dont save"].includes(axTargetLabelKey(target)));
+	}
+	if (["enter", "return"].includes(key)) {
+		return (
+			buttons.find((target) => normalizeText(target.subrole).includes("default")) ??
+			buttons.find((target) => ["ok", "done", "save", "add", "continue", "open", "choose"].includes(axTargetLabelKey(target)))
+		);
+	}
+	return undefined;
+}
+
+async function tryWindowAxKeyAction(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
+	const refreshed = parseAxTargets(
+		await bridgeCommand(
+			"axListTargets",
+			{ pid: target.pid, windowId: target.windowId, limit: 50 },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		).catch(() => []),
+	);
+	if (!refreshed.length) return false;
+	runtimeState.currentAxTargets = refreshed;
+	const button = windowButtonForSemanticKey(keys, refreshed);
+	if (!button) return false;
+	const result = await bridgeCommand<{ performed?: boolean }>(
+		"axPerformActionElement",
+		{ elementRef: button.elementRef, pid: target.pid, action: "press" },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch(() => undefined);
+	return toBoolean(result?.performed);
+}
+
 async function tryFocusedAxKeyAction(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
 	const actions = semanticActionsForKeys(keys);
 	if (!actions.length) return false;
@@ -2096,7 +2132,7 @@ async function tryFocusedAxKeyAction(keys: string[], target: ResolvedTarget, sig
 			{ pid: target.pid, windowId: target.windowId },
 			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 		).catch(() => undefined);
-		if (!rawFocused?.exists || !rawFocused.elementRef) return false;
+		if (!rawFocused?.exists || !rawFocused.elementRef) return await tryWindowAxKeyAction(keys, target, signal);
 		for (const action of actions) {
 			const result = await bridgeCommand<{ performed?: boolean }>(
 				"axPerformActionElement",
@@ -2105,7 +2141,7 @@ async function tryFocusedAxKeyAction(keys: string[], target: ResolvedTarget, sig
 			).catch(() => undefined);
 			if (toBoolean(result?.performed)) return true;
 		}
-		return false;
+		return await tryWindowAxKeyAction(keys, target, signal);
 	}
 	for (const action of actions) {
 		const result = await bridgeCommand<{ performed?: boolean }>(
@@ -2115,7 +2151,7 @@ async function tryFocusedAxKeyAction(keys: string[], target: ResolvedTarget, sig
 		).catch(() => undefined);
 		if (toBoolean(result?.performed)) return true;
 	}
-	return false;
+	return await tryWindowAxKeyAction(keys, target, signal);
 }
 
 async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
