@@ -1,7 +1,7 @@
 # pi-computer-use
 
 <p align="center">
-  <img src="./assets/logo2.png" width="50%" alt="pi-computer-use">
+  <img src="./assets/logo/logo3.png" width="50%" alt="pi-computer-use">
 </p>
 
 <p align="center">
@@ -184,7 +184,7 @@ For a different release, replace `v0.2.0` or `0.2.0` with the version you want t
 
 ## Screenshots
 
-![pi-computer-use screenshot](./assets/img.jpg)
+![pi-computer-use screenshot](./assets/reference/img.jpg)
 
 ## License
 
