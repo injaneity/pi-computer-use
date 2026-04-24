@@ -2,7 +2,7 @@
 
 ## User-facing value proposition
 
-Computer use that stays out of your way: more browser, scroll, typing, and control workflows now run through macOS Accessibility first, with clearer user-visible safety controls and a benchmark that tracks the frontier instead of just the basics.
+Existing tools got smarter: normal `scroll`, `keypress`, `drag`, and browser address workflows now try more Accessibility-native paths automatically, while the benchmark now tracks frontier capabilities instead of only smoke-testing known flows.
 
 ## Changelog
 
