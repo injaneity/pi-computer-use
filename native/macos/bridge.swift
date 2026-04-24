@@ -312,16 +312,10 @@ final class Bridge {
 			return try keyPress(request)
 		case "axPressAtPoint":
 			return try axPressAtPoint(request)
-		case "axDescribeAtPoint":
-			return try axDescribeAtPoint(request)
 		case "axFindTextInput":
 			return try axFindTextInput(request)
 		case "axFocusTextInput":
 			return try axFocusTextInput(request)
-		case "axFindFocusableElement":
-			return try axFindFocusableElement(request)
-		case "axFindActionableElement":
-			return try axFindActionableElement(request)
 		case "axListTargets":
 			return try axListTargets(request)
 		case "axPressElement":
@@ -755,24 +749,6 @@ final class Bridge {
 		return output
 	}
 
-	private func axDescribeAtPoint(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axDescribeAtPoint requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		guard let hitElement = hitTestElement(at: point) else {
-			return ["exists": false, "reason": "hit_test_failed"]
-		}
-
-		return describeElementOrAncestor(startingAt: hitElement, targetPid: targetPid)
-	}
-
 	private func axFindTextInput(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
@@ -820,51 +796,6 @@ final class Bridge {
 			payload["reason"] = "focus_failed"
 		}
 		return payload
-	}
-
-	private func axFindFocusableElement(_ request: [String: Any]) throws -> [String: Any] {
-		let pid = Int32(try intArg(request, "pid"))
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		let preferredRoles = Set((request["roles"] as? [String] ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-		guard let window = windowElement(pid: pid, windowId: windowId) else {
-			return ["found": false, "reason": "window_not_found"]
-		}
-		let elements = collectDescendants(startingAt: window, maxDepth: 8)
-		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
-			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
-			if !preferredRoles.isEmpty && !preferredRoles.contains(role) { return nil }
-			var focusedSettable = DarwinBoolean(false)
-			let focusStatus = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &focusedSettable)
-			let canFocus = focusStatus == .success && focusedSettable.boolValue
-			let canPress = self.supportsPressAction(candidate)
-			guard canFocus || canPress else { return nil }
-			return (candidate, self.scoreFocusableElement(candidate, role: role, canFocus: canFocus, canPress: canPress, preferredRoles: preferredRoles))
-		}.sorted { $0.1 > $1.1 }
-		guard let best = ranked.first else {
-			return ["found": false, "reason": "no_focusable_element"]
-		}
-		return rankedElementPayload(best: best, ranked: ranked, key: "found")
-	}
-
-	private func axFindActionableElement(_ request: [String: Any]) throws -> [String: Any] {
-		let pid = Int32(try intArg(request, "pid"))
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		guard let window = windowElement(pid: pid, windowId: windowId) else {
-			return ["found": false, "reason": "window_not_found"]
-		}
-		let preferredRoles = Set((request["roles"] as? [String] ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-		let elements = collectDescendants(startingAt: window, maxDepth: 8)
-		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
-			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
-			if !preferredRoles.isEmpty && !preferredRoles.contains(role) { return nil }
-			let actions = self.actionNames(candidate)
-			guard !actions.isEmpty else { return nil }
-			return (candidate, self.scoreActionableElement(candidate, role: role, actions: actions, preferredRoles: preferredRoles))
-		}.sorted { $0.1 > $1.1 }
-		guard let best = ranked.first else {
-			return ["found": false, "reason": "no_actionable_element"]
-		}
-		return rankedElementPayload(best: best, ranked: ranked, key: "found")
 	}
 
 	private func axListTargets(_ request: [String: Any]) throws -> [String: Any] {
@@ -1139,43 +1070,6 @@ final class Bridge {
 		return ["performed": false, "reason": "no_matching_action"]
 	}
 
-	private func describeElementOrAncestor(startingAt element: AXUIElement, targetPid: Int32) -> [String: Any] {
-		var current: AXUIElement? = element
-		var depth = 0
-		var chain: [[String: Any]] = []
-
-		while let candidate = current, depth < 10 {
-			let pid = pidForElement(candidate)
-			let role = stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
-			let subrole = stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
-			let title = stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
-			let valueString = stringAttribute(candidate, attribute: kAXValueAttribute as CFString) ?? ""
-			var focusedSettable = DarwinBoolean(false)
-			let focusStatus = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &focusedSettable)
-			var valueSettable = DarwinBoolean(false)
-			let valueStatus = AXUIElementIsAttributeSettable(candidate, kAXValueAttribute as CFString, &valueSettable)
-			let actions = actionNames(candidate)
-			chain.append([
-				"depth": depth,
-				"pid": pid as Any,
-				"role": role,
-				"subrole": subrole,
-				"title": title,
-				"value": valueString,
-				"actions": actions,
-				"focusSettable": focusStatus == .success && focusedSettable.boolValue,
-				"valueSettable": valueStatus == .success && valueSettable.boolValue,
-			])
-			if let pid, pid != targetPid {
-				return ["exists": true, "reason": "pid_mismatch", "ownerPid": Int(pid), "chain": chain]
-			}
-			current = parentElement(candidate)
-			depth += 1
-		}
-
-		return ["exists": true, "chain": chain]
-	}
-
 	private func focusElementOrAncestor(startingAt element: AXUIElement, targetPid: Int32) -> [String: Any] {
 		var current: AXUIElement? = element
 		var depth = 0
@@ -1439,10 +1333,6 @@ final class Bridge {
 			depth += 1
 		}
 		return false
-	}
-
-	private func supportsPressAction(_ element: AXUIElement) -> Bool {
-		supportsAction(element, action: kAXPressAction as CFString)
 	}
 
 	private func actionNames(_ element: AXUIElement) -> [String] {
