@@ -2,11 +2,11 @@
 
 ## User-facing value proposition
 
-People of Pi: `pi-computer-use` is now ahead of Codex in functionality. v0.1.7 brings:
-- smarter AX-first `scroll`, `keypress`, and `drag`
+People of Pi: `pi-computer-use` remains ahead of Codex computer use. v0.1.7 adds Pi-only wins:
+- AX-first `scroll`, `keypress`, and `drag`
 - Safari/Chrome URL entry without raw Enter
-- `/computer-use` config for browser + stealth
-- benchmarks for frontier AX capabilities
+- `/computer-use` browser + stealth config
+- frontier AX benchmarks
 
 ## Changelog
 
