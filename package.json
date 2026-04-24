@@ -1,6 +1,6 @@
 {
   "name": "@injaneity/pi-computer-use",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Codex-style computer-use tools for Pi on macOS.",
   "type": "module",
   "keywords": [
