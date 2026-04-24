@@ -1,6 +1,6 @@
 {
   "name": "@injaneity/pi-computer-use",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Codex-style computer-use tools for Pi on macOS.",
   "type": "module",
   "keywords": [
@@ -47,13 +47,20 @@
   },
   "scripts": {
     "postinstall": "node scripts/setup-helper.mjs --postinstall",
+    "typecheck": "tsc -p tsconfig.json",
+    "test:schema": "node scripts/check-tool-schemas.mjs",
+    "test": "npm run typecheck && npm run test:schema",
     "build:native": "node scripts/build-native.mjs",
     "benchmark:qa": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa",
     "benchmark:qa:full": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-screen-takeover"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
   }
 }

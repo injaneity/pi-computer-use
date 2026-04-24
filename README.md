@@ -11,8 +11,8 @@ Codex-style computer use for [Pi](https://pi.dev/) on macOS with AX-first semant
 See the [latest GitHub release](https://github.com/injaneity/pi-computer-use/releases/latest) for the current version, release name, value proposition, changelog, and validation snapshot.
 
 Install:
-- GitHub release: `pi install git:github.com/injaneity/pi-computer-use#v0.1.7`.
-- npm package: `npm install @injaneity/pi-computer-use@0.1.7`.
+- GitHub release: `pi install git:github.com/injaneity/pi-computer-use#v0.2.0`.
+- npm package: `npm install @injaneity/pi-computer-use@0.2.0`.
 
 > [!NOTE]  
 > For setup, development, benchmarks, and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md).
@@ -46,9 +46,9 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 #### Pi
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.1.7
+pi install git:github.com/injaneity/pi-computer-use#v0.2.0
 # project-local
-pi install -l git:github.com/injaneity/pi-computer-use#v0.1.7
+pi install -l git:github.com/injaneity/pi-computer-use#v0.2.0
 # local checkout
 pi install /absolute/path/to/pi-computer-use
 ```
@@ -58,7 +58,7 @@ pi install /absolute/path/to/pi-computer-use
 ```bash
 npm install @injaneity/pi-computer-use
 # pinned version
-npm install @injaneity/pi-computer-use@0.1.7
+npm install @injaneity/pi-computer-use@0.2.0
 ```
 
 Use the GitHub release tag for `pi install`. Use npm when you want the package directly through the npm registry.
@@ -151,7 +151,7 @@ Unsigned or ad-hoc signed helpers can work for local development, but macOS trea
 ### Remove
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use#v0.1.7
+pi remove git:github.com/injaneity/pi-computer-use#v0.2.0
 # or remove the npm package from a JS project
 npm remove @injaneity/pi-computer-use
 ```

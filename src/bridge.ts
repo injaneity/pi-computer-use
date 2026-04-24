@@ -266,6 +266,9 @@ interface HelperAxTarget {
 	canSetValue?: boolean;
 	canFocus?: boolean;
 	canPress?: boolean;
+	canScroll?: boolean;
+	canIncrement?: boolean;
+	canDecrement?: boolean;
 	x?: number;
 	y?: number;
 	score?: number;
@@ -2081,7 +2084,7 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 			} catch (error) {
 				if (isElementRefInvalid(error)) {
 					const reacquired = await reacquireAxTarget(axTarget, target, signal);
-					if (reacquired?.canSetValue !== false) {
+					if (reacquired && reacquired.canSetValue !== false) {
 						axTarget = reacquired;
 						await setAxValue(axTarget.elementRef, params.text, signal);
 						return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
