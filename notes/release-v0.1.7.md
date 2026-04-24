@@ -4,9 +4,9 @@
 
 People of Pi: `pi-computer-use` is now ahead of Codex in functionality. v0.1.7 brings:
 - smarter AX-first `scroll`, `keypress`, and `drag`
-- stealth browser address workflows
-- user-visible safety config
-- SOTA frontier benchmarks
+- Safari/Chrome URL entry without raw Enter
+- `/computer-use` config for browser + stealth
+- benchmarks for frontier AX capabilities
 
 ## Changelog
 
