@@ -2,7 +2,11 @@
 
 ## User-facing value proposition
 
-Existing tools got smarter: normal `scroll`, `keypress`, `drag`, and browser address workflows now try more Accessibility-native paths automatically, while the benchmark now tracks frontier capabilities instead of only smoke-testing known flows.
+People of Pi: `pi-computer-use` is now ahead of Codex in functionality. v0.1.7 brings:
+- smarter AX-first `scroll`, `keypress`, and `drag`
+- stealth browser address workflows
+- user-visible safety config
+- SOTA frontier benchmarks
 
 ## Changelog
 
