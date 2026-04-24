@@ -455,6 +455,28 @@ function strictModeBlock(message: string): never {
 	throw new Error(`${message} Stealth/strict AX mode is enabled, so non-AX, foreground-focus, and cursor fallbacks are blocked.`);
 }
 
+function settleMsForExecution(execution: ExecutionTrace): number {
+	if (execution.strategy === "batch") {
+		const actions = execution.actions ?? [];
+		return actions.length > 0 && actions.every((action) => action.variant === "stealth") ? 120 : ACTION_SETTLE_MS;
+	}
+	if (execution.variant === "stealth") {
+		switch (execution.strategy) {
+			case "ax_focus":
+			case "ax_set_value":
+				return 80;
+			case "ax_action":
+			case "ax_scroll":
+				return 120;
+			case "ax_press":
+				return 160;
+			default:
+				return 120;
+		}
+	}
+	return ACTION_SETTLE_MS;
+}
+
 function addRefreshHint(error: unknown): Error {
 	const message = normalizeError(error).message;
 	if (/call screenshot/i.test(message)) {
@@ -2212,7 +2234,7 @@ async function runCoordinateAction(
 		const execution = await dispatch(readyTarget);
 		stateMayHaveChanged = true;
 
-		await sleep(ACTION_SETTLE_MS, signal);
+		await sleep(settleMsForExecution(execution), signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
 		return await buildToolResult(tool, summaryFactory(captureResult.target), captureResult, execution, signal);
 	} catch (error) {
@@ -2274,7 +2296,7 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 		const execution = await dispatchTypeText(text, readyTarget, signal);
 
 		stateMayHaveChanged = true;
-		await sleep(ACTION_SETTLE_MS, signal);
+		await sleep(settleMsForExecution(execution), signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
 		const summary = `Inserted text in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("type_text", summary, captureResult, execution, signal);
@@ -2297,7 +2319,7 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 		const execution = await dispatchSetText({ ...params, text }, readyTarget, signal);
 
 		stateMayHaveChanged = true;
-		await sleep(ACTION_SETTLE_MS, signal);
+		await sleep(settleMsForExecution(execution), signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
 		const summary = `Set text value in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("set_text", summary, captureResult, execution, signal);
@@ -2320,7 +2342,7 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 		const execution = await dispatchKeypress({ keys }, readyTarget, signal);
 
 		stateMayHaveChanged = true;
-		await sleep(ACTION_SETTLE_MS, signal);
+		await sleep(settleMsForExecution(execution), signal);
 		const captureResult = await captureCurrentTarget(signal, activation);
 		const summary = `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("keypress", summary, captureResult, execution, signal);
@@ -2499,8 +2521,6 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 			}
 		}
 
-		await sleep(ACTION_SETTLE_MS, signal);
-		const captureResult = await captureCurrentTarget(signal, activation);
 		const execution = executionTrace("batch", stealthCompatible ? "stealth" : "default", {
 			actionCount: actions.length,
 			completedActionCount: actionTraces.length,
@@ -2510,6 +2530,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 			fallbackUsed,
 			nonStealthReason: nonStealthReasons.size > 0 ? [...nonStealthReasons].join(",") : undefined,
 		});
+		await sleep(settleMsForExecution(execution), signal);
+		const captureResult = await captureCurrentTarget(signal, activation);
 		const summary = `Executed ${actions.length} computer action${actions.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("computer_actions", summary, captureResult, execution, signal);
 	} catch (error) {
