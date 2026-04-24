@@ -904,7 +904,8 @@ final class Bridge {
 			let isText = textRoles.contains(role) || canSetValue
 			let canPress = actions.contains(kAXPressAction as String)
 			let canScroll = self.supportsAnyScrollAction(candidate)
-			guard isText || canPress || canFocus || canScroll else { continue }
+			let canAdjust = actions.contains(kAXIncrementAction as String) || actions.contains(kAXDecrementAction as String)
+			guard isText || canPress || canFocus || canScroll || canAdjust else { continue }
 			guard let frame = self.frameForElement(candidate), frame.width > 10, frame.height > 10 else { continue }
 			let area = frame.width * frame.height
 			let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
@@ -932,6 +933,7 @@ final class Bridge {
 				score += self.scoreFocusableElement(candidate, role: role, canFocus: canFocus, canPress: canPress, preferredRoles: Set<String>())
 			}
 			if canScroll { score += 130 }
+			if canAdjust { score += 120 }
 			if !actions.isEmpty {
 				score += self.scoreActionableElement(candidate, role: role, actions: actions, preferredRoles: Set<String>())
 			}
@@ -1394,6 +1396,8 @@ final class Bridge {
 			"canFocus": focusedStatus == .success && focusedSettable.boolValue,
 			"canPress": actions.contains(kAXPressAction as String),
 			"canScroll": supportsAnyScrollAction(element),
+			"canIncrement": actions.contains(kAXIncrementAction as String),
+			"canDecrement": actions.contains(kAXDecrementAction as String),
 			"x": centerX,
 			"y": centerY,
 		]

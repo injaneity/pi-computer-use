@@ -26,7 +26,7 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 - Coordinates are **window-relative screenshot pixels** (top-left origin).
 - `captureId` is optional. If provided and stale, refresh with `screenshot`.
 - `type_text` inserts text at the current cursor/selection. Use `set_text` when you need to replace an AX text value; prefer a ref over relying on focus.
-- `scroll` can use an AX ref marked `scroll` or screenshot-relative coordinates from the latest screenshot; refs are preferred in stealth mode. `move_mouse`, `drag`, `double_click`, and coordinate clicks use screenshot-relative coordinates from the latest screenshot.
+- `scroll` can use an AX ref marked `scroll` or screenshot-relative coordinates from the latest screenshot; refs are preferred in stealth mode. `drag` can use a ref marked `adjust` plus a path for sliders/steppers, otherwise it uses screenshot-relative path points. `move_mouse`, `double_click`, and coordinate clicks use screenshot-relative coordinates from the latest screenshot.
 - For shortcut sequences, use chord strings like `keypress({ keys: ["Command+L", "Enter"] })`; reserve `["Command", "L"]` for a single chord call. In stealth mode, only keypresses with safe AX equivalents, such as focused Enter/Escape/Space actions, can run.
 - `computer_actions` executes one to twenty actions and returns one state update plus per-action execution metadata, including whether each action used the `stealth` or `default` implementation variant. Do not batch if the next action depends on seeing an intermediate result.
 - `wait({ ms })` pauses and then returns the latest semantic state for polling/loading states.

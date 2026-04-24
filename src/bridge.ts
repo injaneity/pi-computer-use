@@ -52,7 +52,8 @@ export interface MoveMouseParams {
 }
 
 export interface DragParams {
-	path: Array<{ x: number; y: number } | [number, number]>;
+	path?: Array<{ x: number; y: number } | [number, number]>;
+	ref?: string;
 	captureId?: string;
 }
 
@@ -300,6 +301,8 @@ interface AxTarget {
 	canFocus: boolean;
 	canPress: boolean;
 	canScroll: boolean;
+	canIncrement: boolean;
+	canDecrement: boolean;
 	x: number;
 	y: number;
 	score?: number;
@@ -657,6 +660,8 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				canFocus: toBoolean(target?.canFocus),
 				canPress: toBoolean(target?.canPress),
 				canScroll: toBoolean(target?.canScroll),
+				canIncrement: toBoolean(target?.canIncrement),
+				canDecrement: toBoolean(target?.canDecrement),
 				x: toFiniteNumber(target?.x, 0),
 				y: toFiniteNumber(target?.y, 0),
 				score: Number.isFinite(target?.score) ? Number(target.score) : undefined,
@@ -672,6 +677,7 @@ function formatAxTargetLabel(target: AxTarget): string {
 		target.canPress ? "press" : undefined,
 		target.canFocus ? "focus" : undefined,
 		target.canScroll ? "scroll" : undefined,
+		target.canIncrement || target.canDecrement ? "adjust" : undefined,
 	].filter((item): item is string => Boolean(item));
 	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
 }
@@ -710,6 +716,8 @@ async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal
 		if (stale.canSetValue && !candidate.canSetValue) return false;
 		if (stale.canPress && !candidate.canPress) return false;
 		if (stale.canScroll && !candidate.canScroll) return false;
+		if (stale.canIncrement && !candidate.canIncrement) return false;
+		if (stale.canDecrement && !candidate.canDecrement) return false;
 		return true;
 	});
 	const pool = candidates.length ? candidates : refreshed.filter((candidate) => staleLabel && axTargetLabelKey(candidate) === staleLabel);
@@ -2308,25 +2316,71 @@ async function dispatchMoveMouse(
 	});
 }
 
+function dragAdjustment(path: Array<{ x: number; y: number }> | undefined): { action: "increment" | "decrement"; steps: number } | undefined {
+	if (!path || path.length < 2) return undefined;
+	const first = path[0];
+	const last = path[path.length - 1];
+	const dx = last.x - first.x;
+	const dy = last.y - first.y;
+	const primary = Math.abs(dx) >= Math.abs(dy) ? dx : -dy;
+	if (Math.abs(primary) < 4) return undefined;
+	return { action: primary > 0 ? "increment" : "decrement", steps: Math.max(1, Math.min(20, Math.round(Math.abs(primary) / 20))) };
+}
+
+async function tryAxAdjustElement(axTarget: AxTarget, adjustment: { action: "increment" | "decrement"; steps: number }, target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
+	if (adjustment.action === "increment" && !axTarget.canIncrement) return false;
+	if (adjustment.action === "decrement" && !axTarget.canDecrement) return false;
+	let performed = false;
+	for (let index = 0; index < adjustment.steps; index += 1) {
+		const result = await bridgeCommand<{ performed?: boolean }>(
+			"axPerformActionElement",
+			{ elementRef: axTarget.elementRef, pid: target.pid, action: adjustment.action },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		).catch(() => undefined);
+		if (!toBoolean(result?.performed)) break;
+		performed = true;
+	}
+	return performed;
+}
+
 async function dispatchDrag(
 	params: DragParams,
 	capture: CurrentCapture,
 	target: ResolvedTarget,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
-	if (isStrictAxMode()) {
-		strictModeBlock("Drag is not AX-only.");
+	const path = params.path ? normalizeDragPath(params.path, capture) : undefined;
+	const ref = trimOrUndefined(params.ref);
+	let adjustedViaAX = false;
+	if (ref && path) {
+		const axTarget = axTargetByRef(ref);
+		const adjustment = dragAdjustment(path);
+		if (adjustment) {
+			adjustedViaAX = await tryAxAdjustElement(axTarget, adjustment, target, signal);
+			if (!adjustedViaAX) {
+				const reacquired = await reacquireAxTarget(axTarget, target, signal);
+				if (reacquired) adjustedViaAX = await tryAxAdjustElement(reacquired, adjustment, target, signal);
+			}
+		}
 	}
-	const path = normalizeDragPath(params.path, capture);
+	if (adjustedViaAX) {
+		return executionTrace("ax_action", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
+	}
+	if (isStrictAxMode()) {
+		strictModeBlock(ref ? `AX adjustment could not be completed for ${ref}.` : "Drag is not AX-only.");
+	}
+	if (!path) {
+		throw new Error("drag requires path points for pointer fallback or a ref plus path for AX adjustment.");
+	}
 	await bridgeCommand(
 		"mouseDrag",
 		{ windowId: target.windowId, pid: target.pid, path, captureWidth: capture.width, captureHeight: capture.height },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
 	return executionTrace("coordinate_event_drag", "default", {
-		axAttempted: false,
+		axAttempted: Boolean(ref),
 		axSucceeded: false,
-		fallbackUsed: false,
+		fallbackUsed: Boolean(ref),
 		nonStealthReason: "drag_requires_pointer_event",
 	});
 }
