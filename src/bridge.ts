@@ -684,6 +684,39 @@ function axTargetByRef(ref: string): AxTarget {
 	return axTarget;
 }
 
+function axTargetLabelKey(target: AxTarget): string {
+	return normalizeText(target.title || target.description || target.value);
+}
+
+function isElementRefInvalid(error: unknown): boolean {
+	return (error instanceof HelperCommandError && error.code === "element_ref_invalid") || /element reference is no longer valid|element_ref_invalid/i.test(normalizeError(error).message);
+}
+
+async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal?: AbortSignal): Promise<AxTarget | undefined> {
+	const refreshed = parseAxTargets(
+		await bridgeCommand(
+			"axListTargets",
+			{ pid: target.pid, windowId: target.windowId, limit: 50 },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		).catch(() => []),
+	);
+	if (!refreshed.length) return undefined;
+	runtimeState.currentAxTargets = refreshed;
+
+	const staleLabel = axTargetLabelKey(stale);
+	const candidates = refreshed.filter((candidate) => {
+		if (candidate.role !== stale.role) return false;
+		if (staleLabel && axTargetLabelKey(candidate) !== staleLabel) return false;
+		if (stale.canSetValue && !candidate.canSetValue) return false;
+		if (stale.canPress && !candidate.canPress) return false;
+		if (stale.canScroll && !candidate.canScroll) return false;
+		return true;
+	});
+	const pool = candidates.length ? candidates : refreshed.filter((candidate) => staleLabel && axTargetLabelKey(candidate) === staleLabel);
+	const best = pool.sort((a, b) => Math.hypot(a.x - stale.x, a.y - stale.y) - Math.hypot(b.x - stale.x, b.y - stale.y))[0];
+	return best ? { ...best, ref: stale.ref } : undefined;
+}
+
 function imageFallbackReason(
 	tool: string,
 	result: CaptureResult,
@@ -1785,37 +1818,47 @@ async function dispatchClick(
 		if (button !== "left") {
 			throw new Error(`AX target refs only support left-button clicks. Use coordinates for ${button}-click.`);
 		}
+		const attemptRefClick = async (axTarget: AxTarget): Promise<{ clickedViaAX: boolean; focusedViaAX: boolean }> => {
+			let clickedViaAX = false;
+			let focusedViaAX = false;
+			for (let index = 0; index < clickCount; index += 1) {
+				try {
+					const axResult = await bridgeCommand<AxPressAtPointResult>(
+						"axPressElement",
+						{ elementRef: axTarget.elementRef, pid: target.pid },
+						{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+					);
+					clickedViaAX = toBoolean(axResult?.pressed);
+				} catch {
+					clickedViaAX = false;
+				}
+				if (!clickedViaAX) break;
+				if (index + 1 < clickCount) {
+					await sleep(60, signal);
+				}
+			}
+
+			if (!clickedViaAX && clickCount === 1) {
+				try {
+					const focusResult = await bridgeCommand<AxFocusResult>(
+						"axFocusElement",
+						{ elementRef: axTarget.elementRef, pid: target.pid },
+						{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+					);
+					focusedViaAX = toBoolean(focusResult?.focused);
+				} catch {
+					focusedViaAX = false;
+				}
+			}
+			return { clickedViaAX, focusedViaAX };
+		};
+
 		const axTarget = axTargetByRef(ref);
-
-		let clickedViaAX = false;
-		let focusedViaAX = false;
-		for (let index = 0; index < clickCount; index += 1) {
-			try {
-				const axResult = await bridgeCommand<AxPressAtPointResult>(
-					"axPressElement",
-					{ elementRef: axTarget.elementRef, pid: target.pid },
-					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-				);
-				clickedViaAX = toBoolean(axResult?.pressed);
-			} catch {
-				clickedViaAX = false;
-			}
-			if (!clickedViaAX) break;
-			if (index + 1 < clickCount) {
-				await sleep(60, signal);
-			}
-		}
-
-		if (!clickedViaAX && clickCount === 1) {
-			try {
-				const focusResult = await bridgeCommand<AxFocusResult>(
-					"axFocusElement",
-					{ elementRef: axTarget.elementRef, pid: target.pid },
-					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-				);
-				focusedViaAX = toBoolean(focusResult?.focused);
-			} catch {
-				focusedViaAX = false;
+		let { clickedViaAX, focusedViaAX } = await attemptRefClick(axTarget);
+		if (!clickedViaAX && !focusedViaAX) {
+			const reacquired = await reacquireAxTarget(axTarget, target, signal);
+			if (reacquired) {
+				({ clickedViaAX, focusedViaAX } = await attemptRefClick(reacquired));
 			}
 		}
 
@@ -1965,12 +2008,20 @@ async function focusAxElement(elementRef: string, target: ResolvedTarget, signal
 async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
 	const ref = trimOrUndefined(params.ref);
 	if (ref) {
-		const axTarget = axTargetByRef(ref);
+		let axTarget = axTargetByRef(ref);
 		if (axTarget.canSetValue !== false) {
 			try {
 				await setAxValue(axTarget.elementRef, params.text, signal);
 				return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 			} catch (error) {
+				if (isElementRefInvalid(error)) {
+					const reacquired = await reacquireAxTarget(axTarget, target, signal);
+					if (reacquired?.canSetValue !== false) {
+						axTarget = reacquired;
+						await setAxValue(axTarget.elementRef, params.text, signal);
+						return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
+					}
+				}
 				if (isStrictAxMode()) {
 					throw normalizeError(error);
 				}
@@ -1981,7 +2032,14 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 			strictModeBlock(`AX target '${ref}' does not expose a directly settable AX value.`);
 		}
 
-		const focusedViaRef = await focusAxElement(axTarget.elementRef, target, signal);
+		let focusedViaRef = await focusAxElement(axTarget.elementRef, target, signal);
+		if (!focusedViaRef) {
+			const reacquired = await reacquireAxTarget(axTarget, target, signal);
+			if (reacquired) {
+				axTarget = reacquired;
+				focusedViaRef = await focusAxElement(axTarget.elementRef, target, signal);
+			}
+		}
 		if (focusedViaRef) {
 			const focusedElementRef = await focusedTextElementRef(target, signal);
 			if (focusedElementRef) {
@@ -2143,6 +2201,12 @@ async function dispatchScroll(
 	if (ref) {
 		const axTarget = axTargetByRef(ref);
 		scrolledViaAX = await tryAxScrollElement(axTarget.elementRef, target, scrollX, scrollY, signal);
+		if (!scrolledViaAX) {
+			const reacquired = await reacquireAxTarget(axTarget, target, signal);
+			if (reacquired) {
+				scrolledViaAX = await tryAxScrollElement(reacquired.elementRef, target, scrollX, scrollY, signal);
+			}
+		}
 	} else if (Number.isFinite(x) && Number.isFinite(y)) {
 		ensurePointIsInCapture(x, y, capture);
 		scrolledViaAX = await tryAxScrollAtPoint(target, capture, x, y, scrollX, scrollY, signal);
