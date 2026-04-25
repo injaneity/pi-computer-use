@@ -1,18 +1,5 @@
 # v0.2.1 — the window update
 
-## User-facing value proposition
-
-People of Pi: `pi-computer-use` now has a much stronger window model. v0.2.1 makes multi-window desktop work easier for agents by adding:
-
-- app/window discovery with stable `@w` refs
-- explicit `window` targeting across screenshots and actions
-- `stateId` stale-state validation
-- deterministic window layout via `arrange_window`
-- opt-in screenshot attachment control
-- per-window write-serialization groundwork for safer multi-agent use
-
-The goal is simple: fewer wrong-window actions, fewer ambiguous retries, and more predictable GUI workflows.
-
 ## Changelog
 
 ### App and window discovery
