@@ -32,7 +32,7 @@ Codex-style computer use for [Pi](https://pi.dev/) on macOS.
 Install the Pi package:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.2.0
+pi install git:github.com/injaneity/pi-computer-use#v0.2.1
 ```
 
 Start Pi in interactive mode. On the first session, grant macOS permissions to:
@@ -63,7 +63,7 @@ Use `/computer-use` in Pi to inspect the effective config and config sources.
 - Public tools: `list_apps`, `list_windows`, `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `arrange_window`, `computer_actions`.
 - AX target refs in tool results, with capabilities such as `canSetValue`, `canPress`, `canFocus`, `canScroll`, and `adjust`.
 - Stable window refs from `list_windows`, with explicit targeting such as `screenshot({ window: "@w1" })` and `click({ window: "@w1", ref: "@eN" })`.
-- State IDs for stale-action detection, exposed alongside legacy `captureId`.
+- State IDs for stale-action detection.
 - Deterministic window layout through `arrange_window` presets or explicit frames.
 - Optional screenshot attachment mode with `image: "auto" | "always" | "never"`.
 - Ref-first actions such as `click({ ref: "@eN" })`, `scroll({ ref: "@eN" })`, and `set_text({ ref: "@eN", text })`.
@@ -168,25 +168,25 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 
 ```bash
 npm install @injaneity/pi-computer-use
-npm install @injaneity/pi-computer-use@0.2.0
+npm install @injaneity/pi-computer-use@0.2.1
 ```
 
 Pi installs should pin a GitHub release tag:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.2.0
-pi install -l git:github.com/injaneity/pi-computer-use#v0.2.0
+pi install git:github.com/injaneity/pi-computer-use#v0.2.1
+pi install -l git:github.com/injaneity/pi-computer-use#v0.2.1
 pi install /absolute/path/to/pi-computer-use
 ```
 
 Remove:
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use#v0.2.0
+pi remove git:github.com/injaneity/pi-computer-use#v0.2.1
 npm remove @injaneity/pi-computer-use
 ```
 
-For a different release, replace `v0.2.0` or `0.2.0` with the version you want to pin.
+For a different release, replace `v0.2.1` or `0.2.1` with the version you want to pin.
 
 ## Screenshots
 

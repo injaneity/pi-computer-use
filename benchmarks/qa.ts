@@ -417,8 +417,8 @@ async function benchmarkCase(
 }
 
 async function runSotaCapabilityCases(item: { app: string; category: string }, details: any, ctx: any, records: CaseRecord[]): Promise<void> {
-	const captureId = details?.capture?.captureId;
-	if (!captureId) return;
+	const stateId = details?.capture?.stateId;
+	if (!stateId) return;
 	const point = captureCenter(details);
 
 	const scrollTarget = preferredScrollTarget(details);
@@ -428,7 +428,7 @@ async function runSotaCapabilityCases(item: { app: string; category: string }, d
 			item.category,
 			"scroll",
 			item.app,
-			async () => await executeScroll(`bench-${item.app}-sota-scroll`, { ref: scrollTarget.ref, scrollY: 120, captureId }, undefined, undefined, ctx),
+			async () => await executeScroll(`bench-${item.app}-sota-scroll`, { ref: scrollTarget.ref, scrollY: 120, stateId }, undefined, undefined, ctx),
 			"ax_scroll_ref",
 		);
 		records.push(result.record);
@@ -448,7 +448,7 @@ async function runSotaCapabilityCases(item: { app: string; category: string }, d
 				{
 					ref: adjustTarget.ref,
 					path: [[point.x, point.y], [Math.min(Number(details.capture.width) - 4, point.x + 24), point.y]],
-					captureId,
+					stateId,
 				},
 				undefined,
 				undefined,
@@ -470,7 +470,7 @@ async function runSotaCapabilityCases(item: { app: string; category: string }, d
 			async () => await executeComputerActions(
 				`bench-${item.app}-sota-address`,
 				{
-					captureId,
+					stateId,
 					actions: [
 						{ type: "keypress", keys: ["Command+L"] },
 						{ type: "type_text", text: "about:blank" },
@@ -557,7 +557,7 @@ async function main() {
 				status: "SKIP",
 				details: "Semantic AX target coverage was too sparse for AX-first targeting",
 			});
-		} else if (!target?.ref || !details?.capture?.captureId) {
+		} else if (!target?.ref || !details?.capture?.stateId) {
 			records.push({
 				name: `${item.app}-targeting`,
 				category: item.category,
@@ -568,7 +568,7 @@ async function main() {
 			});
 		} else {
 			const click = await benchmarkCase(`${item.app}-targeting`, item.category, "click", item.app, async () => {
-				return await executeClick(`bench-${item.app}-click`, { ref: target.ref, captureId: details.capture.captureId }, undefined, undefined, ctx);
+				return await executeClick(`bench-${item.app}-click`, { ref: target.ref, stateId: details.capture.stateId }, undefined, undefined, ctx);
 			});
 			records.push(click.record);
 			if (click.record.status === "PASS" && click.result?.details) capabilityDetails = click.result.details;
@@ -576,12 +576,12 @@ async function main() {
 
 		await runSotaCapabilityCases(item, capabilityDetails, ctx, records);
 
-		if (item.app === "TextEdit" && details?.capture?.captureId) {
+		if (item.app === "TextEdit" && details?.capture?.stateId) {
 			let currentDetails = details;
 			let point = captureCenter(currentDetails);
 			await executeClick(
 				"bench-TextEdit-focus",
-				{ x: point.x, y: point.y, captureId: currentDetails.capture.captureId },
+				{ x: point.x, y: point.y, stateId: currentDetails.capture.stateId },
 				undefined,
 				undefined,
 				ctx,
@@ -612,7 +612,7 @@ async function main() {
 						return await executeComputerActions(
 							"bench-TextEdit-batch-ax",
 							{
-								captureId: currentDetails.capture.captureId,
+								stateId: currentDetails.capture.stateId,
 								actions: [
 									{ type: "set_text", ref: textTarget.ref, text: "pi-computer-use benchmark AX batch" },
 								],
@@ -638,10 +638,10 @@ async function main() {
 					return await executeTypeText("bench-TextEdit-type-text", { text: "benchmark raw insertion" }, undefined, undefined, ctx);
 				});
 				await runTextEditCase("TextEdit-move-mouse", "move_mouse", async () => {
-					return await executeMoveMouse("bench-TextEdit-move", { x: point.x, y: point.y, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
+					return await executeMoveMouse("bench-TextEdit-move", { x: point.x, y: point.y, stateId: currentDetails.capture.stateId }, undefined, undefined, ctx);
 				});
 				await runTextEditCase("TextEdit-double-click", "double_click", async () => {
-					return await executeDoubleClick("bench-TextEdit-double", { x: point.x, y: point.y, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
+					return await executeDoubleClick("bench-TextEdit-double", { x: point.x, y: point.y, stateId: currentDetails.capture.stateId }, undefined, undefined, ctx);
 				});
 				await runTextEditCase("TextEdit-drag", "drag", async () => {
 					return await executeDrag(
@@ -651,7 +651,7 @@ async function main() {
 								[point.x, point.y],
 								[Math.min(Number(currentDetails.capture.width) - 4, point.x + 18), Math.min(Number(currentDetails.capture.height) - 4, point.y + 18)],
 							],
-							captureId: currentDetails.capture.captureId,
+							stateId: currentDetails.capture.stateId,
 						},
 						undefined,
 						undefined,
@@ -659,14 +659,14 @@ async function main() {
 					);
 				});
 				await runTextEditCase("TextEdit-scroll", "scroll", async () => {
-					return await executeScroll("bench-TextEdit-scroll", { x: point.x, y: point.y, scrollY: 120, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
+					return await executeScroll("bench-TextEdit-scroll", { x: point.x, y: point.y, scrollY: 120, stateId: currentDetails.capture.stateId }, undefined, undefined, ctx);
 				});
 				await runTextEditCase("TextEdit-batch", "computer_actions", async () => {
 					const textTarget = preferredTextTarget(currentDetails);
 					return await executeComputerActions(
 						"bench-TextEdit-batch",
 						{
-							captureId: currentDetails.capture.captureId,
+							stateId: currentDetails.capture.stateId,
 							actions: [
 								{ type: "move_mouse", x: point.x, y: point.y },
 								{ type: "click", x: point.x, y: point.y },

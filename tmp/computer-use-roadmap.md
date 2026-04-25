@@ -12,7 +12,7 @@ Running checklist for usability, speed, reliability, and multi-window/multi-agen
 
 ## Next priorities
 
-- [x] Generalize `captureId` into a broader `stateId` / `stateToken`.
+- [x] Add `stateId` for stale state validation.
 - [x] Improve stale window/ref/capture errors and recovery guidance.
 - [x] Add per-window write serialization for multi-agent safety.
 - [x] Add `arrange_window` / `set_window_frame` for deterministic layouts.

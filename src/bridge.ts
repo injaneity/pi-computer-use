@@ -41,7 +41,6 @@ export interface ClickParams extends WindowTargetParams {
 	x?: number;
 	y?: number;
 	ref?: string;
-	captureId?: string;
 	button?: MouseButtonName;
 	clickCount?: number;
 }
@@ -65,19 +64,16 @@ export interface ScrollParams extends WindowTargetParams {
 	ref?: string;
 	scrollX?: number;
 	scrollY?: number;
-	captureId?: string;
 }
 
 export interface MoveMouseParams extends WindowTargetParams {
 	x: number;
 	y: number;
-	captureId?: string;
 }
 
 export interface DragParams extends WindowTargetParams {
 	path?: Array<{ x: number; y: number } | [number, number]>;
 	ref?: string;
-	captureId?: string;
 }
 
 export type ComputerAction =
@@ -93,7 +89,6 @@ export type ComputerAction =
 
 export interface ComputerActionsParams extends WindowTargetParams {
 	actions: ComputerAction[];
-	captureId?: string;
 }
 
 export interface ArrangeWindowParams extends WindowTargetParams {
@@ -118,7 +113,7 @@ export interface CurrentTarget {
 }
 
 export interface CurrentCapture {
-	captureId: string;
+	stateId: string;
 	width: number;
 	height: number;
 	scaleFactor: number;
@@ -190,7 +185,6 @@ export interface ComputerUseDetails {
 	};
 	capture: {
 		stateId: string;
-		captureId: string;
 		width: number;
 		height: number;
 		scaleFactor: number;
@@ -455,8 +449,6 @@ const TOOL_NAMES = new Set([
 const MISSING_TARGET_ERROR = "No current controlled window. Call screenshot first to choose a target window.";
 const CURRENT_TARGET_GONE_ERROR =
 	"The current controlled window is no longer available. Call screenshot to choose a new target window.";
-const STALE_CAPTURE_ERROR =
-	"The coordinates were based on an older screenshot. Call screenshot again to refresh the current window state.";
 const NON_MACOS_ERROR = "pi-computer-use currently supports macOS 15+ only.";
 
 const COMMAND_TIMEOUT_MS = 15_000;
@@ -685,7 +677,7 @@ async function withWindowWriteLock<T>(target: ResolvedTarget | CurrentTarget, wo
 	}
 }
 
-function randomCaptureId(): string {
+function randomStateId(): string {
 	try {
 		return randomUUID();
 	} catch {
@@ -770,14 +762,14 @@ function normalizeDragPath(path: DragParams["path"], capture: CurrentCapture): A
 	});
 }
 
-function validateStateId(stateId?: string, captureId?: string): CurrentCapture {
+function validateStateId(stateId?: string): CurrentCapture {
 	if (!runtimeState.currentTarget || !runtimeState.currentCapture) {
 		throw new Error(MISSING_TARGET_ERROR);
 	}
-	const supplied = stateId || captureId;
-	if (supplied && runtimeState.currentCapture.captureId !== supplied) {
+	const supplied = stateId;
+	if (supplied && runtimeState.currentCapture.stateId !== supplied) {
 		throw new Error(
-			`Stale state '${supplied}'. The latest state is '${runtimeState.currentCapture.captureId}' for ${runtimeState.currentTarget.windowRef ?? "the current window"}. Call screenshot${runtimeState.currentTarget.windowRef ? `({ window: "${runtimeState.currentTarget.windowRef}" })` : ""} again and retry.`,
+			`Stale state '${supplied}'. The latest state is '${runtimeState.currentCapture.stateId}' for ${runtimeState.currentTarget.windowRef ?? "the current window"}. Call screenshot${runtimeState.currentTarget.windowRef ? `({ window: "${runtimeState.currentTarget.windowRef}" })` : ""} again and retry.`,
 		);
 	}
 	const stateTarget = runtimeState.currentStateTarget;
@@ -2062,7 +2054,7 @@ interface CaptureResult {
 
 function captureForTarget(target: ResolvedTarget): CurrentCapture {
 	return {
-		captureId: randomCaptureId(),
+		stateId: randomStateId(),
 		width: Math.max(1, Math.round(target.framePoints.w * target.scaleFactor)),
 		height: Math.max(1, Math.round(target.framePoints.h * target.scaleFactor)),
 		scaleFactor: target.scaleFactor,
@@ -2153,8 +2145,7 @@ async function buildToolResult(
 			windowRef: result.target.windowRef ?? runtimeState.currentTarget?.windowRef,
 		},
 		capture: {
-			stateId: result.capture.captureId,
-			captureId: result.capture.captureId,
+			stateId: result.capture.stateId,
 			width: result.capture.width,
 			height: result.capture.height,
 			scaleFactor: result.capture.scaleFactor,
@@ -2944,7 +2935,7 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 async function performClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId, params.captureId);
+	const capture = validateStateId(params.stateId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
@@ -3050,7 +3041,7 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId, params.captureId);
+	const capture = validateStateId(params.stateId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
@@ -3069,7 +3060,7 @@ async function performScroll(params: ScrollParams, signal?: AbortSignal): Promis
 async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId, params.captureId);
+	const capture = validateStateId(params.stateId);
 	return await runCoordinateAction(
 		"move_mouse",
 		capture,
@@ -3083,7 +3074,7 @@ async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): 
 async function performDrag(params: DragParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId, params.captureId);
+	const capture = validateStateId(params.stateId);
 	return await runCoordinateAction(
 		"drag",
 		capture,
@@ -3096,7 +3087,7 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId, params.captureId);
+	const capture = validateStateId(params.stateId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
@@ -3209,7 +3200,7 @@ async function performArrangeWindow(params: ArrangeWindowParams, signal?: AbortS
 async function performComputerActions(params: ComputerActionsParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId, params.captureId);
+	const capture = validateStateId(params.stateId);
 	const actions = Array.isArray(params.actions) ? params.actions : [];
 	if (actions.length === 0) {
 		throw new Error("computer_actions.actions must contain at least one action.");
@@ -3241,8 +3232,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 					`computer_actions action ${index + 1} targets a different window. Use one computer_actions call per window, or set the top-level window field to the intended target.`,
 				);
 			}
-			const actionStateId = (action as any)?.stateId ?? (action as any)?.captureId;
-			if (actionStateId && actionStateId !== capture.captureId) {
+			const actionStateId = (action as any)?.stateId;
+			if (actionStateId && actionStateId !== capture.stateId) {
 				throw new Error(`computer_actions action ${index + 1} uses stale state '${actionStateId}'. Refresh with screenshot and retry.`);
 			}
 			let trace: ExecutionTrace;
@@ -3529,7 +3520,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 
 		if (!app) continue;
 		if (!Number.isFinite(details.target.pid) || !Number.isFinite(details.target.windowId)) continue;
-		if (typeof details.capture.captureId !== "string") continue;
+		if (typeof details.capture.stateId !== "string") continue;
 
 		runtimeState.currentTarget = {
 			appName: app,
@@ -3541,7 +3532,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 		};
 
 		runtimeState.currentCapture = {
-			captureId: details.capture.captureId,
+			stateId: details.capture.stateId,
 			width: Math.max(1, Math.trunc(toFiniteNumber(details.capture.width, 1))),
 			height: Math.max(1, Math.trunc(toFiniteNumber(details.capture.height, 1))),
 			scaleFactor: Math.max(1, toFiniteNumber(details.capture.scaleFactor, 1)),

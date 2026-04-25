@@ -30,7 +30,7 @@ keypress({ window: "@w1", keys: ["Enter"] })
 Tool results include:
 
 - `target`: app, bundle ID, pid, window title, window ID, and optional `windowRef`.
-- `capture`: screenshot dimensions, scale factor, `stateId`, legacy `captureId`, and coordinate space.
+- `capture`: screenshot dimensions, scale factor, `stateId`, and coordinate space.
 - `axTargets`: semantic targets such as `@e1`.
 - `execution`: strategy, variant, AX/fallback details, and strict-mode compatibility.
 - Optional image content when semantic coverage is weak or fallback recovery is useful.
@@ -53,7 +53,7 @@ Use coordinates only when no matching AX target is available:
 click({ x: 320, y: 180, stateId: "..." })
 ```
 
-Coordinates are window-relative screenshot pixels from the latest screenshot. Pass `stateId` from the latest result when you want stale-state validation; `captureId` remains accepted as a legacy alias.
+Coordinates are window-relative screenshot pixels from the latest screenshot. Pass `stateId` from the latest result when you want stale-state validation.
 
 Use `image: "always"` when visual verification matters, `image: "never"` to suppress image attachments, or omit it for the default `auto` behavior.
 

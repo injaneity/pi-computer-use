@@ -25,7 +25,7 @@ const windowSelectorSchema = Type.Optional(Type.Union([
 	Type.String({ description: "Optional window ref from list_windows, e.g. @w1" }),
 	Type.Number({ description: "Optional numeric windowId from list_windows" }),
 ]));
-const stateIdSchema = Type.Optional(Type.String({ description: "Optional state id from the latest screenshot; captureId is accepted as a legacy alias" }));
+const stateIdSchema = Type.Optional(Type.String({ description: "Optional state id from the latest screenshot" }));
 const imageModeSchema = Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("always"), Type.Literal("never")], {
 	description: "Optional screenshot attachment mode, default auto",
 }));
@@ -108,7 +108,6 @@ const clickTool = defineTool({
 		ref: Type.Optional(Type.String({ description: "Optional AX target ref from the latest screenshot, e.g. @e1" })),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
 		clickCount: Type.Optional(Type.Number({ description: "Number of clicks, default 1" })),
-		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -134,7 +133,6 @@ const doubleClickTool = defineTool({
 		y: Type.Optional(Type.Number({ description: "Y coordinate in screenshot pixels" })),
 		ref: Type.Optional(Type.String({ description: "Optional AX target ref from the latest screenshot, e.g. @e1" })),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
-		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -157,7 +155,6 @@ const moveMouseTool = defineTool({
 	parameters: Type.Object({
 		x: Type.Number({ description: "X coordinate in screenshot pixels" }),
 		y: Type.Number({ description: "Y coordinate in screenshot pixels" }),
-		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -183,7 +180,6 @@ const dragTool = defineTool({
 			{ minItems: 2, description: "At least two points, each as {x,y}" },
 		)),
 		ref: Type.Optional(Type.String({ description: "Optional AX adjustable target ref from the latest screenshot, e.g. @e1" })),
-		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -209,7 +205,6 @@ const scrollTool = defineTool({
 		ref: Type.Optional(Type.String({ description: "Optional AX scroll target ref from the latest screenshot, e.g. @e1" })),
 		scrollX: Type.Optional(Type.Number({ description: "Horizontal scroll delta in pixels" })),
 		scrollY: Type.Optional(Type.Number({ description: "Vertical scroll delta in pixels" })),
-		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -349,7 +344,6 @@ const batchedActionSchema = Type.Union([
 		ref: Type.Optional(Type.String()),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
 		clickCount: Type.Optional(Type.Number()),
-		captureId: Type.Optional(Type.String()),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -360,7 +354,6 @@ const batchedActionSchema = Type.Union([
 		y: Type.Optional(Type.Number()),
 		ref: Type.Optional(Type.String()),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
-		captureId: Type.Optional(Type.String()),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -369,7 +362,6 @@ const batchedActionSchema = Type.Union([
 		type: Type.Literal("move_mouse"),
 		x: Type.Number(),
 		y: Type.Number(),
-		captureId: Type.Optional(Type.String()),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -380,7 +372,6 @@ const batchedActionSchema = Type.Union([
 			minItems: 2,
 		})),
 		ref: Type.Optional(Type.String()),
-		captureId: Type.Optional(Type.String()),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -392,7 +383,6 @@ const batchedActionSchema = Type.Union([
 		ref: Type.Optional(Type.String()),
 		scrollX: Type.Optional(Type.Number()),
 		scrollY: Type.Optional(Type.Number()),
-		captureId: Type.Optional(Type.String()),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -442,7 +432,6 @@ const computerActionsTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({
 		actions: Type.Array(batchedActionSchema, { minItems: 1, maxItems: 20, description: "One to twenty actions to run sequentially" }),
-		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id for the batch" })),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
