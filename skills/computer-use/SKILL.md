@@ -14,7 +14,8 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 3. To discover/switch apps or windows, use `list_apps`, `list_windows`, then `screenshot({ window: "@w1" })` or pass `window` to action tools.
 4. For text input, prefer `set_text({ ref: "@eN", text })` when the screenshot exposes a matching AX text target. Use click + `type_text({ text })` when you need insertion/cursor semantics.
 5. Use `keypress({ keys })` for Enter, Tab, Escape, arrows, deletion, and shortcuts. Enter/Escape/Space try semantic AX actions first when possible.
-6. Use `computer_actions({ actions })` to batch obvious actions like click + type + Enter when no intermediate screenshot is needed.
+6. Use `navigate_browser({ window, url })` for direct browser navigation when you know the URL; prefer it over address-bar keystrokes.
+7. Use `computer_actions({ actions })` to batch obvious actions like click + type + Enter when no intermediate screenshot is needed.
 7. Every successful action returns the **latest semantic state**. If AX targets are missing, sparse, or ambiguous, an image is attached for vision fallback.
 
 ## Practical rules
@@ -32,7 +33,7 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 - `wait({ ms })` pauses and then returns the latest semantic state for polling/loading states.
 - Accessibility permission is mandatory for actions.
 - Screen Recording permission is mandatory for screenshots and model vision context.
-- Public tool surface is `list_apps`, `list_windows`, `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `arrange_window`, `computer_actions`.
+- Public tool surface is `list_apps`, `list_windows`, `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `arrange_window`, `navigate_browser`, `computer_actions`.
 - Run `/computer-use` to show effective config. Config files are `~/.pi/agent/extensions/pi-computer-use.json` globally and `.pi/computer-use.json` per project.
 - `browser_use=false` blocks control of known browser apps. `stealth_mode=true` requires background-safe AX execution.
 - Default mode has built-in screenshot/vision grounding and is AX-first with fallback only when a control cannot be completed semantically.

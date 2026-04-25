@@ -99,6 +99,10 @@ export interface ArrangeWindowParams extends WindowTargetParams {
 	preset?: "center_large" | "left_half" | "right_half" | "top_half" | "bottom_half";
 }
 
+export interface NavigateBrowserParams extends WindowTargetParams {
+	url: string;
+}
+
 export interface WaitParams extends WindowTargetParams {
 	ms?: number;
 }
@@ -110,6 +114,7 @@ export interface CurrentTarget {
 	windowTitle: string;
 	windowId: number;
 	windowRef?: string;
+	nativeWindowRef?: string;
 }
 
 export interface CurrentCapture {
@@ -182,6 +187,7 @@ export interface ComputerUseDetails {
 		windowTitle: string;
 		windowId: number;
 		windowRef?: string;
+		nativeWindowRef?: string;
 	};
 	capture: {
 		stateId: string;
@@ -199,8 +205,13 @@ export interface ComputerUseDetails {
 		stealth_mode: boolean;
 	};
 	status?: "ok";
+	axDiagnostics?: {
+		reason?: string;
+		message?: string;
+	};
 	imageReason?:
 		| "fallback_recovery"
+		| "browser_ax_window_unavailable"
 		| "no_ax_targets"
 		| "sparse_ax_targets"
 		| "weak_ax_targets"
@@ -443,6 +454,7 @@ const TOOL_NAMES = new Set([
 	"set_text",
 	"wait",
 	"arrange_window",
+	"navigate_browser",
 	"computer_actions",
 ]);
 
@@ -779,6 +791,16 @@ function validateStateId(stateId?: string): CurrentCapture {
 	return runtimeState.currentCapture;
 }
 
+function axDiagnosticsFromResult(result: unknown, target: ResolvedTarget): CaptureResult["axDiagnostics"] {
+	const reason = toOptionalString((result as any)?.reason);
+	if (!reason) return undefined;
+	if (reason === "window_not_found") {
+		const windowHint = target.windowRef ? ` Use list_windows and choose an existing content window such as ${target.windowRef}, then call screenshot({ window: "${target.windowRef}" }).` : " Use list_windows and choose an existing content window.";
+		return { reason, message: `Accessibility could not resolve the target browser window. Duplicate/empty browser windows can cause this.${windowHint}` };
+	}
+	return { reason, message: `Accessibility target listing returned '${reason}'.` };
+}
+
 function parseAxTargets(result: unknown): AxTarget[] {
 	const items = Array.isArray(result) ? result : (result as any)?.targets;
 	if (!Array.isArray(items)) return [];
@@ -846,7 +868,7 @@ async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal
 	const refreshed = parseAxTargets(
 		await bridgeCommand(
 			"axListTargets",
-			{ pid: target.pid, windowId: target.windowId, limit: 50 },
+			{ ...nativeWindowRequest(target), limit: 50 },
 			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 		).catch(() => []),
 	);
@@ -881,6 +903,9 @@ function imageFallbackReason(
 		return { reason: "fallback_recovery", message: "The action used a fallback path, so an image is attached for recovery." }
 	}
 	if (result.axTargets.length === 0) {
+		if (isBrowserApp(result.target.appName, result.target.bundleId) && result.axDiagnostics?.reason === "window_not_found") {
+			return { reason: "browser_ax_window_unavailable", message: result.axDiagnostics.message ?? "The browser window could not be resolved through Accessibility, so an image is attached for recovery." }
+		}
 		return { reason: "no_ax_targets", message: "No useful AX targets were found, so an image is attached for vision fallback." }
 	}
 	if (result.axTargets.length < 3) {
@@ -1356,7 +1381,7 @@ async function restoreUserFocus(target: FrontmostResult, signal?: AbortSignal): 
 async function focusControlledWindow(target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
 	const result = await bridgeCommand<FocusWindowResult>(
 		"focusWindow",
-		{ pid: target.pid, windowId: target.windowId },
+		nativeWindowRequest(target),
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
 	if (!toBoolean(result?.focused)) {
@@ -1682,6 +1707,7 @@ function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget 
 		pid: app.pid,
 		windowTitle: window.title || "(untitled)",
 		windowId: typeof window.windowId === "number" ? window.windowId : 0,
+		nativeWindowRef: window.windowRef,
 		framePoints: window.framePoints,
 		scaleFactor: window.scaleFactor,
 		isMinimized: window.isMinimized,
@@ -1690,6 +1716,10 @@ function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget 
 		isFocused: window.isFocused,
 	};
 	return { ...baseTarget, windowRef: storeWindowRefForAppWindow(app, window).ref };
+}
+
+function nativeWindowRequest(target: Pick<CurrentTarget, "pid" | "windowId" | "nativeWindowRef">): { pid: number; windowId: number; windowRef?: string } {
+	return { pid: target.pid, windowId: target.windowId, windowRef: target.nativeWindowRef };
 }
 
 function setCurrentTarget(target: ResolvedTarget): void {
@@ -1702,6 +1732,7 @@ function setCurrentTarget(target: ResolvedTarget): void {
 		windowTitle: target.windowTitle,
 		windowId: target.windowId,
 		windowRef,
+		nativeWindowRef: target.nativeWindowRef,
 	};
 }
 
@@ -1833,12 +1864,6 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 
 	if (isBrowserApp(app.appName, app.bundleId)) {
 		assertBrowserUseAllowed(app);
-		const isolated = await openIsolatedBrowserWindow(app, signal);
-		if (isolated) {
-			const resolved = toResolvedTarget(app, isolated);
-			setCurrentTarget(resolved);
-			return resolved;
-		}
 	}
 
 	let selected = windows.find((window) => window.windowId !== undefined && window.windowId === frontmost.windowId);
@@ -1898,17 +1923,7 @@ async function resolveTargetForScreenshot(selection: ScreenshotParams, signal?: 
 			const current = runtimeState.currentTarget;
 			const currentBrowserWindow =
 				current && current.pid === app.pid ? windows.find((candidate) => candidate.windowId === current.windowId) : undefined;
-			if (currentBrowserWindow) {
-				window = currentBrowserWindow;
-			} else {
-				const isolated = await openIsolatedBrowserWindow(app, signal);
-				if (isolated) {
-					window = isolated;
-				} else {
-					windows = await listWindows(app.pid, signal);
-					window = choosePreferredWindow(windows, app.appName);
-				}
-			}
+			window = currentBrowserWindow ?? choosePreferredWindow(windows, app.appName);
 		} else {
 			window = choosePreferredWindow(windows, app.appName);
 		}
@@ -2049,6 +2064,7 @@ interface CaptureResult {
 	capture: CurrentCapture;
 	image?: ScreenshotPayload;
 	axTargets: AxTarget[];
+	axDiagnostics?: { reason?: string; message?: string };
 	activation: ActivationFlags;
 }
 
@@ -2071,7 +2087,11 @@ async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal): 
 		result.capture.scaleFactor = result.image.scaleFactor;
 	} catch (error) {
 		if (!isRecoverableScreenshotError(error)) {
-			throw normalizeError(error);
+			const normalized = normalizeError(error);
+			if (isBrowserApp(result.target.appName, result.target.bundleId)) {
+				throw new Error(`${normalized.message} Browser capture failed for ${result.target.appName} window '${result.target.windowTitle}'. Call list_windows and retry screenshot with an explicit existing content window ref, or use navigate_browser for direct URL navigation.`);
+			}
+			throw normalized;
 		}
 		const recovered = await recoverCaptureFromHelperFailure(result.target, error, signal);
 		result.target = recovered.target;
@@ -2079,13 +2099,13 @@ async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal): 
 		result.capture.width = recovered.image.width;
 		result.capture.height = recovered.image.height;
 		result.capture.scaleFactor = recovered.image.scaleFactor;
-		result.axTargets = parseAxTargets(
-			await bridgeCommand(
-				"axListTargets",
-				{ pid: result.target.pid, windowId: result.target.windowId, limit: 12 },
-				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-			).catch(() => []),
-		);
+		const axResult = await bridgeCommand(
+			"axListTargets",
+			{ ...nativeWindowRequest(result.target), limit: 12 },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		).catch((axError) => ({ targets: [], reason: axError instanceof HelperCommandError ? (axError.code ?? "ax_list_failed") : "ax_list_failed" }));
+		result.axTargets = parseAxTargets(axResult);
+		result.axDiagnostics = axDiagnosticsFromResult(axResult, result.target);
 	}
 	setCurrentTarget(result.target);
 	runtimeState.currentCapture = result.capture;
@@ -2100,13 +2120,13 @@ async function captureCurrentTarget(signal?: AbortSignal, priorActivation = empt
 	target = await ensureTargetWindowId(target, signal);
 
 	const capture = captureForTarget(target);
-	const axTargets = parseAxTargets(
-		await bridgeCommand(
-			"axListTargets",
-			{ pid: target.pid, windowId: target.windowId, limit: 12 },
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch(() => []),
-	);
+	const axResult = await bridgeCommand(
+		"axListTargets",
+		{ ...nativeWindowRequest(target), limit: 12 },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch((axError) => ({ targets: [], reason: axError instanceof HelperCommandError ? (axError.code ?? "ax_list_failed") : "ax_list_failed" }));
+	const axTargets = parseAxTargets(axResult);
+	const axDiagnostics = axDiagnosticsFromResult(axResult, target);
 
 	setCurrentTarget(target);
 	runtimeState.currentCapture = capture;
@@ -2117,6 +2137,7 @@ async function captureCurrentTarget(signal?: AbortSignal, priorActivation = empt
 		target,
 		capture,
 		axTargets,
+		axDiagnostics,
 		activation,
 	};
 }
@@ -2143,6 +2164,7 @@ async function buildToolResult(
 			windowTitle: result.target.windowTitle,
 			windowId: result.target.windowId,
 			windowRef: result.target.windowRef ?? runtimeState.currentTarget?.windowRef,
+			nativeWindowRef: result.target.nativeWindowRef ?? runtimeState.currentTarget?.nativeWindowRef,
 		},
 		capture: {
 			stateId: result.capture.stateId,
@@ -2155,6 +2177,7 @@ async function buildToolResult(
 		axTargets: result.axTargets,
 		activation: result.activation,
 		execution,
+		axDiagnostics: result.axDiagnostics,
 		status: "ok",
 		config: getComputerUseConfig(),
 		imageReason: fallbackReason?.reason,
@@ -2255,8 +2278,7 @@ async function dispatchClick(
 			const axResult = await bridgeCommand<AxPressAtPointResult>(
 				"axPressAtPoint",
 				{
-					windowId: target.windowId,
-					pid: target.pid,
+					...nativeWindowRequest(target),
 					x,
 					y,
 					captureWidth: capture.width,
@@ -2274,8 +2296,7 @@ async function dispatchClick(
 				const focusResult = await bridgeCommand<AxFocusResult>(
 					"axFocusAtPoint",
 					{
-						windowId: target.windowId,
-						pid: target.pid,
+						...nativeWindowRequest(target),
 						x,
 						y,
 						captureWidth: capture.width,
@@ -2297,8 +2318,7 @@ async function dispatchClick(
 		await bridgeCommand(
 			"mouseClick",
 			{
-				windowId: target.windowId,
-				pid: target.pid,
+				...nativeWindowRequest(target),
 				x,
 				y,
 				button,
@@ -2355,7 +2375,7 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 async function focusedTextElementRef(target: ResolvedTarget, signal?: AbortSignal): Promise<string | undefined> {
 	const focused: FocusedElementResult = await bridgeCommand<FocusedElementResult>(
 		"focusedElement",
-		{ pid: target.pid, windowId: target.windowId },
+		nativeWindowRequest(target),
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	).catch(() => ({ exists: false } as FocusedElementResult));
 
@@ -2466,7 +2486,7 @@ async function focusBrowserAddressField(keys: string[], target: ResolvedTarget, 
 
 	const focusedTextInput = await bridgeCommand<{ focused?: boolean; elementRef?: string }>(
 		"axFocusTextInput",
-		{ pid: target.pid, windowId: target.windowId },
+		nativeWindowRequest(target),
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	).catch(() => undefined);
 	if (toBoolean(focusedTextInput?.focused)) {
@@ -2477,7 +2497,7 @@ async function focusBrowserAddressField(keys: string[], target: ResolvedTarget, 
 	const refreshed = parseAxTargets(
 		await bridgeCommand(
 			"axListTargets",
-			{ pid: target.pid, windowId: target.windowId, limit: 50 },
+			{ ...nativeWindowRequest(target), limit: 50 },
 			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 		).catch(() => []),
 	);
@@ -2521,7 +2541,7 @@ async function tryWindowAxKeyAction(keys: string[], target: ResolvedTarget, sign
 	const refreshed = parseAxTargets(
 		await bridgeCommand(
 			"axListTargets",
-			{ pid: target.pid, windowId: target.windowId, limit: 50 },
+			{ ...nativeWindowRequest(target), limit: 50 },
 			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 		).catch(() => []),
 	);
@@ -2544,7 +2564,7 @@ async function tryFocusedAxKeyAction(keys: string[], target: ResolvedTarget, sig
 	if (!focused) {
 		const rawFocused = await bridgeCommand<FocusedElementResult>(
 			"focusedElement",
-			{ pid: target.pid, windowId: target.windowId },
+			nativeWindowRequest(target),
 			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 		).catch(() => undefined);
 		if (!rawFocused?.exists || !rawFocused.elementRef) return await tryWindowAxKeyAction(keys, target, signal);
@@ -2633,8 +2653,7 @@ async function tryAxScrollAtPoint(
 	const result = await bridgeCommand<{ scrolled?: boolean; reason?: string }>(
 		"axScrollAtPoint",
 		{
-			windowId: target.windowId,
-			pid: target.pid,
+			...nativeWindowRequest(target),
 			x,
 			y,
 			scrollX,
@@ -2695,8 +2714,7 @@ async function dispatchScroll(
 	await bridgeCommand(
 		"scrollWheel",
 		{
-			windowId: target.windowId,
-			pid: target.pid,
+			...nativeWindowRequest(target),
 			x,
 			y,
 			scrollX,
@@ -2728,7 +2746,7 @@ async function dispatchMoveMouse(
 	ensurePointIsInCapture(x, y, capture);
 	await bridgeCommand(
 		"mouseMove",
-		{ windowId: target.windowId, pid: target.pid, x, y, captureWidth: capture.width, captureHeight: capture.height },
+		{ ...nativeWindowRequest(target), x, y, captureWidth: capture.width, captureHeight: capture.height },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
 	return executionTrace("coordinate_event_move", "default", {
@@ -2797,7 +2815,7 @@ async function dispatchDrag(
 	}
 	await bridgeCommand(
 		"mouseDrag",
-		{ windowId: target.windowId, pid: target.pid, path, captureWidth: capture.width, captureHeight: capture.height },
+		{ ...nativeWindowRequest(target), path, captureWidth: capture.width, captureHeight: capture.height },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
 	return executionTrace("coordinate_event_drag", "default", {
@@ -3179,7 +3197,7 @@ async function performArrangeWindow(params: ArrangeWindowParams, signal?: AbortS
 	return await withWindowWriteLock(target, async () => {
 		const result = await bridgeCommand<any>(
 			"setWindowFrame",
-			{ pid: target.pid, windowId: target.windowId, x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+			{ ...nativeWindowRequest(target), x: frame.x, y: frame.y, width: frame.width, height: frame.height },
 			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 		);
 		if (!toBoolean(result?.ok)) {
@@ -3192,6 +3210,37 @@ async function performArrangeWindow(params: ArrangeWindowParams, signal?: AbortS
 			`Arranged ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
 			captureResult,
 			executionTrace("window_frame", "stealth", { fallbackUsed: false }),
+			signal,
+		);
+	});
+}
+
+async function performNavigateBrowser(params: NavigateBrowserParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
+	await selectWindowIfProvided(params.window, signal);
+	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
+	assertBrowserUseAllowed(target);
+	if (!isBrowserApp(target.appName, target.bundleId)) {
+		throw new Error(`navigate_browser requires a browser window, but the target is '${target.appName}'.`);
+	}
+	const url = trimOrUndefined(params.url);
+	if (!url) {
+		throw new Error("navigate_browser.url must be a non-empty URL or browser-search string.");
+	}
+	const script = browserOpenLocationAppleScript(target, url);
+	if (!script) {
+		throw new Error(`navigate_browser does not yet support direct URL navigation for '${target.appName}'. Use keypress Command+L, type_text, Enter instead.`);
+	}
+	return await withWindowWriteLock(target, async () => {
+		await focusControlledWindow(target, signal);
+		await runAppleScript(script, signal);
+		await sleep(ACTION_SETTLE_MS, signal);
+		const captureResult = await captureCurrentTarget(signal);
+		return await buildToolResult(
+			"navigate_browser",
+			`Navigated ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
+			captureResult,
+			executionTrace("browser_open_location", "stealth", { axAttempted: false, axSucceeded: false, fallbackUsed: false }),
 			signal,
 		);
 	});
@@ -3443,6 +3492,16 @@ export async function executeArrangeWindow(
 	return await executeTool(ctx, signal, () => performArrangeWindow(params, signal));
 }
 
+export async function executeNavigateBrowser(
+	_toolCallId: string,
+	params: NavigateBrowserParams,
+	signal: AbortSignal | undefined,
+	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
+	ctx: ExtensionContext,
+): Promise<AgentToolResult<ComputerUseDetails>> {
+	return await executeTool(ctx, signal, () => performNavigateBrowser(params, signal));
+}
+
 export async function executeComputerActions(
 	_toolCallId: string,
 	params: ComputerActionsParams,
@@ -3529,6 +3588,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 			windowTitle: details.target.windowTitle ?? "(untitled)",
 			windowId: Math.trunc(details.target.windowId),
 			windowRef: typeof details.target.windowRef === "string" ? details.target.windowRef : undefined,
+			nativeWindowRef: typeof (details.target as any).nativeWindowRef === "string" ? (details.target as any).nativeWindowRef : undefined,
 		};
 
 		runtimeState.currentCapture = {

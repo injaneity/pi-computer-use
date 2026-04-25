@@ -11,6 +11,7 @@ import {
 	executeListApps,
 	executeListWindows,
 	executeMoveMouse,
+	executeNavigateBrowser,
 	executeScroll,
 	executeSetText,
 	executeScreenshot,
@@ -336,6 +337,26 @@ const arrangeWindowTool = defineTool({
 	},
 });
 
+const navigateBrowserTool = defineTool({
+	name: "navigate_browser",
+	label: "Navigate Browser",
+	description: "Navigate a target browser window directly to a URL or search string without relying on address-bar keyboard focus.",
+	promptSnippet: "Navigate a browser window directly to a URL using a window ref like @w1.",
+	promptGuidelines: [
+		"Use this for browser navigation instead of Command+L/type_text/Enter when you know the destination URL.",
+		"Pass an explicit window ref from list_windows when the browser has multiple windows.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({
+		url: Type.String({ description: "URL or browser-search string to open" }),
+		window: windowSelectorSchema,
+		image: imageModeSchema,
+	}),
+	async execute(toolCallId, params, signal, onUpdate, ctx) {
+		return await executeNavigateBrowser(toolCallId, params, signal, onUpdate, ctx);
+	},
+});
+
 const batchedActionSchema = Type.Union([
 	Type.Object({
 		type: Type.Literal("click"),
@@ -483,6 +504,7 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		pi.registerTool(setTextTool);
 		pi.registerTool(waitTool);
 		pi.registerTool(arrangeWindowTool);
+		pi.registerTool(navigateBrowserTool);
 		pi.registerTool(computerActionsTool);
 	} catch (error) {
 		if (isDuplicateToolConflict(error)) {

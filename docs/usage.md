@@ -76,6 +76,7 @@ Writes are serialized per target window internally, so multiple agents can safel
 | `set_text` | Replace AX text value | `ref` with `canSetValue` |
 | `wait` | Pause and refresh state | Polling/loading states |
 | `arrange_window` | Move/resize a window deterministically | Presets such as `center_large`, `left_half`, `right_half` |
+| `navigate_browser` | Navigate a browser window directly | Prefer over address-bar keystrokes when you know the URL |
 | `computer_actions` | Batch obvious actions | Use only when intermediate inspection is unnecessary |
 
 ## Text Input

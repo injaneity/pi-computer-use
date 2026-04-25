@@ -558,7 +558,8 @@ final class Bridge {
 	private func setWindowFrame(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		guard let window = windowElement(pid: pid, windowId: windowId) else {
+		let windowRef = optionalStringArg(request, "windowRef")
+		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
 			return ["ok": false, "reason": "window_not_found"]
 		}
 		let x = try doubleArg(request, "x")
@@ -584,7 +585,8 @@ final class Bridge {
 	private func focusWindow(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		guard let window = windowElement(pid: pid, windowId: windowId) else {
+		let windowRef = optionalStringArg(request, "windowRef")
+		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
 			return ["focused": false, "reason": "window_not_found"]
 		}
 
@@ -623,33 +625,38 @@ final class Bridge {
 
 	private func listWindows(pid: Int32) throws -> [[String: Any]] {
 		let appElement = AXUIElementCreateApplication(pid)
+		AXUIElementSetMessagingTimeout(appElement, 1.0)
 		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
 		let candidates = cgWindowCandidates(pid: pid)
 		var usedIds = Set<UInt32>()
 
 		var output: [[String: Any]] = []
 		for window in windows {
-			let title = stringAttribute(window, attribute: kAXTitleAttribute as CFString) ?? ""
-			let frame = frameForWindow(window)
-			let candidate = bestCandidate(frame: frame, title: title, candidates: candidates, usedIds: usedIds)
+			let axTitle = stringAttribute(window, attribute: kAXTitleAttribute as CFString) ?? ""
+			let axFrame = frameForWindow(window)
+			let candidate = bestCandidate(frame: axFrame, title: axTitle, candidates: candidates, usedIds: usedIds)
 			if let candidate {
 				usedIds.insert(candidate.windowId)
 			}
 
+			let effectiveFrame = axFrame.width > 1 && axFrame.height > 1 ? axFrame : (candidate?.bounds ?? axFrame)
+			if effectiveFrame.width < 100 || effectiveFrame.height < 80 { continue }
+			let hasUsableAXFrame = axFrame.width > 1 && axFrame.height > 1
+			let title = hasUsableAXFrame && !axTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? axTitle : (candidate?.title.isEmpty == false ? candidate!.title : axTitle)
 			let windowRef = refStore.storeWindow(window)
 			let isMinimized = boolAttribute(window, attribute: kAXMinimizedAttribute as CFString) ?? false
 			let isMain = boolAttribute(window, attribute: kAXMainAttribute as CFString) ?? false
 			let isFocused = boolAttribute(window, attribute: kAXFocusedAttribute as CFString) ?? false
-			let scale = displayScaleFactor(for: frame)
+			let scale = displayScaleFactor(for: effectiveFrame)
 
 			var item: [String: Any] = [
 				"windowRef": windowRef,
 				"title": title,
 				"framePoints": [
-					"x": frame.origin.x,
-					"y": frame.origin.y,
-					"w": frame.size.width,
-					"h": frame.size.height,
+					"x": effectiveFrame.origin.x,
+					"y": effectiveFrame.origin.y,
+					"w": effectiveFrame.size.width,
+					"h": effectiveFrame.size.height,
 				],
 				"scaleFactor": scale,
 				"isMinimized": isMinimized,
@@ -780,7 +787,8 @@ final class Bridge {
 	private func axFindTextInput(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		guard let window = windowElement(pid: pid, windowId: windowId) else {
+		let windowRef = optionalStringArg(request, "windowRef")
+		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
 			return ["found": false, "reason": "window_not_found"]
 		}
 		let textRoles: Set<String> = [
@@ -829,9 +837,10 @@ final class Bridge {
 	private func axListTargets(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let windowRef = optionalStringArg(request, "windowRef")
 		let limit = max(1, min(50, optionalIntArg(request, "limit") ?? 12))
-		guard let window = windowElement(pid: pid, windowId: windowId) else {
-			return ["targets": []]
+		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
+			return ["targets": [], "reason": "window_not_found"]
 		}
 		let textRoles: Set<String> = [
 			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
@@ -1123,8 +1132,17 @@ final class Bridge {
 		return ["focused": false, "reason": "no_focusable_ancestor"]
 	}
 
-	private func windowElement(pid: Int32, windowId: UInt32?) -> AXUIElement? {
+	private func windowElement(pid: Int32, windowId: UInt32?, windowRef: String? = nil) -> AXUIElement? {
+		if let windowRef, let stored = refStore.window(for: windowRef) {
+			AXUIElementSetMessagingTimeout(stored, 1.0)
+			var ownerPid: pid_t = 0
+			if AXUIElementGetPid(stored, &ownerPid) == .success, ownerPid == pid {
+				return stored
+			}
+		}
+
 		let appElement = AXUIElementCreateApplication(pid)
+		AXUIElementSetMessagingTimeout(appElement, 1.0)
 		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
 		guard !windows.isEmpty else { return nil }
 		guard let windowId else {
@@ -1378,14 +1396,15 @@ final class Bridge {
 	private func focusedElement(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let windowRef = optionalStringArg(request, "windowRef")
 		let app = AXUIElementCreateApplication(pid)
 		guard let focusedValue = copyAttribute(app, attribute: kAXFocusedUIElementAttribute as CFString),
 			let element = asAXElement(focusedValue)
 		else {
 			return ["exists": false]
 		}
-		if let windowId {
-			guard let window = windowElement(pid: pid, windowId: windowId) else {
+		if windowId != nil || windowRef != nil {
+			guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
 				return ["exists": false, "reason": "window_not_found"]
 			}
 			guard isElement(element, descendantOf: window) else {
@@ -1663,8 +1682,11 @@ final class Bridge {
 			}
 		}
 
-		if semaphore.wait(timeout: .now() + .seconds(12)) == .timedOut {
+		if semaphore.wait(timeout: .now() + .seconds(8)) == .timedOut {
 			task.cancel()
+			if let payload = try cgWindowScreenshot(windowId: windowId) {
+				return payload
+			}
 			if let payload = try systemScreenshotWindow(windowId: windowId) {
 				return payload
 			}
@@ -1672,6 +1694,9 @@ final class Bridge {
 		}
 
 		if let error = capturedError.value {
+			if let payload = try cgWindowScreenshot(windowId: windowId) {
+				return payload
+			}
 			if let payload = try systemScreenshotWindow(windowId: windowId) {
 				return payload
 			}
@@ -1682,6 +1707,9 @@ final class Bridge {
 		}
 
 		guard let image = capturedImage.value else {
+			if let payload = try cgWindowScreenshot(windowId: windowId) {
+				return payload
+			}
 			if let payload = try systemScreenshotWindow(windowId: windowId) {
 				return payload
 			}
@@ -1707,6 +1735,14 @@ final class Bridge {
 		]
 	}
 
+	private func cgWindowScreenshot(windowId: UInt32) throws -> [String: Any]? {
+		let options: CGWindowListOption = [.optionIncludingWindow]
+		let imageOptions: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
+		guard let image = CGWindowListCreateImage(.null, options, CGWindowID(windowId), imageOptions) else { return nil }
+		guard image.width > 1, image.height > 1 else { return nil }
+		return try screenshotPayload(image: image, windowId: windowId)
+	}
+
 	private func systemScreenshotWindow(windowId: UInt32) throws -> [String: Any]? {
 		let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent("pi-cu-\(UUID().uuidString).png")
 		defer { try? FileManager.default.removeItem(at: tempUrl) }
@@ -1715,7 +1751,16 @@ final class Bridge {
 		process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
 		process.arguments = ["-x", "-l", String(windowId), tempUrl.path]
 		try process.run()
-		process.waitUntilExit()
+		let deadline = Date().addingTimeInterval(5)
+		while process.isRunning && Date() < deadline {
+			Thread.sleep(forTimeInterval: 0.05)
+		}
+		if process.isRunning {
+			process.terminate()
+			Thread.sleep(forTimeInterval: 0.1)
+			if process.isRunning { process.interrupt() }
+			return nil
+		}
 		guard process.terminationStatus == 0 else { return nil }
 		guard let data = try? Data(contentsOf: tempUrl), !data.isEmpty else { return nil }
 		guard let imageRep = NSBitmapImageRep(data: data), let cgImage = imageRep.cgImage else { return nil }

@@ -60,7 +60,7 @@ Use `/computer-use` in Pi to inspect the effective config and config sources.
 
 ## What It Adds to Pi
 
-- Public tools: `list_apps`, `list_windows`, `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `arrange_window`, `computer_actions`.
+- Public tools: `list_apps`, `list_windows`, `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `arrange_window`, `navigate_browser`, `computer_actions`.
 - AX target refs in tool results, with capabilities such as `canSetValue`, `canPress`, `canFocus`, `canScroll`, and `adjust`.
 - Stable window refs from `list_windows`, with explicit targeting such as `screenshot({ window: "@w1" })` and `click({ window: "@w1", ref: "@eN" })`.
 - State IDs for stale-action detection.
