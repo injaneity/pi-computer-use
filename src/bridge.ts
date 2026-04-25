@@ -787,10 +787,6 @@ function validateStateId(stateId?: string, captureId?: string): CurrentCapture {
 	return runtimeState.currentCapture;
 }
 
-function validateCaptureId(captureId?: string): CurrentCapture {
-	return validateStateId(undefined, captureId);
-}
-
 function parseAxTargets(result: unknown): AxTarget[] {
 	const items = Array.isArray(result) ? result : (result as any)?.targets;
 	if (!Array.isArray(items)) return [];

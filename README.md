@@ -86,7 +86,7 @@ scroll({ ref: "@e3", scrollY: 600 })
 Use coordinates from the latest screenshot only when there is no suitable AX target:
 
 ```ts
-click({ x: 320, y: 180, captureId: "..." })
+click({ x: 320, y: 180, stateId: "..." })
 ```
 
 Replace text through AX value semantics:
@@ -100,7 +100,7 @@ Batch obvious actions when no intermediate inspection is needed:
 
 ```ts
 computer_actions({
-  captureId: "...",
+  stateId: "...",
   actions: [
     { type: "click", ref: "@e1" },
     { type: "set_text", ref: "@e2", text: "https://example.com" },

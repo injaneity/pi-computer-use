@@ -50,7 +50,7 @@ Refs are intentionally short and local to the latest semantic state. If a ref is
 Use coordinates only when no matching AX target is available:
 
 ```ts
-click({ x: 320, y: 180, captureId: "..." })
+click({ x: 320, y: 180, stateId: "..." })
 ```
 
 Coordinates are window-relative screenshot pixels from the latest screenshot. Pass `stateId` from the latest result when you want stale-state validation; `captureId` remains accepted as a legacy alias.
@@ -111,7 +111,7 @@ Common address-field workflow:
 
 ```ts
 computer_actions({
-  captureId: "...",
+  stateId: "...",
   actions: [
     { type: "keypress", keys: ["Command+L"] },
     { type: "type_text", text: "https://example.com" },
@@ -132,7 +132,7 @@ Good fit:
 
 ```ts
 computer_actions({
-  captureId: "...",
+  stateId: "...",
   actions: [
     { type: "click", ref: "@e1" },
     { type: "set_text", ref: "@e2", text: "hello" },

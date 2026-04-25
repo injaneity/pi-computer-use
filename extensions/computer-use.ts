@@ -84,7 +84,6 @@ const screenshotTool = defineTool({
 		app: Type.Optional(Type.String({ description: "Optional app name, e.g. Safari" })),
 		windowTitle: Type.Optional(Type.String({ description: "Optional window title filter" })),
 		window: windowSelectorSchema,
-		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
