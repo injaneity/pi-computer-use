@@ -7,6 +7,8 @@ import {
 	executeDoubleClick,
 	executeDrag,
 	executeKeypress,
+	executeListApps,
+	executeListWindows,
 	executeMoveMouse,
 	executeScroll,
 	executeSetText,
@@ -17,6 +19,43 @@ import {
 	stopBridge,
 } from "../src/bridge.ts";
 import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
+
+const listAppsTool = defineTool({
+	name: "list_apps",
+	label: "List Apps",
+	description: "List running macOS apps that can be inspected for computer-use windows.",
+	promptSnippet: "List running apps before choosing a target window when the app name is unknown or ambiguous.",
+	promptGuidelines: [
+		"Use this when you need to discover available apps before calling list_windows or screenshot.",
+		"Prefer exact app names, bundle IDs, or PIDs from this result when targeting windows.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({}),
+	async execute(toolCallId, params, signal, onUpdate, ctx) {
+		return await executeListApps(toolCallId, params, signal, onUpdate, ctx);
+	},
+});
+
+const listWindowsTool = defineTool({
+	name: "list_windows",
+	label: "List Windows",
+	description: "List controllable windows for running macOS apps, with titles, ids, geometry, and focus state.",
+	promptSnippet: "List windows for an app before selecting a target with screenshot.",
+	promptGuidelines: [
+		"Use app, bundleId, or pid from list_apps to avoid ambiguity.",
+		"Use this when multiple windows may exist or when screenshot selected the wrong window.",
+		"After choosing a window, call screenshot with the app and windowTitle to select and inspect it.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({
+		app: Type.Optional(Type.String({ description: "Optional app name filter, e.g. Safari" })),
+		bundleId: Type.Optional(Type.String({ description: "Optional bundle ID filter, e.g. com.apple.Safari" })),
+		pid: Type.Optional(Type.Number({ description: "Optional process ID filter from list_apps" })),
+	}),
+	async execute(toolCallId, params, signal, onUpdate, ctx) {
+		return await executeListWindows(toolCallId, params, signal, onUpdate, ctx);
+	},
+});
 
 const screenshotTool = defineTool({
 	name: "screenshot",
@@ -343,6 +382,8 @@ function isDuplicateToolConflict(error: unknown): boolean {
 
 export default function computerUseExtension(pi: ExtensionAPI): void {
 	try {
+		pi.registerTool(listAppsTool);
+		pi.registerTool(listWindowsTool);
 		pi.registerTool(screenshotTool);
 		pi.registerTool(clickTool);
 		pi.registerTool(doubleClickTool);

@@ -14,6 +14,12 @@ export interface ScreenshotParams {
 	windowTitle?: string;
 }
 
+export interface ListWindowsParams {
+	app?: string;
+	bundleId?: string;
+	pid?: number;
+}
+
 export interface ClickParams {
 	x?: number;
 	y?: number;
@@ -179,6 +185,46 @@ export interface ComputerUseDetails {
 		| "browser_wait_verification";
 }
 
+export interface ListAppsDetails {
+	tool: "list_apps";
+	apps: Array<{
+		app: string;
+		bundleId?: string;
+		pid: number;
+		isFrontmost: boolean;
+		browserUseAllowed: boolean;
+	}>;
+	config: {
+		browser_use: boolean;
+		stealth_mode: boolean;
+	};
+}
+
+export interface ListWindowsDetails {
+	tool: "list_windows";
+	query: ListWindowsParams;
+	windows: Array<{
+		app: string;
+		bundleId?: string;
+		pid: number;
+		windowTitle: string;
+		windowId?: number;
+		windowRef?: string;
+		framePoints: FramePoints;
+		scaleFactor: number;
+		isMinimized: boolean;
+		isOnscreen: boolean;
+		isMain: boolean;
+		isFocused: boolean;
+		browserUseAllowed: boolean;
+		score: number;
+	}>;
+	config: {
+		browser_use: boolean;
+		stealth_mode: boolean;
+	};
+}
+
 interface HelperApp {
 	appName: string;
 	bundleId?: string;
@@ -337,6 +383,8 @@ interface RuntimeState {
 type MouseButtonName = "left" | "right" | "middle";
 
 const TOOL_NAMES = new Set([
+	"list_apps",
+	"list_windows",
 	"screenshot",
 	"click",
 	"double_click",
@@ -1144,6 +1192,39 @@ async function listApps(signal?: AbortSignal): Promise<HelperApp[]> {
 async function listWindows(pid: number, signal?: AbortSignal): Promise<HelperWindow[]> {
 	const result = await bridgeCommand<unknown>("listWindows", { pid }, { signal });
 	return parseWindows(result);
+}
+
+function appMatchesWindowQuery(app: HelperApp, query: ListWindowsParams): boolean {
+	const appQuery = trimOrUndefined(query.app);
+	const bundleQuery = trimOrUndefined(query.bundleId);
+	const pidQuery = Number.isFinite(query.pid) ? Math.trunc(query.pid!) : undefined;
+
+	if (pidQuery !== undefined && app.pid !== pidQuery) return false;
+	if (bundleQuery && normalizeText(app.bundleId ?? "") !== normalizeText(bundleQuery)) return false;
+	if (appQuery && !normalizeText(app.appName).includes(normalizeText(appQuery))) return false;
+	return true;
+}
+
+function formatAppLine(app: ListAppsDetails["apps"][number]): string {
+	const flags = [app.isFrontmost ? "frontmost" : undefined, app.browserUseAllowed ? undefined : "browser_use_disabled"]
+		.filter(Boolean)
+		.join(", ");
+	return `- ${app.app}${app.bundleId ? ` (${app.bundleId})` : ""}, pid ${app.pid}${flags ? ` [${flags}]` : ""}`;
+}
+
+function formatWindowLine(window: ListWindowsDetails["windows"][number]): string {
+	const flags = [
+		window.isFocused ? "focused" : undefined,
+		window.isMain ? "main" : undefined,
+		window.isOnscreen ? "onscreen" : undefined,
+		window.isMinimized ? "minimized" : undefined,
+		window.browserUseAllowed ? undefined : "browser_use_disabled",
+	]
+		.filter(Boolean)
+		.join(", ");
+	const frame = `${Math.round(window.framePoints.x)},${Math.round(window.framePoints.y)} ${Math.round(window.framePoints.w)}x${Math.round(window.framePoints.h)}`;
+	const id = window.windowId ? `windowId ${window.windowId}` : window.windowRef ? `windowRef ${window.windowRef}` : "unstable window id";
+	return `- ${window.app} — ${window.windowTitle || "(untitled)"} (${id}, pid ${window.pid}, frame ${frame}, score ${window.score}${flags ? `, ${flags}` : ""})`;
 }
 
 async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
@@ -2517,6 +2598,74 @@ async function runCoordinateAction(
 	}
 }
 
+async function performListApps(signal?: AbortSignal): Promise<AgentToolResult<ListAppsDetails>> {
+	const apps = await listApps(signal);
+	const config = getComputerUseConfig();
+	const details: ListAppsDetails = {
+		tool: "list_apps",
+		apps: apps.map((app) => ({
+			app: app.appName,
+			bundleId: app.bundleId,
+			pid: app.pid,
+			isFrontmost: app.isFrontmost === true,
+			browserUseAllowed: config.browser_use || !isBrowserApp(app.appName, app.bundleId),
+		})),
+		config,
+	};
+	const lines = details.apps.map(formatAppLine);
+	const text = lines.length
+		? `Found ${lines.length} running app${lines.length === 1 ? "" : "s"}. Use list_windows with app, bundleId, or pid to inspect target windows.\n${lines.join("\n")}`
+		: "No running apps were available to pi-computer-use.";
+	return { content: [{ type: "text", text }], details };
+}
+
+async function performListWindows(params: ListWindowsParams, signal?: AbortSignal): Promise<AgentToolResult<ListWindowsDetails>> {
+	const rawParams = params ?? {};
+	const query: ListWindowsParams = {
+		app: trimOrUndefined(rawParams.app),
+		bundleId: trimOrUndefined(rawParams.bundleId),
+		pid: Number.isFinite(rawParams.pid) ? Math.trunc(rawParams.pid!) : undefined,
+	};
+	const apps = (await listApps(signal)).filter((app) => appMatchesWindowQuery(app, query));
+	if (apps.length === 0) {
+		throw new Error(
+			`No running app matched list_windows query${query.app ? ` app='${query.app}'` : ""}${query.bundleId ? ` bundleId='${query.bundleId}'` : ""}${query.pid ? ` pid=${query.pid}` : ""}. Call list_apps to inspect running apps.`,
+		);
+	}
+
+	const config = getComputerUseConfig();
+	const windows: ListWindowsDetails["windows"] = [];
+	for (const app of apps) {
+		const appWindows = await listWindows(app.pid, signal);
+		for (const window of appWindows) {
+			windows.push({
+				app: app.appName,
+				bundleId: app.bundleId,
+				pid: app.pid,
+				windowTitle: window.title || "(untitled)",
+				windowId: window.windowId,
+				windowRef: window.windowRef,
+				framePoints: window.framePoints,
+				scaleFactor: window.scaleFactor,
+				isMinimized: window.isMinimized,
+				isOnscreen: window.isOnscreen,
+				isMain: window.isMain,
+				isFocused: window.isFocused,
+				browserUseAllowed: config.browser_use || !isBrowserApp(app.appName, app.bundleId),
+				score: scoreWindow(window),
+			});
+		}
+	}
+	windows.sort((a, b) => b.score - a.score || a.app.localeCompare(b.app) || a.windowTitle.localeCompare(b.windowTitle));
+
+	const details: ListWindowsDetails = { tool: "list_windows", query, windows, config };
+	const lines = windows.map(formatWindowLine);
+	const text = lines.length
+		? `Found ${lines.length} controllable window${lines.length === 1 ? "" : "s"}. Call screenshot with app/windowTitle to select one for now; explicit window targeting is tracked in the roadmap.\n${lines.join("\n")}`
+		: `No controllable windows matched the query. Try opening a window, or call list_apps to confirm the app is running.`;
+	return { content: [{ type: "text", text }], details };
+}
+
 async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	const selection = {
 		app: trimOrUndefined(params.app),
@@ -2840,6 +2989,26 @@ async function executeTool<T>(ctx: ExtensionContext, signal: AbortSignal | undef
 
 		return await run();
 	});
+}
+
+export async function executeListApps(
+	_toolCallId: string,
+	_params: Record<string, never>,
+	signal: AbortSignal | undefined,
+	_onUpdate: AgentToolUpdateCallback<ListAppsDetails> | undefined,
+	ctx: ExtensionContext,
+): Promise<AgentToolResult<ListAppsDetails>> {
+	return await executeTool(ctx, signal, () => performListApps(signal));
+}
+
+export async function executeListWindows(
+	_toolCallId: string,
+	params: ListWindowsParams,
+	signal: AbortSignal | undefined,
+	_onUpdate: AgentToolUpdateCallback<ListWindowsDetails> | undefined,
+	ctx: ExtensionContext,
+): Promise<AgentToolResult<ListWindowsDetails>> {
+	return await executeTool(ctx, signal, () => performListWindows(params, signal));
 }
 
 export async function executeScreenshot(

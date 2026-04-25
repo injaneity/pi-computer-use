@@ -4,12 +4,20 @@ This guide describes how to use `pi-computer-use` tools from Pi once the extensi
 
 ## Core Workflow
 
-Call `screenshot` first. It selects the controlled window and returns the latest semantic state.
+Call `screenshot` first when you already know the target. It selects the controlled window and returns the latest semantic state.
 
 ```ts
 screenshot()
 screenshot({ app: "Safari" })
 screenshot({ app: "TextEdit", windowTitle: "Untitled" })
+```
+
+When the app or window is ambiguous, discover targets first:
+
+```ts
+list_apps()
+list_windows({ app: "Safari" })
+screenshot({ app: "Safari", windowTitle: "Example" })
 ```
 
 Action tools operate on the current controlled window. To switch windows, call `screenshot` again with an app or window title.
@@ -46,6 +54,8 @@ Coordinates are window-relative screenshot pixels from the latest screenshot.
 
 | Tool | Purpose | Prefer |
 | --- | --- | --- |
+| `list_apps` | Discover running apps | Before targeting when app names are unknown or ambiguous |
+| `list_windows` | Discover controllable windows, ids, titles, and geometry | Before targeting multi-window apps |
 | `screenshot` | Select or refresh the controlled window | App/window filters when switching target |
 | `click` | Activate by AX ref or coordinate | `ref` |
 | `double_click` | Open/select items that require double-click | `ref` when available |

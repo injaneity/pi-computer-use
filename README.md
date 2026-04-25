@@ -46,10 +46,12 @@ Required permissions:
 - Accessibility
 - Screen Recording
 
-Then call `screenshot` first in a Pi session. It selects the controlled window and returns the latest semantic state, including AX refs such as `@e1` when available.
+Then call `screenshot` first in a Pi session. It selects the controlled window and returns the latest semantic state, including AX refs such as `@e1` when available. If the target app/window is ambiguous, use `list_apps` and `list_windows` first.
 
 ```ts
-screenshot({ app: "Safari" })
+list_apps()
+list_windows({ app: "Safari" })
+screenshot({ app: "Safari", windowTitle: "Example" })
 click({ ref: "@e1" })
 set_text({ ref: "@e2", text: "hello" })
 ```
@@ -58,7 +60,7 @@ Use `/computer-use` in Pi to inspect the effective config and config sources.
 
 ## What It Adds to Pi
 
-- Public tools: `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`.
+- Public tools: `list_apps`, `list_windows`, `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`.
 - AX target refs in tool results, with capabilities such as `canSetValue`, `canPress`, `canFocus`, `canScroll`, and `adjust`.
 - Ref-first actions such as `click({ ref: "@eN" })`, `scroll({ ref: "@eN" })`, and `set_text({ ref: "@eN", text })`.
 - Batched actions through `computer_actions`, with one post-action semantic state update plus per-action execution metadata.
