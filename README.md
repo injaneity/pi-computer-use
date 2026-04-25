@@ -32,7 +32,7 @@ Codex-style computer use for [Pi](https://pi.dev/) on macOS.
 Install the Pi package:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.2.1
+pi install git:github.com/injaneity/pi-computer-use@v0.2.1
 ```
 
 Start Pi in interactive mode. On the first session, grant macOS permissions to:
@@ -174,15 +174,15 @@ npm install @injaneity/pi-computer-use@0.2.1
 Pi installs should pin a GitHub release tag:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.2.1
-pi install -l git:github.com/injaneity/pi-computer-use#v0.2.1
+pi install git:github.com/injaneity/pi-computer-use@v0.2.1
+pi install -l git:github.com/injaneity/pi-computer-use@v0.2.1
 pi install /absolute/path/to/pi-computer-use
 ```
 
 Remove:
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use#v0.2.1
+pi remove git:github.com/injaneity/pi-computer-use@v0.2.1
 npm remove @injaneity/pi-computer-use
 ```
 
