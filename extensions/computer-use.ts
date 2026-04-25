@@ -20,6 +20,11 @@ import {
 } from "../src/bridge.ts";
 import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
 
+const windowSelectorSchema = Type.Optional(Type.Union([
+	Type.String({ description: "Optional window ref from list_windows, e.g. @w1" }),
+	Type.Number({ description: "Optional numeric windowId from list_windows" }),
+]));
+
 const listAppsTool = defineTool({
 	name: "list_apps",
 	label: "List Apps",
@@ -44,7 +49,7 @@ const listWindowsTool = defineTool({
 	promptGuidelines: [
 		"Use app, bundleId, or pid from list_apps to avoid ambiguity.",
 		"Use this when multiple windows may exist or when screenshot selected the wrong window.",
-		"After choosing a window, call screenshot with the app and windowTitle to select and inspect it.",
+		"After choosing a window, call screenshot with window=@wN to select and inspect it.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
@@ -73,6 +78,7 @@ const screenshotTool = defineTool({
 	parameters: Type.Object({
 		app: Type.Optional(Type.String({ description: "Optional app name, e.g. Safari" })),
 		windowTitle: Type.Optional(Type.String({ description: "Optional window title filter" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeScreenshot(toolCallId, params, signal, onUpdate, ctx);
@@ -97,6 +103,7 @@ const clickTool = defineTool({
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
 		clickCount: Type.Optional(Type.Number({ description: "Number of clicks, default 1" })),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeClick(toolCallId, params, signal, onUpdate, ctx);
@@ -120,6 +127,7 @@ const doubleClickTool = defineTool({
 		ref: Type.Optional(Type.String({ description: "Optional AX target ref from the latest screenshot, e.g. @e1" })),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeDoubleClick(toolCallId, params, signal, onUpdate, ctx);
@@ -140,6 +148,7 @@ const moveMouseTool = defineTool({
 		x: Type.Number({ description: "X coordinate in screenshot pixels" }),
 		y: Type.Number({ description: "Y coordinate in screenshot pixels" }),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeMoveMouse(toolCallId, params, signal, onUpdate, ctx);
@@ -163,6 +172,7 @@ const dragTool = defineTool({
 		)),
 		ref: Type.Optional(Type.String({ description: "Optional AX adjustable target ref from the latest screenshot, e.g. @e1" })),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeDrag(toolCallId, params, signal, onUpdate, ctx);
@@ -186,6 +196,7 @@ const scrollTool = defineTool({
 		scrollX: Type.Optional(Type.Number({ description: "Horizontal scroll delta in pixels" })),
 		scrollY: Type.Optional(Type.Number({ description: "Vertical scroll delta in pixels" })),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeScroll(toolCallId, params, signal, onUpdate, ctx);
@@ -204,6 +215,7 @@ const keypressTool = defineTool({
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
+		window: windowSelectorSchema,
 		keys: Type.Array(Type.String({ description: "Key name or chord, e.g. Enter, Tab, Cmd+L" }), {
 			minItems: 1,
 			description: "Keys to press. Modifier arrays like ['Command','L'] are treated as one chord.",
@@ -227,6 +239,7 @@ const typeTextTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({
 		text: Type.String({ description: "Text to type" }),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeTypeText(toolCallId, params, signal, onUpdate, ctx);
@@ -248,6 +261,7 @@ const setTextTool = defineTool({
 	parameters: Type.Object({
 		text: Type.String({ description: "Replacement text value" }),
 		ref: Type.Optional(Type.String({ description: "Optional AX text target ref from the latest screenshot, e.g. @e1" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeSetText(toolCallId, params, signal, onUpdate, ctx);
@@ -266,6 +280,7 @@ const waitTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({
 		ms: Type.Optional(Type.Number({ description: "Milliseconds to wait (default ~1000ms)" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeWait(toolCallId, params, signal, onUpdate, ctx);
@@ -281,6 +296,7 @@ const batchedActionSchema = Type.Union([
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
 		clickCount: Type.Optional(Type.Number()),
 		captureId: Type.Optional(Type.String()),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("double_click"),
@@ -289,12 +305,14 @@ const batchedActionSchema = Type.Union([
 		ref: Type.Optional(Type.String()),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
 		captureId: Type.Optional(Type.String()),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("move_mouse"),
 		x: Type.Number(),
 		y: Type.Number(),
 		captureId: Type.Optional(Type.String()),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("drag"),
@@ -303,6 +321,7 @@ const batchedActionSchema = Type.Union([
 		})),
 		ref: Type.Optional(Type.String()),
 		captureId: Type.Optional(Type.String()),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("scroll"),
@@ -312,23 +331,28 @@ const batchedActionSchema = Type.Union([
 		scrollX: Type.Optional(Type.Number()),
 		scrollY: Type.Optional(Type.Number()),
 		captureId: Type.Optional(Type.String()),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("keypress"),
 		keys: Type.Array(Type.String(), { minItems: 1 }),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("type_text"),
 		text: Type.String(),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("set_text"),
 		text: Type.String(),
 		ref: Type.Optional(Type.String()),
+		window: windowSelectorSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("wait"),
 		ms: Type.Optional(Type.Number()),
+		window: windowSelectorSchema,
 	}),
 ]);
 
@@ -347,6 +371,7 @@ const computerActionsTool = defineTool({
 	parameters: Type.Object({
 		actions: Type.Array(batchedActionSchema, { minItems: 1, maxItems: 20, description: "One to twenty actions to run sequentially" }),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id for the batch" })),
+		window: windowSelectorSchema,
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
 		return await executeComputerActions(toolCallId, params, signal, onUpdate, ctx);

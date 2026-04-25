@@ -6,12 +6,12 @@ Running checklist for usability, speed, reliability, and multi-window/multi-agen
 
 - [x] Add `list_apps` tool for running app discovery.
 - [x] Add `list_windows` tool for controllable window discovery.
+- [x] Add stable model-facing window refs, e.g. `@w1`.
+- [x] Allow `screenshot({ window })` to select by explicit window ref/id.
+- [x] Allow optional explicit `window` targeting on action tools.
 
 ## Next priorities
 
-- [ ] Add stable model-facing window refs, e.g. `@w1`.
-- [ ] Allow `screenshot({ window })` to select by explicit window ref/id.
-- [ ] Allow optional explicit `window` targeting on action tools.
 - [ ] Generalize `captureId` into a broader `stateId` / `stateToken`.
 - [ ] Improve stale window/ref/capture errors and recovery guidance.
 - [ ] Add per-window write serialization for multi-agent safety.

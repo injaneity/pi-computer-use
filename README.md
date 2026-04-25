@@ -51,8 +51,8 @@ Then call `screenshot` first in a Pi session. It selects the controlled window a
 ```ts
 list_apps()
 list_windows({ app: "Safari" })
-screenshot({ app: "Safari", windowTitle: "Example" })
-click({ ref: "@e1" })
+screenshot({ window: "@w1" })
+click({ window: "@w1", ref: "@e1" })
 set_text({ ref: "@e2", text: "hello" })
 ```
 
@@ -62,6 +62,7 @@ Use `/computer-use` in Pi to inspect the effective config and config sources.
 
 - Public tools: `list_apps`, `list_windows`, `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`.
 - AX target refs in tool results, with capabilities such as `canSetValue`, `canPress`, `canFocus`, `canScroll`, and `adjust`.
+- Stable window refs from `list_windows`, with explicit targeting such as `screenshot({ window: "@w1" })` and `click({ window: "@w1", ref: "@eN" })`.
 - Ref-first actions such as `click({ ref: "@eN" })`, `scroll({ ref: "@eN" })`, and `set_text({ ref: "@eN", text })`.
 - Batched actions through `computer_actions`, with one post-action semantic state update plus per-action execution metadata.
 - Execution metadata that reports `stealth` for background-safe AX paths and `default` for focus/raw-event fallbacks.

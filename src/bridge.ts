@@ -9,9 +9,12 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputerUseConfig } from "./config.ts";
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
 
+type WindowSelector = string | number;
+
 export interface ScreenshotParams {
 	app?: string;
 	windowTitle?: string;
+	window?: WindowSelector;
 }
 
 export interface ListWindowsParams {
@@ -20,7 +23,11 @@ export interface ListWindowsParams {
 	pid?: number;
 }
 
-export interface ClickParams {
+interface WindowTargetParams {
+	window?: WindowSelector;
+}
+
+export interface ClickParams extends WindowTargetParams {
 	x?: number;
 	y?: number;
 	ref?: string;
@@ -29,20 +36,20 @@ export interface ClickParams {
 	clickCount?: number;
 }
 
-export interface TypeTextParams {
+export interface TypeTextParams extends WindowTargetParams {
 	text: string;
 }
 
-export interface SetTextParams {
+export interface SetTextParams extends WindowTargetParams {
 	text: string;
 	ref?: string;
 }
 
-export interface KeypressParams {
+export interface KeypressParams extends WindowTargetParams {
 	keys: string[];
 }
 
-export interface ScrollParams {
+export interface ScrollParams extends WindowTargetParams {
 	x?: number;
 	y?: number;
 	ref?: string;
@@ -51,13 +58,13 @@ export interface ScrollParams {
 	captureId?: string;
 }
 
-export interface MoveMouseParams {
+export interface MoveMouseParams extends WindowTargetParams {
 	x: number;
 	y: number;
 	captureId?: string;
 }
 
-export interface DragParams {
+export interface DragParams extends WindowTargetParams {
 	path?: Array<{ x: number; y: number } | [number, number]>;
 	ref?: string;
 	captureId?: string;
@@ -74,12 +81,12 @@ export type ComputerAction =
 	| ({ type: "set_text" } & SetTextParams)
 	| ({ type: "wait" } & WaitParams);
 
-export interface ComputerActionsParams {
+export interface ComputerActionsParams extends WindowTargetParams {
 	actions: ComputerAction[];
 	captureId?: string;
 }
 
-export interface WaitParams {
+export interface WaitParams extends WindowTargetParams {
 	ms?: number;
 }
 
@@ -89,6 +96,7 @@ export interface CurrentTarget {
 	pid: number;
 	windowTitle: string;
 	windowId: number;
+	windowRef?: string;
 }
 
 export interface CurrentCapture {
@@ -159,6 +167,7 @@ export interface ComputerUseDetails {
 		pid: number;
 		windowTitle: string;
 		windowId: number;
+		windowRef?: string;
 	};
 	capture: {
 		captureId: string;
@@ -209,7 +218,8 @@ export interface ListWindowsDetails {
 		pid: number;
 		windowTitle: string;
 		windowId?: number;
-		windowRef?: string;
+		windowRef: string;
+		nativeWindowRef?: string;
 		framePoints: FramePoints;
 		scaleFactor: number;
 		isMinimized: boolean;
@@ -364,10 +374,29 @@ interface PendingBrowserAddress {
 	windowId: number;
 }
 
+interface WindowRefRecord {
+	ref: string;
+	appName: string;
+	bundleId?: string;
+	pid: number;
+	windowTitle: string;
+	windowId?: number;
+	nativeWindowRef?: string;
+	framePoints: FramePoints;
+	scaleFactor: number;
+	isMinimized: boolean;
+	isOnscreen: boolean;
+	isMain: boolean;
+	isFocused: boolean;
+}
+
 interface RuntimeState {
 	currentTarget?: CurrentTarget;
 	currentCapture?: CurrentCapture;
 	currentAxTargets?: AxTarget[];
+	windowRefs: Map<string, WindowRefRecord>;
+	windowRefByIdentity: Map<string, string>;
+	nextWindowRefIndex: number;
 	allowNextTypeTextAxReplacement?: boolean;
 	pendingBrowserAddress?: PendingBrowserAddress;
 	helper?: ChildProcessWithoutNullStreams;
@@ -477,6 +506,9 @@ const runtimeState: RuntimeState = {
 	lastPermissionCheckAt: 0,
 	helperInstallChecked: false,
 	allowNextTypeTextAxReplacement: false,
+	windowRefs: new Map(),
+	windowRefByIdentity: new Map(),
+	nextWindowRefIndex: 1,
 };
 
 class HelperTransportError extends Error {
@@ -1223,8 +1255,8 @@ function formatWindowLine(window: ListWindowsDetails["windows"][number]): string
 		.filter(Boolean)
 		.join(", ");
 	const frame = `${Math.round(window.framePoints.x)},${Math.round(window.framePoints.y)} ${Math.round(window.framePoints.w)}x${Math.round(window.framePoints.h)}`;
-	const id = window.windowId ? `windowId ${window.windowId}` : window.windowRef ? `windowRef ${window.windowRef}` : "unstable window id";
-	return `- ${window.app} — ${window.windowTitle || "(untitled)"} (${id}, pid ${window.pid}, frame ${frame}, score ${window.score}${flags ? `, ${flags}` : ""})`;
+	const id = window.windowId ? `windowId ${window.windowId}` : window.nativeWindowRef ? `nativeWindowRef ${window.nativeWindowRef}` : "unstable window id";
+	return `- ${window.windowRef} ${window.app} — ${window.windowTitle || "(untitled)"} (${id}, pid ${window.pid}, frame ${frame}, score ${window.score}${flags ? `, ${flags}` : ""})`;
 }
 
 async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
@@ -1302,6 +1334,69 @@ function windowIdentity(window: HelperWindow): string {
 	}
 	const { x, y, w, h } = window.framePoints;
 	return `title:${normalizeText(window.title)}|frame:${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`;
+}
+
+function windowRecordIdentity(record: Pick<WindowRefRecord, "pid" | "windowId" | "nativeWindowRef" | "windowTitle" | "framePoints">): string {
+	if (record.windowId && record.windowId > 0) {
+		return `pid:${record.pid}|id:${record.windowId}`;
+	}
+	if (record.nativeWindowRef) {
+		return `pid:${record.pid}|ref:${record.nativeWindowRef}`;
+	}
+	const { x, y, w, h } = record.framePoints;
+	return `pid:${record.pid}|title:${normalizeText(record.windowTitle)}|frame:${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`;
+}
+
+function storeWindowRef(record: Omit<WindowRefRecord, "ref">): WindowRefRecord {
+	const identity = windowRecordIdentity(record);
+	const existingRef = runtimeState.windowRefByIdentity.get(identity);
+	if (existingRef) {
+		const existing = runtimeState.windowRefs.get(existingRef);
+		if (existing) {
+			const updated = { ...record, ref: existingRef };
+			runtimeState.windowRefs.set(existingRef, updated);
+			return updated;
+		}
+	}
+
+	const ref = `@w${runtimeState.nextWindowRefIndex++}`;
+	const stored = { ...record, ref };
+	runtimeState.windowRefByIdentity.set(identity, ref);
+	runtimeState.windowRefs.set(ref, stored);
+	return stored;
+}
+
+function storeWindowRefForTarget(target: ResolvedTarget): string {
+	return storeWindowRef({
+		appName: target.appName,
+		bundleId: target.bundleId,
+		pid: target.pid,
+		windowTitle: target.windowTitle,
+		windowId: target.windowId > 0 ? target.windowId : undefined,
+		framePoints: target.framePoints,
+		scaleFactor: target.scaleFactor,
+		isMinimized: target.isMinimized,
+		isOnscreen: target.isOnscreen,
+		isMain: target.isMain,
+		isFocused: target.isFocused,
+	}).ref;
+}
+
+function storeWindowRefForAppWindow(app: HelperApp, window: HelperWindow): WindowRefRecord {
+	return storeWindowRef({
+		appName: app.appName,
+		bundleId: app.bundleId,
+		pid: app.pid,
+		windowTitle: window.title || "(untitled)",
+		windowId: window.windowId,
+		nativeWindowRef: window.windowRef,
+		framePoints: window.framePoints,
+		scaleFactor: window.scaleFactor,
+		isMinimized: window.isMinimized,
+		isOnscreen: window.isOnscreen,
+		isMain: window.isMain,
+		isFocused: window.isFocused,
+	});
 }
 
 function escapeAppleScriptString(value: string): string {
@@ -1528,7 +1623,7 @@ function chooseWindowByTitle(windows: HelperWindow[], windowTitle: string, appNa
 }
 
 function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget {
-	return {
+	const baseTarget = {
 		appName: app.appName,
 		bundleId: app.bundleId,
 		pid: app.pid,
@@ -1541,17 +1636,89 @@ function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget 
 		isMain: window.isMain,
 		isFocused: window.isFocused,
 	};
+	return { ...baseTarget, windowRef: storeWindowRefForAppWindow(app, window).ref };
 }
 
 function setCurrentTarget(target: ResolvedTarget): void {
 	assertBrowserUseAllowed(target);
+	const windowRef = target.windowRef ?? storeWindowRefForTarget(target);
 	runtimeState.currentTarget = {
 		appName: target.appName,
 		bundleId: target.bundleId,
 		pid: target.pid,
 		windowTitle: target.windowTitle,
 		windowId: target.windowId,
+		windowRef,
 	};
+}
+
+function normalizeWindowSelector(selector: WindowSelector | undefined): string | undefined {
+	if (typeof selector === "number" && Number.isFinite(selector)) return String(Math.trunc(selector));
+	if (typeof selector === "string") return trimOrUndefined(selector);
+	return undefined;
+}
+
+async function resolveTargetByWindowSelector(selector: WindowSelector, signal?: AbortSignal): Promise<ResolvedTarget> {
+	const normalized = normalizeWindowSelector(selector);
+	if (!normalized) {
+		throw new Error("window target must be a non-empty @w ref or numeric windowId.");
+	}
+
+	const current = runtimeState.currentTarget;
+	if (current?.windowRef === normalized) {
+		return await resolveCurrentTarget(signal);
+	}
+
+	const fromRef = runtimeState.windowRefs.get(normalized);
+	if (fromRef) {
+		const app: HelperApp = { appName: fromRef.appName, bundleId: fromRef.bundleId, pid: fromRef.pid };
+		const windows = await listWindows(fromRef.pid, signal);
+		const match =
+			(fromRef.windowId ? windows.find((window) => window.windowId === fromRef.windowId) : undefined) ??
+			(fromRef.nativeWindowRef ? windows.find((window) => window.windowRef === fromRef.nativeWindowRef) : undefined) ??
+			windows.find((window) => normalizeText(window.title || "(untitled)") === normalizeText(fromRef.windowTitle));
+		if (!match) {
+			throw new Error(`Window ref '${normalized}' is stale. Call list_windows again and choose a current window.`);
+		}
+		const resolved = toResolvedTarget(app, match);
+		setCurrentTarget(resolved);
+		return resolved;
+	}
+
+	const numericWindowId = Number(normalized);
+	if (Number.isInteger(numericWindowId) && numericWindowId > 0) {
+		const apps = await listApps(signal);
+		for (const app of apps) {
+			const windows = await listWindows(app.pid, signal);
+			const match = windows.find((window) => window.windowId === numericWindowId);
+			if (match) {
+				assertBrowserUseAllowed(app);
+				const resolved = toResolvedTarget(app, match);
+				setCurrentTarget(resolved);
+				return resolved;
+			}
+		}
+		throw new Error(`Window id '${numericWindowId}' was not found. Call list_windows again and choose a current window.`);
+	}
+
+	if (normalized.startsWith("@w")) {
+		throw new Error(`Window ref '${normalized}' is not available in this session. Call list_windows first.`);
+	}
+	throw new Error(`Unsupported window target '${normalized}'. Use a @w ref from list_windows or a numeric windowId.`);
+}
+
+async function selectWindowIfProvided(selector: WindowSelector | undefined, signal?: AbortSignal): Promise<void> {
+	if (!normalizeWindowSelector(selector)) return;
+	const previous = runtimeState.currentTarget;
+	const selected = await resolveTargetByWindowSelector(selector!, signal);
+	const changedWindow =
+		!previous ||
+		previous.pid !== selected.pid ||
+		(previous.windowId > 0 && selected.windowId > 0 ? previous.windowId !== selected.windowId : previous.windowRef !== selected.windowRef);
+	if (changedWindow) {
+		runtimeState.currentCapture = undefined;
+		runtimeState.currentAxTargets = undefined;
+	}
 }
 
 async function resolveCurrentTarget(signal?: AbortSignal): Promise<ResolvedTarget> {
@@ -1633,6 +1800,12 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 }
 
 function matchesScreenshotSelection(target: ResolvedTarget, selection: ScreenshotParams): boolean {
+	const windowQuery = normalizeWindowSelector(selection.window);
+	if (windowQuery) {
+		if (target.windowRef === windowQuery) return true;
+		const numeric = Number(windowQuery);
+		return Number.isInteger(numeric) && numeric > 0 && target.windowId === numeric;
+	}
 	const appQuery = trimOrUndefined(selection.app);
 	const windowTitleQuery = trimOrUndefined(selection.windowTitle);
 	if (appQuery && !normalizeText(target.appName).includes(normalizeText(appQuery))) {
@@ -1913,6 +2086,7 @@ async function buildToolResult(
 			pid: result.target.pid,
 			windowTitle: result.target.windowTitle,
 			windowId: result.target.windowId,
+			windowRef: result.target.windowRef ?? runtimeState.currentTarget?.windowRef,
 		},
 		capture: {
 			captureId: result.capture.captureId,
@@ -2638,13 +2812,15 @@ async function performListWindows(params: ListWindowsParams, signal?: AbortSigna
 	for (const app of apps) {
 		const appWindows = await listWindows(app.pid, signal);
 		for (const window of appWindows) {
+			const storedRef = storeWindowRefForAppWindow(app, window);
 			windows.push({
 				app: app.appName,
 				bundleId: app.bundleId,
 				pid: app.pid,
 				windowTitle: window.title || "(untitled)",
 				windowId: window.windowId,
-				windowRef: window.windowRef,
+				windowRef: storedRef.ref,
+				nativeWindowRef: window.windowRef,
 				framePoints: window.framePoints,
 				scaleFactor: window.scaleFactor,
 				isMinimized: window.isMinimized,
@@ -2661,7 +2837,7 @@ async function performListWindows(params: ListWindowsParams, signal?: AbortSigna
 	const details: ListWindowsDetails = { tool: "list_windows", query, windows, config };
 	const lines = windows.map(formatWindowLine);
 	const text = lines.length
-		? `Found ${lines.length} controllable window${lines.length === 1 ? "" : "s"}. Call screenshot with app/windowTitle to select one for now; explicit window targeting is tracked in the roadmap.\n${lines.join("\n")}`
+		? `Found ${lines.length} controllable window${lines.length === 1 ? "" : "s"}. Use the @w refs with screenshot({ window: "@wN" }) or action tools' optional window field.\n${lines.join("\n")}`
 		: `No controllable windows matched the query. Try opening a window, or call list_apps to confirm the app is running.`;
 	return { content: [{ type: "text", text }], details };
 }
@@ -2670,20 +2846,24 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 	const selection = {
 		app: trimOrUndefined(params.app),
 		windowTitle: trimOrUndefined(params.windowTitle),
+		window: normalizeWindowSelector(params.window),
 	};
 
-	const requestedTarget = await resolveTargetForScreenshot(selection, signal);
+	const requestedTarget = selection.window
+		? await resolveTargetByWindowSelector(params.window!, signal)
+		: await resolveTargetForScreenshot(selection, signal);
 	const captureResult = await captureCurrentTarget(signal);
 	if (!matchesScreenshotSelection(captureResult.target, selection)) {
 		throw new Error(
 			`Screenshot target drifted from the requested selection. Requested ${requestedTarget.appName} — ${requestedTarget.windowTitle}, captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Call screenshot again or specify a more exact window title.`,
 		);
 	}
-	const summary = `Captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
+	const summary = `Captured ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal);
 }
 
 async function performClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const capture = validateCaptureId(params.captureId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
@@ -2707,6 +2887,7 @@ async function performClick(params: ClickParams, signal?: AbortSignal): Promise<
 }
 
 async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
 	const currentTarget = await resolveCurrentTarget(signal);
 	let activation = emptyActivation();
@@ -2730,6 +2911,7 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 }
 
 async function performSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
 	const currentTarget = await resolveCurrentTarget(signal);
 	let activation = emptyActivation();
@@ -2753,6 +2935,7 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 }
 
 async function performKeypress(params: KeypressParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const keys = normalizeKeyList(params.keys);
 	const currentTarget = await resolveCurrentTarget(signal);
 	let activation = emptyActivation();
@@ -2776,6 +2959,7 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 }
 
 async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const capture = validateCaptureId(params.captureId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
@@ -2793,6 +2977,7 @@ async function performScroll(params: ScrollParams, signal?: AbortSignal): Promis
 }
 
 async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const capture = validateCaptureId(params.captureId);
 	return await runCoordinateAction(
 		"move_mouse",
@@ -2805,6 +2990,7 @@ async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): 
 }
 
 async function performDrag(params: DragParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const capture = validateCaptureId(params.captureId);
 	return await runCoordinateAction(
 		"drag",
@@ -2816,6 +3002,7 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 }
 
 async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const capture = validateCaptureId(params.captureId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
@@ -2875,7 +3062,16 @@ function actionMayChangeState(action: ComputerAction | undefined): boolean {
 	return action?.type !== "wait";
 }
 
+function actionWindowMatchesTarget(selector: WindowSelector | undefined, target: ResolvedTarget): boolean {
+	const normalized = normalizeWindowSelector(selector);
+	if (!normalized) return true;
+	if (target.windowRef === normalized) return true;
+	const numeric = Number(normalized);
+	return Number.isInteger(numeric) && numeric > 0 && target.windowId === numeric;
+}
+
 async function performComputerActions(params: ComputerActionsParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	const capture = validateCaptureId(params.captureId);
 	const actions = Array.isArray(params.actions) ? params.actions : [];
 	if (actions.length === 0) {
@@ -2902,6 +3098,11 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 			const action = actions[index];
 			if (!action || typeof (action as any).type !== "string") {
 				throw new Error(`computer_actions action ${index + 1} is missing a valid type.`);
+			}
+			if (!actionWindowMatchesTarget((action as any).window, readyTarget)) {
+				throw new Error(
+					`computer_actions action ${index + 1} targets a different window. Use one computer_actions call per window, or set the top-level window field to the intended target.`,
+				);
 			}
 			if ((action as any)?.captureId && (action as any).captureId !== capture.captureId) {
 				throw new Error(STALE_CAPTURE_ERROR);
@@ -2966,6 +3167,7 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 }
 
 async function performWait(params: WaitParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	await selectWindowIfProvided(params.window, signal);
 	if (!runtimeState.currentTarget) {
 		throw new Error(MISSING_TARGET_ERROR);
 	}
@@ -3125,14 +3327,47 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	runtimeState.currentTarget = undefined;
 	runtimeState.currentCapture = undefined;
 	runtimeState.currentAxTargets = undefined;
+	runtimeState.windowRefs.clear();
+	runtimeState.windowRefByIdentity.clear();
+	runtimeState.nextWindowRefIndex = 1;
 
+	let restoredCurrent = false;
 	for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
 		if ((entry as any)?.type !== "message") continue;
 		const message = (entry as any).message;
 		if (!message || message.role !== "toolResult") continue;
 		if (!TOOL_NAMES.has(message.toolName)) continue;
 
-		const details = message.details as Partial<ComputerUseDetails> | undefined;
+		const rawDetails = message.details as any;
+		if (rawDetails?.tool === "list_windows" && Array.isArray(rawDetails.windows)) {
+			for (const window of rawDetails.windows) {
+				if (typeof window?.windowRef !== "string" || !Number.isFinite(window?.pid)) continue;
+				const record: WindowRefRecord = {
+					ref: window.windowRef,
+					appName: typeof window.app === "string" ? window.app : "Unknown App",
+					bundleId: typeof window.bundleId === "string" ? window.bundleId : undefined,
+					pid: Math.trunc(window.pid),
+					windowTitle: typeof window.windowTitle === "string" ? window.windowTitle : "(untitled)",
+					windowId: Number.isFinite(window.windowId) ? Math.trunc(window.windowId) : undefined,
+					nativeWindowRef: typeof window.nativeWindowRef === "string" ? window.nativeWindowRef : undefined,
+					framePoints: parseFramePoints({ framePoints: window.framePoints }),
+					scaleFactor: Math.max(1, toFiniteNumber(window.scaleFactor, 1)),
+					isMinimized: toBoolean(window.isMinimized),
+					isOnscreen: toBoolean(window.isOnscreen),
+					isMain: toBoolean(window.isMain),
+					isFocused: toBoolean(window.isFocused),
+				};
+				runtimeState.windowRefs.set(record.ref, record);
+				runtimeState.windowRefByIdentity.set(windowRecordIdentity(record), record.ref);
+				const match = /^@w(\d+)$/.exec(record.ref);
+				if (match) runtimeState.nextWindowRefIndex = Math.max(runtimeState.nextWindowRefIndex, Number(match[1]) + 1);
+			}
+			continue;
+		}
+
+		if (restoredCurrent) continue;
+
+		const details = rawDetails as Partial<ComputerUseDetails> | undefined;
 		if (!details?.target || !details?.capture) continue;
 
 		const app =
@@ -3152,6 +3387,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 			pid: Math.trunc(details.target.pid),
 			windowTitle: details.target.windowTitle ?? "(untitled)",
 			windowId: Math.trunc(details.target.windowId),
+			windowRef: typeof details.target.windowRef === "string" ? details.target.windowRef : undefined,
 		};
 
 		runtimeState.currentCapture = {
@@ -3165,7 +3401,8 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 			? details.axTargets.filter((item): item is AxTarget => Boolean(item && typeof item.ref === "string" && typeof item.elementRef === "string"))
 			: undefined;
 
-		break;
+		restoredCurrent = true;
+		continue;
 	}
 }
 

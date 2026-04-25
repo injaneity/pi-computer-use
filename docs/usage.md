@@ -17,10 +17,15 @@ When the app or window is ambiguous, discover targets first:
 ```ts
 list_apps()
 list_windows({ app: "Safari" })
-screenshot({ app: "Safari", windowTitle: "Example" })
+screenshot({ window: "@w1" })
 ```
 
-Action tools operate on the current controlled window. To switch windows, call `screenshot` again with an app or window title.
+Action tools operate on the current controlled window by default. To switch windows, call `screenshot` again with an app/window title or a `window` ref from `list_windows`. You can also pass `window` to action tools when you want to make the intended target explicit:
+
+```ts
+click({ window: "@w1", ref: "@e1" })
+keypress({ window: "@w1", keys: ["Enter"] })
+```
 
 Tool results include:
 
@@ -56,7 +61,7 @@ Coordinates are window-relative screenshot pixels from the latest screenshot.
 | --- | --- | --- |
 | `list_apps` | Discover running apps | Before targeting when app names are unknown or ambiguous |
 | `list_windows` | Discover controllable windows, ids, titles, and geometry | Before targeting multi-window apps |
-| `screenshot` | Select or refresh the controlled window | App/window filters when switching target |
+| `screenshot` | Select or refresh the controlled window | `window` refs or app/window filters when switching target |
 | `click` | Activate by AX ref or coordinate | `ref` |
 | `double_click` | Open/select items that require double-click | `ref` when available |
 | `move_mouse` | Trigger hover behavior | Coordinates |
