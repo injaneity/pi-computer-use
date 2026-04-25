@@ -83,7 +83,7 @@ Use AX refs from the latest `screenshot`, open a dedicated browser window manual
 
 ## Coordinates Are Rejected As Stale
 
-Coordinates are valid only for the latest screenshot state. Call `screenshot` again and retry with the new `captureId`.
+Coordinates are valid only for the latest screenshot state. Call `screenshot` again and retry with the new `stateId`. `captureId` remains accepted as a legacy alias.
 
 ## An AX Ref Is Missing Or Stale
 
