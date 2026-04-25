@@ -57,6 +57,8 @@ Coordinates are window-relative screenshot pixels from the latest screenshot. Pa
 
 Use `image: "always"` when visual verification matters, `image: "never"` to suppress image attachments, or omit it for the default `auto` behavior.
 
+Writes are serialized per target window internally, so multiple agents can safely queue actions against the same `@w` ref. Scroll failures include the best available AX reason and recovery guidance when fallback coordinates are required.
+
 ## Tool Reference
 
 | Tool | Purpose | Prefer |

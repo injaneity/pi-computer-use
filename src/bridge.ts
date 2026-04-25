@@ -419,6 +419,7 @@ interface RuntimeState {
 	currentAxTargets?: AxTarget[];
 	windowRefs: Map<string, WindowRefRecord>;
 	windowRefByIdentity: Map<string, string>;
+	windowWriteQueues: Map<string, Promise<void>>;
 	nextWindowRefIndex: number;
 	allowNextTypeTextAxReplacement?: boolean;
 	pendingBrowserAddress?: PendingBrowserAddress;
@@ -532,6 +533,7 @@ const runtimeState: RuntimeState = {
 	allowNextTypeTextAxReplacement: false,
 	windowRefs: new Map(),
 	windowRefByIdentity: new Map(),
+	windowWriteQueues: new Map(),
 	nextWindowRefIndex: 1,
 };
 
@@ -656,6 +658,30 @@ async function withRuntimeLock<T>(work: () => Promise<T>): Promise<T> {
 		return await work();
 	} finally {
 		release();
+	}
+}
+
+function windowWriteLockKey(target: ResolvedTarget | CurrentTarget): string {
+	return target.windowId > 0 ? `pid:${target.pid}:window:${target.windowId}` : `pid:${target.pid}:ref:${target.windowRef ?? target.windowTitle}`;
+}
+
+async function withWindowWriteLock<T>(target: ResolvedTarget | CurrentTarget, work: () => Promise<T>): Promise<T> {
+	const key = windowWriteLockKey(target);
+	const previous = runtimeState.windowWriteQueues.get(key) ?? Promise.resolve();
+	let release!: () => void;
+	const next = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const queued = previous.catch(() => undefined).then(() => next);
+	runtimeState.windowWriteQueues.set(key, queued);
+	await previous.catch(() => undefined);
+	try {
+		return await work();
+	} finally {
+		release();
+		if (runtimeState.windowWriteQueues.get(key) === queued) {
+			runtimeState.windowWriteQueues.delete(key);
+		}
 	}
 }
 
@@ -2594,13 +2620,18 @@ function scrollStepCount(delta: number): number {
 	return Math.max(1, Math.min(8, Math.ceil(Math.abs(delta) / 500)));
 }
 
-async function tryAxScrollElement(elementRef: string, target: ResolvedTarget, scrollX: number, scrollY: number, signal?: AbortSignal): Promise<boolean> {
-	const result = await bridgeCommand<{ scrolled?: boolean }>(
+interface ScrollAttemptResult {
+	scrolled: boolean;
+	reason?: string;
+}
+
+async function tryAxScrollElement(elementRef: string, target: ResolvedTarget, scrollX: number, scrollY: number, signal?: AbortSignal): Promise<ScrollAttemptResult> {
+	const result = await bridgeCommand<{ scrolled?: boolean; reason?: string }>(
 		"axScrollElement",
 		{ elementRef, pid: target.pid, scrollX, scrollY, steps: Math.max(scrollStepCount(scrollX), scrollStepCount(scrollY)) },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch(() => undefined);
-	return toBoolean(result?.scrolled);
+	).catch((error) => ({ scrolled: false, reason: normalizeError(error).message }));
+	return { scrolled: toBoolean(result?.scrolled), reason: toOptionalString(result?.reason) };
 }
 
 async function tryAxScrollAtPoint(
@@ -2611,8 +2642,8 @@ async function tryAxScrollAtPoint(
 	scrollX: number,
 	scrollY: number,
 	signal?: AbortSignal,
-): Promise<boolean> {
-	const result = await bridgeCommand<{ scrolled?: boolean }>(
+): Promise<ScrollAttemptResult> {
+	const result = await bridgeCommand<{ scrolled?: boolean; reason?: string }>(
 		"axScrollAtPoint",
 		{
 			windowId: target.windowId,
@@ -2626,8 +2657,8 @@ async function tryAxScrollAtPoint(
 			captureHeight: capture.height,
 		},
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch(() => undefined);
-	return toBoolean(result?.scrolled);
+	).catch((error) => ({ scrolled: false, reason: normalizeError(error).message }));
+	return { scrolled: toBoolean(result?.scrolled), reason: toOptionalString(result?.reason) };
 }
 
 async function dispatchScroll(
@@ -2645,32 +2676,33 @@ async function dispatchScroll(
 		throw new Error("scroll requires a non-zero scrollX or scrollY.");
 	}
 
-	let scrolledViaAX = false;
+	let scrollAttempt: ScrollAttemptResult = { scrolled: false };
 	if (ref) {
 		const axTarget = axTargetByRef(ref);
-		scrolledViaAX = await tryAxScrollElement(axTarget.elementRef, target, scrollX, scrollY, signal);
-		if (!scrolledViaAX) {
+		scrollAttempt = await tryAxScrollElement(axTarget.elementRef, target, scrollX, scrollY, signal);
+		if (!scrollAttempt.scrolled) {
 			const reacquired = await reacquireAxTarget(axTarget, target, signal);
 			if (reacquired) {
-				scrolledViaAX = await tryAxScrollElement(reacquired.elementRef, target, scrollX, scrollY, signal);
+				scrollAttempt = await tryAxScrollElement(reacquired.elementRef, target, scrollX, scrollY, signal);
 			}
 		}
 	} else if (Number.isFinite(x) && Number.isFinite(y)) {
 		ensurePointIsInCapture(x, y, capture);
-		scrolledViaAX = await tryAxScrollAtPoint(target, capture, x, y, scrollX, scrollY, signal);
+		scrollAttempt = await tryAxScrollAtPoint(target, capture, x, y, scrollX, scrollY, signal);
 	} else {
-		throw new Error("scroll requires either ref or both x and y.");
+		throw new Error("scroll requires either ref or both x and y. If the target came from an old state, call screenshot again and retry with a current @e scroll ref or coordinates.");
 	}
 
-	if (scrolledViaAX) {
+	if (scrollAttempt.scrolled) {
 		return executionTrace("ax_scroll", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 	}
 
+	const reasonText = scrollAttempt.reason ? ` Reason: ${scrollAttempt.reason}.` : "";
 	if (isStrictAxMode()) {
-		strictModeBlock(ref ? `AX scroll could not be completed for ${ref}.` : `AX scroll could not be completed at (${Math.round(x)},${Math.round(y)}).`);
+		strictModeBlock(ref ? `AX scroll could not be completed for ${ref}.${reasonText}` : `AX scroll could not be completed at (${Math.round(x)},${Math.round(y)}).${reasonText}`);
 	}
 	if (!Number.isFinite(x) || !Number.isFinite(y)) {
-		throw new Error("Coordinate scroll fallback requires x and y. Provide coordinates from the latest screenshot or use stealth-compatible AX scroll target.");
+		throw new Error(`Coordinate scroll fallback requires x and y.${reasonText} Provide coordinates from the latest screenshot or use a current AX scroll target.`);
 	}
 	ensurePointIsInCapture(x, y, capture);
 	await bridgeCommand(
@@ -2802,12 +2834,14 @@ async function runCoordinateAction(
 
 	try {
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		const execution = await dispatch(readyTarget);
-		stateMayHaveChanged = true;
+		return await withWindowWriteLock(readyTarget, async () => {
+			const execution = await dispatch(readyTarget);
+			stateMayHaveChanged = true;
 
-		await sleep(settleMsForExecution(execution), signal);
-		const captureResult = await captureCurrentTarget(signal, activation);
-		return await buildToolResult(tool, summaryFactory(captureResult.target), captureResult, execution, signal);
+			await sleep(settleMsForExecution(execution), signal);
+			const captureResult = await captureCurrentTarget(signal, activation);
+			return await buildToolResult(tool, summaryFactory(captureResult.target), captureResult, execution, signal);
+		});
 	} catch (error) {
 		if (stateMayHaveChanged) {
 			throw addRefreshHint(error);
@@ -2946,13 +2980,15 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 
 	try {
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		const execution = await dispatchTypeText(text, readyTarget, signal);
+		return await withWindowWriteLock(readyTarget, async () => {
+			const execution = await dispatchTypeText(text, readyTarget, signal);
 
-		stateMayHaveChanged = true;
-		await sleep(settleMsForExecution(execution), signal);
-		const captureResult = await captureCurrentTarget(signal, activation);
-		const summary = `Inserted text in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-		return await buildToolResult("type_text", summary, captureResult, execution, signal);
+			stateMayHaveChanged = true;
+			await sleep(settleMsForExecution(execution), signal);
+			const captureResult = await captureCurrentTarget(signal, activation);
+			const summary = `Inserted text in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
+			return await buildToolResult("type_text", summary, captureResult, execution, signal);
+		});
 	} catch (error) {
 		if (stateMayHaveChanged) {
 			throw addRefreshHint(error);
@@ -2971,13 +3007,15 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 
 	try {
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		const execution = await dispatchSetText({ ...params, text }, readyTarget, signal);
+		return await withWindowWriteLock(readyTarget, async () => {
+			const execution = await dispatchSetText({ ...params, text }, readyTarget, signal);
 
-		stateMayHaveChanged = true;
-		await sleep(settleMsForExecution(execution), signal);
-		const captureResult = await captureCurrentTarget(signal, activation);
-		const summary = `Set text value in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-		return await buildToolResult("set_text", summary, captureResult, execution, signal);
+			stateMayHaveChanged = true;
+			await sleep(settleMsForExecution(execution), signal);
+			const captureResult = await captureCurrentTarget(signal, activation);
+			const summary = `Set text value in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
+			return await buildToolResult("set_text", summary, captureResult, execution, signal);
+		});
 	} catch (error) {
 		if (stateMayHaveChanged) {
 			throw addRefreshHint(error);
@@ -2996,13 +3034,15 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 
 	try {
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		const execution = await dispatchKeypress({ keys }, readyTarget, signal);
+		return await withWindowWriteLock(readyTarget, async () => {
+			const execution = await dispatchKeypress({ keys }, readyTarget, signal);
 
-		stateMayHaveChanged = true;
-		await sleep(settleMsForExecution(execution), signal);
-		const captureResult = await captureCurrentTarget(signal, activation);
-		const summary = `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-		return await buildToolResult("keypress", summary, captureResult, execution, signal);
+			stateMayHaveChanged = true;
+			await sleep(settleMsForExecution(execution), signal);
+			const captureResult = await captureCurrentTarget(signal, activation);
+			const summary = `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
+			return await buildToolResult("keypress", summary, captureResult, execution, signal);
+		});
 	} catch (error) {
 		if (stateMayHaveChanged) {
 			throw addRefreshHint(error);
@@ -3149,23 +3189,25 @@ async function performArrangeWindow(params: ArrangeWindowParams, signal?: AbortS
 	if (![frame.x, frame.y, frame.width, frame.height].every(Number.isFinite) || frame.width < 100 || frame.height < 80) {
 		throw new Error("arrange_window requires finite x, y, width, and height values, or a supported preset.");
 	}
-	const result = await bridgeCommand<any>(
-		"setWindowFrame",
-		{ pid: target.pid, windowId: target.windowId, x: frame.x, y: frame.y, width: frame.width, height: frame.height },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	);
-	if (!toBoolean(result?.ok)) {
-		throw new Error(`Unable to arrange window${result?.reason ? `: ${result.reason}` : "."}`);
-	}
-	await sleep(ACTION_SETTLE_MS, signal);
-	const captureResult = await captureCurrentTarget(signal);
-	return await buildToolResult(
-		"arrange_window",
-		`Arranged ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
-		captureResult,
-		executionTrace("window_frame", "stealth", { fallbackUsed: false }),
-		signal,
-	);
+	return await withWindowWriteLock(target, async () => {
+		const result = await bridgeCommand<any>(
+			"setWindowFrame",
+			{ pid: target.pid, windowId: target.windowId, x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		);
+		if (!toBoolean(result?.ok)) {
+			throw new Error(`Unable to arrange window${result?.reason ? `: ${result.reason}` : "."}`);
+		}
+		await sleep(ACTION_SETTLE_MS, signal);
+		const captureResult = await captureCurrentTarget(signal);
+		return await buildToolResult(
+			"arrange_window",
+			`Arranged ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
+			captureResult,
+			executionTrace("window_frame", "stealth", { fallbackUsed: false }),
+			signal,
+		);
+	});
 }
 
 async function performComputerActions(params: ComputerActionsParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
