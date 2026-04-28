@@ -43,3 +43,5 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 ## When errors happen
 
 If an action reports stale state, target mismatch, or missing target/window, call `screenshot` again to refresh and continue.
+
+If a browser reports that JavaScript from Apple Events is disabled, stop and prompt the user to enable "Allow JavaScript from Apple Events" in the browser's developer menu. Retry the browser action after the user confirms it is enabled.

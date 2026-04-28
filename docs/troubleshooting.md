@@ -46,6 +46,12 @@ Permission setup requires an interactive Pi session because macOS permission pan
 
 Start Pi interactively, grant permissions, then retry the non-interactive workflow.
 
+## A Browser Says JavaScript From Apple Events Is Disabled
+
+Some browser automation paths require the browser's per-app **Allow JavaScript from Apple Events** setting. If a browser returns the related Apple Events error, the tool error includes a model-readable hint to ask the user to enable the setting in the browser's developer menu, then retry the browser action.
+
+macOS/browser vendors do not provide a safe way for Pi to enable this setting automatically.
+
 ## Browser Windows Are Refused
 
 Check the effective config:

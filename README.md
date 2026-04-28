@@ -46,6 +46,8 @@ Required permissions:
 - Accessibility
 - Screen Recording
 
+Some browser automation paths use JavaScript from Apple Events. If the browser blocks that, Pi surfaces a model-readable hint asking the user to enable **Allow JavaScript from Apple Events** in the browser's developer menu, then retry.
+
 Then call `screenshot` first in a Pi session. It selects the controlled window and returns the latest semantic state, including AX refs such as `@e1` when available. If the target app/window is ambiguous, use `list_apps` and `list_windows` first.
 
 ```ts
