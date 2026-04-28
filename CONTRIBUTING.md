@@ -45,6 +45,33 @@ The helper needs macOS Accessibility and Screen Recording permissions. Grant the
 ~/.pi/agent/helpers/pi-computer-use/bridge
 ```
 
+## Commit messages
+
+Commits must use this format:
+
+```text
+feat|chore|refactor|fix(<scope>): <summary>
+```
+
+Examples:
+
+```text
+feat(browser): add direct navigation tool
+fix(readme): correct install tag syntax
+refactor(bridge): prefer native window refs
+chore(release): prepare release notes
+```
+
+CI enforces this on pull requests. To check locally:
+
+```bash
+npm run test:commits -- <base>..<head>
+```
+
+## Release notes
+
+Use [`notes/release-template.md`](./notes/release-template.md) for every release. Leave the title to the release lead, start with a short one-liner, include `Features` only when applicable, list changelog bullets as `added`, `fixed`, `refactored`, or `chore` entries with commit hashes, and close with a random quote from *The Hitchhiker's Guide to the Galaxy*.
+
 ## Validation
 
 For documentation-only changes, proofread the changed markdown and check links or commands you touched.
