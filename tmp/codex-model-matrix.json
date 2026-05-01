@@ -1,0 +1,10 @@
+[
+  { "id": "gpt-5.5:off", "model": "openai-codex/gpt-5.5", "thinking": "off" },
+  { "id": "gpt-5.4-mini:off", "model": "openai-codex/gpt-5.4-mini", "thinking": "off" },
+  { "id": "gpt-5.4-mini:minimal", "model": "openai-codex/gpt-5.4-mini", "thinking": "minimal" },
+  { "id": "gpt-5.4-mini:low", "model": "openai-codex/gpt-5.4-mini", "thinking": "low" },
+  { "id": "gpt-5.4-mini:medium", "model": "openai-codex/gpt-5.4-mini", "thinking": "medium" },
+  { "id": "gpt-5.4-mini:high", "model": "openai-codex/gpt-5.4-mini", "thinking": "high" },
+  { "id": "gpt-5.3-codex:off", "model": "openai-codex/gpt-5.3-codex", "thinking": "off" },
+  { "id": "gpt-5.3-codex:low", "model": "openai-codex/gpt-5.3-codex", "thinking": "low" }
+]

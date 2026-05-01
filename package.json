@@ -1,67 +1,71 @@
 {
-  "name": "@injaneity/pi-computer-use",
-  "version": "0.2.2",
-  "description": "Codex-style computer-use tools for Pi on macOS.",
-  "type": "module",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "pi",
-    "computer-use",
-    "macos",
-    "screenshot",
-    "automation"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/injaneity/pi-computer-use.git"
-  },
-  "bugs": {
-    "url": "https://github.com/injaneity/pi-computer-use/issues"
-  },
-  "homepage": "https://github.com/injaneity/pi-computer-use#readme",
-  "engines": {
-    "node": ">=20.6.0"
-  },
-  "files": [
-    "extensions",
-    "skills",
-    "src",
-    "scripts/build-native.mjs",
-    "scripts/setup-helper.mjs",
-    "native/macos/bridge.swift",
-    "prebuilt/macos",
-    "assets/img.jpg",
-    "README.md",
-    "LICENSE"
-  ],
-  "pi": {
-    "extensions": [
-      "./extensions"
-    ],
-    "skills": [
-      "./skills"
-    ],
-    "image": "./assets/img.jpg"
-  },
-  "scripts": {
-    "postinstall": "node scripts/setup-helper.mjs --postinstall",
-    "typecheck": "tsc -p tsconfig.json",
-    "test:schema": "node scripts/check-tool-schemas.mjs",
-    "test:commits": "node scripts/check-commit-messages.mjs",
-    "test": "npm run typecheck && npm run test:schema",
-    "build:native": "node scripts/build-native.mjs",
-    "benchmark:qa": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa",
-    "benchmark:qa:full": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-screen-takeover"
-  },
-  "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@sinclair/typebox": "*"
-  },
-  "devDependencies": {
-    "@types/node": "^25.6.0",
-    "typescript": "^6.0.3"
-  }
+	"name": "@injaneity/pi-computer-use",
+	"version": "0.2.2",
+	"description": "Codex-style computer-use tools for Pi on macOS.",
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi",
+		"computer-use",
+		"macos",
+		"screenshot",
+		"automation"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/injaneity/pi-computer-use.git"
+	},
+	"bugs": {
+		"url": "https://github.com/injaneity/pi-computer-use/issues"
+	},
+	"homepage": "https://github.com/injaneity/pi-computer-use#readme",
+	"engines": {
+		"node": ">=20.6.0"
+	},
+	"files": [
+		"extensions",
+		"skills",
+		"src",
+		"scripts/build-native.mjs",
+		"scripts/setup-helper.mjs",
+		"native/macos/bridge.swift",
+		"prebuilt/macos",
+		"assets/img.jpg",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		],
+		"skills": [
+			"./skills"
+		],
+		"image": "./assets/img.jpg"
+	},
+	"scripts": {
+		"postinstall": "node scripts/setup-helper.mjs --postinstall",
+		"typecheck": "tsc -p tsconfig.json",
+		"test:schema": "node scripts/check-tool-schemas.mjs",
+		"test:commits": "node scripts/check-commit-messages.mjs",
+		"test": "npm run typecheck && npm run test:schema",
+		"build:native": "node scripts/build-native.mjs",
+		"benchmark:qa": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa",
+		"benchmark:qa:full": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-screen-takeover",
+		"benchmark:model-matrix": "node scripts/run-model-evals.mjs --evals benchmarks/model-evals.json --output benchmarks/results/model-matrix.json --summary benchmarks/results/model-matrix.md",
+		"benchmark:model-matrix:sample": "node scripts/run-model-evals.mjs --evals benchmarks/model-evals.sample.json --output benchmarks/results/model-matrix.sample.json --summary benchmarks/results/model-matrix.sample.md",
+		"benchmark:unified": "node scripts/run-unified-benchmark.mjs",
+		"benchmark:models": "node scripts/run-model-evals.mjs --evals benchmarks/model-evals.json --output benchmarks/results/model-evals.json --summary benchmarks/results/model-evals.md"
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-ai": "*",
+		"@mariozechner/pi-coding-agent": "*",
+		"@sinclair/typebox": "*"
+	},
+	"devDependencies": {
+		"@types/node": "^25.6.0",
+		"typescript": "^6.0.3"
+	}
 }

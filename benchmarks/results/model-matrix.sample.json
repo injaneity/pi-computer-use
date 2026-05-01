@@ -1,0 +1,1211 @@
+{
+  "date": "2026-04-29T06:55:40.820Z",
+  "cwd": "/Users/zanechee/Documents/projects/pi-computer-use",
+  "evalsPath": "/Users/zanechee/Documents/projects/pi-computer-use/benchmarks/model-evals.sample.json",
+  "extensionPath": "/Users/zanechee/Documents/projects/pi-computer-use/extensions/computer-use.ts",
+  "matrix": [
+    {
+      "id": "gpt-5.5:off",
+      "model": "openai/gpt-5.5",
+      "thinking": "off"
+    },
+    {
+      "id": "gpt-5.4-mini:off",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "off"
+    },
+    {
+      "id": "gpt-5.4-mini:minimal",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "minimal"
+    },
+    {
+      "id": "gpt-5.4-mini:low",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "low"
+    },
+    {
+      "id": "gpt-5.4-mini:medium",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "medium"
+    },
+    {
+      "id": "gpt-5.4-mini:high",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "high"
+    },
+    {
+      "id": "gpt-5-mini:off",
+      "model": "openai/gpt-5-mini",
+      "thinking": "off"
+    },
+    {
+      "id": "gpt-5-mini:minimal",
+      "model": "openai/gpt-5-mini",
+      "thinking": "minimal"
+    },
+    {
+      "id": "gpt-5-mini:low",
+      "model": "openai/gpt-5-mini",
+      "thinking": "low"
+    },
+    {
+      "id": "gpt-5-mini:medium",
+      "model": "openai/gpt-5-mini",
+      "thinking": "medium"
+    },
+    {
+      "id": "gpt-5-mini:high",
+      "model": "openai/gpt-5-mini",
+      "thinking": "high"
+    },
+    {
+      "id": "gpt-5.3-codex:off",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "off"
+    },
+    {
+      "id": "gpt-5.3-codex:low",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "low"
+    }
+  ],
+  "repetitions": 1,
+  "timeoutMs": 180000,
+  "overall": {
+    "runs": 26,
+    "passes": 0,
+    "failures": 26,
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": 0
+    },
+    "passRate": 0
+  },
+  "summary": [
+    {
+      "modelId": "gpt-5-mini:minimal",
+      "model": "openai/gpt-5-mini",
+      "thinking": "minimal",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 956,
+      "totalLatencyMs": 1911,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.4-mini:medium",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "medium",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 977,
+      "totalLatencyMs": 1954,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.4-mini:off",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "off",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1010,
+      "totalLatencyMs": 2019,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5-mini:high",
+      "model": "openai/gpt-5-mini",
+      "thinking": "high",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1010,
+      "totalLatencyMs": 2020,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5-mini:low",
+      "model": "openai/gpt-5-mini",
+      "thinking": "low",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1050,
+      "totalLatencyMs": 2099,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5-mini:medium",
+      "model": "openai/gpt-5-mini",
+      "thinking": "medium",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1051,
+      "totalLatencyMs": 2101,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.4-mini:high",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "high",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1062,
+      "totalLatencyMs": 2124,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5-mini:off",
+      "model": "openai/gpt-5-mini",
+      "thinking": "off",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1081,
+      "totalLatencyMs": 2162,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.4-mini:minimal",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "minimal",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1085,
+      "totalLatencyMs": 2170,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.3-codex:off",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "off",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1107,
+      "totalLatencyMs": 2213,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.5:off",
+      "model": "openai/gpt-5.5",
+      "thinking": "off",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1206,
+      "totalLatencyMs": 2411,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.4-mini:low",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "low",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1206,
+      "totalLatencyMs": 2411,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    },
+    {
+      "modelId": "gpt-5.3-codex:low",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "low",
+      "runs": 2,
+      "passes": 0,
+      "failures": 2,
+      "avgLatencyMs": 1225,
+      "totalLatencyMs": 2450,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolErrors": 0,
+      "passRate": 0,
+      "avgCostPerRun": 0
+    }
+  ],
+  "results": [
+    {
+      "id": "gpt-5.5:off::frontmost-screenshot::1",
+      "modelId": "gpt-5.5:off",
+      "model": "openai/gpt-5.5",
+      "thinking": "off",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1336,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.5:off::list-apps-then-windows::1",
+      "modelId": "gpt-5.5:off",
+      "model": "openai/gpt-5.5",
+      "thinking": "off",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1075,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:off::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:off",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "off",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 974,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:off::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:off",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "off",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1045,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:minimal::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:minimal",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "minimal",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1209,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:minimal::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:minimal",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "minimal",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 961,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:low::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:low",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "low",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1177,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:low::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:low",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "low",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1234,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:medium::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:medium",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "medium",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1035,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:medium::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:medium",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "medium",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 919,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:high::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:high",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "high",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1119,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:high::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:high",
+      "model": "openai/gpt-5.4-mini",
+      "thinking": "high",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1005,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:off::frontmost-screenshot::1",
+      "modelId": "gpt-5-mini:off",
+      "model": "openai/gpt-5-mini",
+      "thinking": "off",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1130,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:off::list-apps-then-windows::1",
+      "modelId": "gpt-5-mini:off",
+      "model": "openai/gpt-5-mini",
+      "thinking": "off",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1032,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:minimal::frontmost-screenshot::1",
+      "modelId": "gpt-5-mini:minimal",
+      "model": "openai/gpt-5-mini",
+      "thinking": "minimal",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1009,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:minimal::list-apps-then-windows::1",
+      "modelId": "gpt-5-mini:minimal",
+      "model": "openai/gpt-5-mini",
+      "thinking": "minimal",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 902,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:low::frontmost-screenshot::1",
+      "modelId": "gpt-5-mini:low",
+      "model": "openai/gpt-5-mini",
+      "thinking": "low",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 979,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:low::list-apps-then-windows::1",
+      "modelId": "gpt-5-mini:low",
+      "model": "openai/gpt-5-mini",
+      "thinking": "low",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1120,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:medium::frontmost-screenshot::1",
+      "modelId": "gpt-5-mini:medium",
+      "model": "openai/gpt-5-mini",
+      "thinking": "medium",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1032,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:medium::list-apps-then-windows::1",
+      "modelId": "gpt-5-mini:medium",
+      "model": "openai/gpt-5-mini",
+      "thinking": "medium",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1069,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:high::frontmost-screenshot::1",
+      "modelId": "gpt-5-mini:high",
+      "model": "openai/gpt-5-mini",
+      "thinking": "high",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1108,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5-mini:high::list-apps-then-windows::1",
+      "modelId": "gpt-5-mini:high",
+      "model": "openai/gpt-5-mini",
+      "thinking": "high",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 912,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:off::frontmost-screenshot::1",
+      "modelId": "gpt-5.3-codex:off",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "off",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 962,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:off::list-apps-then-windows::1",
+      "modelId": "gpt-5.3-codex:off",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "off",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1251,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:low::frontmost-screenshot::1",
+      "modelId": "gpt-5.3-codex:low",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "low",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1061,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "screenshot"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:low::list-apps-then-windows::1",
+      "modelId": "gpt-5.3-codex:low",
+      "model": "openai/gpt-5.3-codex",
+      "thinking": "low",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "FAIL",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 1389,
+      "turns": 1,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": 0
+      },
+      "toolCalls": [],
+      "toolErrors": [],
+      "missingTools": [
+        "list_apps",
+        "list_windows"
+      ],
+      "finalRegexOk": true,
+      "modelSelfPass": false,
+      "finalText": "",
+      "parseErrors": [],
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,756 @@
+{
+  "date": "2026-04-29T06:59:58.344Z",
+  "cwd": "/Users/zanechee/Documents/projects/pi-computer-use",
+  "evalsPath": "/Users/zanechee/Documents/projects/pi-computer-use/benchmarks/model-evals.sample.json",
+  "extensionPath": "/Users/zanechee/Documents/projects/pi-computer-use/extensions/computer-use.ts",
+  "matrix": [
+    {
+      "id": "gpt-5.5:off",
+      "model": "openai-codex/gpt-5.5",
+      "thinking": "off"
+    },
+    {
+      "id": "gpt-5.4-mini:off",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "off"
+    },
+    {
+      "id": "gpt-5.4-mini:minimal",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "minimal"
+    },
+    {
+      "id": "gpt-5.4-mini:low",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "low"
+    },
+    {
+      "id": "gpt-5.4-mini:medium",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "medium"
+    },
+    {
+      "id": "gpt-5.4-mini:high",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "high"
+    },
+    {
+      "id": "gpt-5.3-codex:off",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "off"
+    },
+    {
+      "id": "gpt-5.3-codex:low",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "low"
+    }
+  ],
+  "repetitions": 1,
+  "timeoutMs": 180000,
+  "overall": {
+    "runs": 16,
+    "passes": 16,
+    "failures": 0,
+    "usage": {
+      "input": 72407,
+      "output": 2067,
+      "cacheRead": 90112,
+      "cacheWrite": 0,
+      "totalTokens": 164586,
+      "cost": 0.15845895
+    },
+    "passRate": 1
+  },
+  "summary": [
+    {
+      "modelId": "gpt-5.4-mini:minimal",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "minimal",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 8244,
+      "totalLatencyMs": 16488,
+      "usage": {
+        "input": 9575,
+        "output": 228,
+        "cacheRead": 10752,
+        "cacheWrite": 0,
+        "totalTokens": 20555,
+        "cost": 0.009013650000000002
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.004506825000000001
+    },
+    {
+      "modelId": "gpt-5.3-codex:low",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "low",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 8250,
+      "totalLatencyMs": 16500,
+      "usage": {
+        "input": 9523,
+        "output": 235,
+        "cacheRead": 10752,
+        "cacheWrite": 0,
+        "totalTokens": 20510,
+        "cost": 0.021836849999999998
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.010918424999999999
+    },
+    {
+      "modelId": "gpt-5.4-mini:off",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "off",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 9291,
+      "totalLatencyMs": 18581,
+      "usage": {
+        "input": 5831,
+        "output": 108,
+        "cacheRead": 14336,
+        "cacheWrite": 0,
+        "totalTokens": 20275,
+        "cost": 0.00593445
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.002967225
+    },
+    {
+      "modelId": "gpt-5.4-mini:low",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "low",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 9763,
+      "totalLatencyMs": 19526,
+      "usage": {
+        "input": 5898,
+        "output": 206,
+        "cacheRead": 14336,
+        "cacheWrite": 0,
+        "totalTokens": 20440,
+        "cost": 0.0064256999999999995
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.0032128499999999997
+    },
+    {
+      "modelId": "gpt-5.4-mini:high",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "high",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 11182,
+      "totalLatencyMs": 22364,
+      "usage": {
+        "input": 9281,
+        "output": 494,
+        "cacheRead": 11264,
+        "cacheWrite": 0,
+        "totalTokens": 21039,
+        "cost": 0.01002855
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.005014275
+    },
+    {
+      "modelId": "gpt-5.3-codex:off",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "off",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 11571,
+      "totalLatencyMs": 23142,
+      "usage": {
+        "input": 9448,
+        "output": 162,
+        "cacheRead": 10752,
+        "cacheWrite": 0,
+        "totalTokens": 20362,
+        "cost": 0.0206836
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.0103418
+    },
+    {
+      "modelId": "gpt-5.4-mini:medium",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "medium",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 13151,
+      "totalLatencyMs": 26301,
+      "usage": {
+        "input": 9723,
+        "output": 463,
+        "cacheRead": 10752,
+        "cacheWrite": 0,
+        "totalTokens": 20938,
+        "cost": 0.010182150000000001
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.0050910750000000005
+    },
+    {
+      "modelId": "gpt-5.5:off",
+      "model": "openai-codex/gpt-5.5",
+      "thinking": "off",
+      "runs": 2,
+      "passes": 2,
+      "failures": 0,
+      "avgLatencyMs": 33791,
+      "totalLatencyMs": 67582,
+      "usage": {
+        "input": 13128,
+        "output": 171,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 20467,
+        "cost": 0.074354
+      },
+      "toolErrors": 0,
+      "passRate": 1,
+      "avgCostPerRun": 0.037177
+    }
+  ],
+  "results": [
+    {
+      "id": "gpt-5.5:off::frontmost-screenshot::1",
+      "modelId": "gpt-5.5:off",
+      "model": "openai-codex/gpt-5.5",
+      "thinking": "off",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 5952,
+      "turns": 2,
+      "usage": {
+        "input": 8093,
+        "output": 51,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 8144,
+        "cost": 0.041995000000000005
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Frontmost controllable window is Helium browser showing the Home / X tab with semantic AX state available.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.5:off::list-apps-then-windows::1",
+      "modelId": "gpt-5.5:off",
+      "model": "openai-codex/gpt-5.5",
+      "thinking": "off",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 61630,
+      "turns": 3,
+      "usage": {
+        "input": 5035,
+        "output": 120,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 12323,
+        "cost": 0.032359000000000006
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Found 1 controllable window for Helium.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:off::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:off",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "off",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 6856,
+      "turns": 2,
+      "usage": {
+        "input": 4509,
+        "output": 45,
+        "cacheRead": 3584,
+        "cacheWrite": 0,
+        "totalTokens": 8138,
+        "cost": 0.0038530500000000002
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Frontmost controllable window is Helium on the Home / X page.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:off::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:off",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "off",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 11725,
+      "turns": 3,
+      "usage": {
+        "input": 1322,
+        "output": 63,
+        "cacheRead": 10752,
+        "cacheWrite": 0,
+        "totalTokens": 12137,
+        "cost": 0.0020813999999999997
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Selected Telegram from list_apps and list_windows found 1 controllable window.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:minimal::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:minimal",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "minimal",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 7074,
+      "turns": 2,
+      "usage": {
+        "input": 4610,
+        "output": 102,
+        "cacheRead": 3584,
+        "cacheWrite": 0,
+        "totalTokens": 8296,
+        "cost": 0.0041853
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Frontmost controllable window is Helium displaying an X post page with a semantic state returned.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:minimal::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:minimal",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "minimal",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 9414,
+      "turns": 3,
+      "usage": {
+        "input": 4965,
+        "output": 126,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 12259,
+        "cost": 0.00482835
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"list_windows found 1 controllable window for Telegram (@w1).\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:low::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:low",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "low",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 7852,
+      "turns": 2,
+      "usage": {
+        "input": 948,
+        "output": 98,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 8214,
+        "cost": 0.0016895999999999999
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Frontmost controllable window is Helium displaying YouTube, with semantic AX targets available.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:low::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:low",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "low",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 11674,
+      "turns": 3,
+      "usage": {
+        "input": 4950,
+        "output": 108,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 12226,
+        "cost": 0.0047361
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Discovered controllable window for Helium via list_apps and list_windows.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:medium::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:medium",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "medium",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 10323,
+      "turns": 2,
+      "usage": {
+        "input": 4681,
+        "output": 284,
+        "cacheRead": 3584,
+        "cacheWrite": 0,
+        "totalTokens": 8549,
+        "cost": 0.00505755
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Frontmost controllable window is Helium displaying a Gmail inbox (Inbox 66) for zanecheejy@gmail.com.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:medium::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:medium",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "medium",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 15978,
+      "turns": 3,
+      "usage": {
+        "input": 5042,
+        "output": 179,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 12389,
+        "cost": 0.005124600000000001
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT:{\"status\":\"pass\",\"reason\":\"Listed apps, chose visible frontmost Helium, and found 1 controllable window.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:high::frontmost-screenshot::1",
+      "modelId": "gpt-5.4-mini:high",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "high",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 8824,
+      "turns": 2,
+      "usage": {
+        "input": 4631,
+        "output": 247,
+        "cacheRead": 3584,
+        "cacheWrite": 0,
+        "totalTokens": 8462,
+        "cost": 0.00485355
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Frontmost controllable window is Helium, showing a Google Search results page for \\\"can playwright use safari\\\".\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.4-mini:high::list-apps-then-windows::1",
+      "modelId": "gpt-5.4-mini:high",
+      "model": "openai-codex/gpt-5.4-mini",
+      "thinking": "high",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 13540,
+      "turns": 3,
+      "usage": {
+        "input": 4650,
+        "output": 247,
+        "cacheRead": 7680,
+        "cacheWrite": 0,
+        "totalTokens": 12577,
+        "cost": 0.005175000000000001
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Chosen app Ghostty had 1 controllable window (@w1).\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:off::frontmost-screenshot::1",
+      "modelId": "gpt-5.3-codex:off",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "off",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 6361,
+      "turns": 2,
+      "usage": {
+        "input": 4525,
+        "output": 88,
+        "cacheRead": 3584,
+        "cacheWrite": 0,
+        "totalTokens": 8197,
+        "cost": 0.00977795
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "Inspected the frontmost controllable window: Helium browser showing the tab “injaneity/pi-computer-use: control your applications using pi-coding-agent. fully invisible. - Helium.”\n\nEVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Called screenshot first and received semantic state for the current frontmost controllable Helium window.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:off::list-apps-then-windows::1",
+      "modelId": "gpt-5.3-codex:off",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "off",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 16781,
+      "turns": 3,
+      "usage": {
+        "input": 4923,
+        "output": 74,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 12165,
+        "cost": 0.01090565
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Called list_apps, selected visible non-background app Helium, then list_windows found 1 controllable window (@w1).\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:low::frontmost-screenshot::1",
+      "modelId": "gpt-5.3-codex:low",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "low",
+      "evalId": "frontmost-screenshot",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 8724,
+      "turns": 2,
+      "usage": {
+        "input": 4573,
+        "output": 129,
+        "cacheRead": 3584,
+        "cacheWrite": 0,
+        "totalTokens": 8286,
+        "cost": 0.01043595
+      },
+      "toolCalls": [
+        "screenshot"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "Semantic state was returned for the Helium window titled “Computer Use Comparison - Helium.”  \nEVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Called screenshot first and successfully inspected the current frontmost controllable window with semantic AX state.\"}",
+      "parseErrors": [],
+      "stderr": ""
+    },
+    {
+      "id": "gpt-5.3-codex:low::list-apps-then-windows::1",
+      "modelId": "gpt-5.3-codex:low",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinking": "low",
+      "evalId": "list-apps-then-windows",
+      "runIndex": 0,
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "latencyMs": 7776,
+      "turns": 3,
+      "usage": {
+        "input": 4950,
+        "output": 106,
+        "cacheRead": 7168,
+        "cacheWrite": 0,
+        "totalTokens": 12224,
+        "cost": 0.0114009
+      },
+      "toolCalls": [
+        "list_apps",
+        "list_windows"
+      ],
+      "toolErrors": [],
+      "missingTools": [],
+      "finalRegexOk": true,
+      "modelSelfPass": true,
+      "finalText": "EVAL_RESULT: {\"status\":\"pass\",\"reason\":\"Called list_apps, selected visible non-background app Ghostty, then list_windows found 1 controllable window (@w1).\"}",
+      "parseErrors": [],
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "evals": [
+    {
+      "id": "frontmost-screenshot",
+      "prompt": "Use pi-computer-use to inspect the current frontmost controllable macOS window. Call screenshot first. If a semantic state is returned, finish with EVAL_RESULT pass and a one-sentence description of the app/window. Do not click or type.",
+      "requiredTools": ["screenshot"],
+      "maxToolErrors": 0
+    },
+    {
+      "id": "list-apps-then-windows",
+      "prompt": "Use pi-computer-use to discover available GUI targets. Call list_apps, choose one visible non-background app from the result, then call list_windows for that app. Do not interact with the app beyond discovery. Pass if at least one controllable window is found or if list_windows clearly reports no controllable windows for the chosen app.",
+      "requiredTools": ["list_apps", "list_windows"],
+      "maxToolErrors": 0
+    }
+  ]
+}

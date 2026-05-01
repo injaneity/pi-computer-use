@@ -1,0 +1,66 @@
+{
+  "evals": [
+    {
+      "id": "frontmost-semantic-screenshot",
+      "prompt": "Use pi-computer-use to inspect the current frontmost controllable macOS window. Call screenshot first. Pass only if semantic AX state is returned; do not click or type.",
+      "requiredTools": ["screenshot"],
+      "maxToolErrors": 0,
+      "minAxTargets": 1,
+      "maxToolCalls": 2
+    },
+    {
+      "id": "discover-textedit-window",
+      "setup": { "newTextEditDocument": true, "delayMs": 300 },
+      "prompt": "Discover the TextEdit window without assuming it is already selected. Call list_apps, then list_windows for TextEdit, then screenshot the TextEdit window by its window ref. Do not type or edit anything.",
+      "requiredTools": ["list_apps", "list_windows", "screenshot"],
+      "requiredToolOrder": ["list_apps", "list_windows", "screenshot"],
+      "expectTargetApp": "TextEdit",
+      "maxToolErrors": 0,
+      "maxToolCalls": 5
+    },
+    {
+      "id": "textedit-set-text-ax",
+      "setup": { "newTextEditDocument": true, "delayMs": 300 },
+      "prompt": "In the current TextEdit document, use screenshot to find the editable text area, then use set_text with the AX ref to replace the document contents exactly with: pi-computer-use model eval set_text 49217. Finish only after a refresh confirms the text is present.",
+      "requiredTools": ["screenshot", "set_text"],
+      "forbiddenTools": ["type_text"],
+      "expectTargetApp": "TextEdit",
+      "expectToolResultRegex": "pi-computer-use model eval set_text 49217",
+      "maxToolErrors": 0,
+      "maxToolCalls": 5
+    },
+    {
+      "id": "textedit-batch-actions",
+      "setup": { "newTextEditDocument": true, "delayMs": 300 },
+      "prompt": "In the current TextEdit document, call screenshot, then use one computer_actions batch to set the document contents to exactly: pi-computer-use model eval batch 68304. The batch should use the AX text ref if available. Finish after the latest returned state confirms the text is present.",
+      "requiredTools": ["screenshot", "computer_actions"],
+      "requiredToolOrder": ["screenshot", "computer_actions"],
+      "expectTargetApp": "TextEdit",
+      "expectToolResultRegex": "pi-computer-use model eval batch 68304",
+      "maxToolErrors": 0,
+      "maxToolCalls": 4
+    },
+    {
+      "id": "textedit-raw-insertion",
+      "setup": { "newTextEditDocument": true, "delayMs": 300 },
+      "prompt": "In the current TextEdit document, call screenshot, focus the editable text target, then use type_text to insert exactly: pi-computer-use model eval raw insertion 73591. Do not use set_text for this eval. Refresh or wait afterward and pass only if the inserted text is visible in returned state.",
+      "requiredTools": ["screenshot", "type_text"],
+      "forbiddenTools": ["set_text"],
+      "expectTargetApp": "TextEdit",
+      "expectToolResultRegex": "pi-computer-use model eval raw insertion 73591",
+      "maxToolErrors": 0,
+      "maxToolCalls": 7
+    },
+    {
+      "id": "textedit-wait-refresh",
+      "setup": { "newTextEditDocument": true, "delayMs": 300 },
+      "prompt": "In the current TextEdit document, use screenshot and set_text to set the contents exactly to: pi-computer-use model eval wait 81026. Then call wait to refresh the state and confirm the text. Finish only after wait returns the latest semantic state.",
+      "requiredTools": ["screenshot", "set_text", "wait"],
+      "requiredToolOrder": ["screenshot", "set_text", "wait"],
+      "expectTargetApp": "TextEdit",
+      "expectToolResultRegex": "pi-computer-use model eval wait 81026",
+      "maxToolErrors": 0,
+      "maxToolCalls": 6
+    }
+  ]
+}
