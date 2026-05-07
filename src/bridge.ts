@@ -208,6 +208,7 @@ export interface ComputerUseDetails {
 	axDiagnostics?: {
 		reason?: string;
 		message?: string;
+		debug?: unknown;
 	};
 	imageReason?:
 		| "fallback_recovery"
@@ -813,13 +814,15 @@ function validateStateId(stateId?: string): CurrentCapture {
 }
 
 function axDiagnosticsFromResult(result: unknown, target: ResolvedTarget): CaptureResult["axDiagnostics"] {
-	const reason = toOptionalString((result as any)?.reason);
-	if (!reason) return undefined;
+	const raw = result as any;
+	const reason = toOptionalString(raw?.reason);
+	const debug = raw?.diagnostics;
+	if (!reason && debug === undefined) return undefined;
 	if (reason === "window_not_found") {
 		const windowHint = target.windowRef ? ` Use list_windows and choose an existing content window such as ${target.windowRef}, then call screenshot({ window: "${target.windowRef}" }).` : " Use list_windows and choose an existing content window.";
-		return { reason, message: `Accessibility could not resolve the target browser window. Duplicate/empty browser windows can cause this.${windowHint}` };
+		return { reason, message: `Accessibility could not resolve the target browser window. Duplicate/empty browser windows can cause this.${windowHint}`, debug };
 	}
-	return { reason, message: `Accessibility target listing returned '${reason}'.` };
+	return { reason, message: reason ? `Accessibility target listing returned '${reason}'.` : undefined, debug };
 }
 
 function parseAxTargets(result: unknown): AxTarget[] {
@@ -929,17 +932,16 @@ function imageFallbackReason(
 		}
 		return { reason: "no_ax_targets", message: "No useful AX targets were found, so an image is attached for vision fallback." }
 	}
-	if (result.axTargets.length < 3) {
-		return { reason: "sparse_ax_targets", message: "Only a few AX targets were found, so an image is attached for extra context." }
-	}
-
 	const labels = result.axTargets.map((target) => normalizeText(target.title || target.description || target.value)).filter(Boolean)
 	const unlabeledCount = result.axTargets.filter((target) => !normalizeText(target.title || target.description || target.value)).length
-	const strongTextRoles = new Set(["AXTextField", "AXSearchField", "AXTextArea", "AXTextView", "AXEditableText"])
+	const strongTextRoles = new Set(["AXTextField", "AXSearchField", "AXTextArea", "AXTextView", "AXEditableText", "AXComboBox"])
 	const strongTargets = result.axTargets.filter((target) => {
 		const label = normalizeText(target.title || target.description || target.value)
 		return strongTextRoles.has(target.role) || (!!label && (target.actions.includes("AXPress") || target.role === "AXLink" || target.role === "AXButton"))
 	})
+	if (result.axTargets.length < 3 && strongTargets.length === 0) {
+		return { reason: "sparse_ax_targets", message: "Only a few AX targets were found, so an image is attached for extra context." }
+	}
 	if (strongTargets.length === 0) {
 		return { reason: "weak_ax_targets", message: "No strong AX targets were found, so an image is attached for vision fallback." }
 	}
@@ -2111,7 +2113,7 @@ interface CaptureResult {
 	capture: CurrentCapture;
 	image?: ScreenshotPayload;
 	axTargets: AxTarget[];
-	axDiagnostics?: { reason?: string; message?: string };
+	axDiagnostics?: { reason?: string; message?: string; debug?: unknown };
 	activation: ActivationFlags;
 }
 
@@ -2551,7 +2553,7 @@ async function focusBrowserAddressField(keys: string[], target: ResolvedTarget, 
 	if (!refreshed.length) return false;
 	runtimeState.currentAxTargets = refreshed;
 	const field = refreshed
-		.filter((candidate) => candidate.canFocus && candidate.isTextInput && (candidate.role === "AXTextField" || candidate.role === "AXSearchField"))
+		.filter((candidate) => candidate.canFocus && candidate.isTextInput && (candidate.role === "AXTextField" || candidate.role === "AXSearchField" || candidate.role === "AXComboBox"))
 		.sort((a, b) => a.y - b.y || a.x - b.x)[0];
 	if (!field) return false;
 	const focused = await focusAxElement(field.elementRef, target, signal);

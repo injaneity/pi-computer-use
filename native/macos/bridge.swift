@@ -863,9 +863,17 @@ final class Bridge {
 		let windowArea = max(1.0, windowFrame.width * windowFrame.height)
 		let isBrowser = browserBundleIds.contains(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "")
 		let elements = collectDescendants(startingAt: window, maxDepth: isBrowser ? 10 : 8)
+		var roleCounts: [String: Int] = [:]
+		var rejectedByReason: [String: Int] = [:]
+		var eligibleCount = 0
+		var visibleFrameCount = 0
+		func reject(_ reason: String) {
+			rejectedByReason[reason, default: 0] += 1
+		}
 		var bestByKey: [String: (AXUIElement, Double)] = [:]
 		for candidate in elements {
 			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			roleCounts[role.isEmpty ? "(unknown)" : role, default: 0] += 1
 			let subrole = self.stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
 			let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
 			let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
@@ -877,25 +885,27 @@ final class Bridge {
 			var valueSettable = DarwinBoolean(false)
 			let valueStatus = AXUIElementIsAttributeSettable(candidate, kAXValueAttribute as CFString, &valueSettable)
 			let canSetValue = valueStatus == .success && valueSettable.boolValue
-			let isText = textRoles.contains(role) || canSetValue
+			let isText = textRoles.contains(role)
 			let canPress = actions.contains(kAXPressAction as String)
 			let canScroll = self.supportsAnyScrollAction(candidate)
 			let canAdjust = actions.contains(kAXIncrementAction as String) || actions.contains(kAXDecrementAction as String)
-			guard isText || canPress || canFocus || canScroll || canAdjust else { continue }
-			guard let frame = self.frameForElement(candidate), frame.width > 10, frame.height > 10 else { continue }
+			if !(isText || canPress || canFocus || canScroll || canAdjust) { reject("not_interactive"); continue }
+			guard let frame = self.frameForElement(candidate), frame.width > 10, frame.height > 10 else { reject("no_visible_frame"); continue }
+			visibleFrameCount += 1
 			let area = frame.width * frame.height
 			let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
 			let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 			if structuralRoles.contains(role) {
-				if normalizedLabel.isEmpty && !canScroll { continue }
-				if role == "AXWebArea" && !isBrowser { continue }
+				if normalizedLabel.isEmpty && !canScroll { reject("unlabeled_structural"); continue }
+				if role == "AXWebArea" && !isBrowser { reject("non_browser_web_area"); continue }
 			}
 			if role == "AXTextArea" || role == "AXTextView" {
-				if area > windowArea * 0.55 && !canSetValue { continue }
+				if area > windowArea * 0.55 && !canSetValue { reject("large_unsettable_text_area"); continue }
 			}
-			if role == "AXButton" && normalizedLabel.isEmpty && !isBrowser { continue }
-			if isBrowser && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { continue }
-			if actions == [kAXShowMenuAction as String] && !isText { continue }
+			if role == "AXButton" && normalizedLabel.isEmpty && !isBrowser { reject("unlabeled_button"); continue }
+			if isBrowser && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { reject("unlabeled_browser_control"); continue }
+			if actions == [kAXShowMenuAction as String] && !isText { reject("show_menu_only"); continue }
+			eligibleCount += 1
 			var score = 0.0
 			if isText {
 				score += self.scoreTextInputElement(candidate, role: role)
@@ -913,23 +923,34 @@ final class Bridge {
 			if !actions.isEmpty {
 				score += self.scoreActionableElement(candidate, role: role, actions: actions, preferredRoles: Set<String>())
 			}
-			if !normalizedLabel.isEmpty { score += 55 } else if canScroll { score -= 20 } else { score -= 120 }
+			if !normalizedLabel.isEmpty { score += 55 } else if canScroll || canAdjust || role == "AXScrollBar" { score -= 20 } else { score -= 120 }
 			if !description.isEmpty { score += 18 }
 			if structuralRoles.contains(role) { score -= canScroll ? 40 : 180 }
 			if canScroll && role == "AXScrollArea" { score += 180 }
-			if area > windowArea * 0.7 && role != "AXTextField" && role != "AXSearchField" { score -= 180 }
-			if isBrowser && (role == "AXTextField" || role == "AXSearchField") { score += 100 }
+			if canAdjust && role == "AXScrollBar" { score += 180 }
+			if area > windowArea * 0.7 && role != "AXTextField" && role != "AXSearchField" && role != "AXComboBox" { score -= 180 }
+			if isBrowser && (role == "AXTextField" || role == "AXSearchField" || role == "AXComboBox") { score += 100 }
 			if isBrowser && role == "AXLink" { score += 35 }
 			if subrole == "AXCloseButton" { score -= 140 }
 			if normalizedLabel == "close tab" { score -= 180 }
 			if normalizedLabel.count > 160 { score -= 80 }
-			if score < 120 { continue }
+			if score < 120 { reject("low_score"); continue }
 			let key = "\(role)|\(normalizedLabel)|\(Int(frame.midX / 24))|\(Int(frame.midY / 24))"
 			if let existing = bestByKey[key], existing.1 >= score { continue }
 			bestByKey[key] = (candidate, score)
 		}
 		let ranked = bestByKey.values.sorted { $0.1 > $1.1 }
-		return ["targets": Array(ranked.prefix(limit)).map { self.elementPayload(element: $0.0, key: "target", score: $0.1) }]
+		let topRoles = roleCounts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(16)
+		let diagnostics: [String: Any] = [
+			"axTreeNodeCount": elements.count,
+			"visibleInteractiveNodeCount": visibleFrameCount,
+			"eligibleNodeCount": eligibleCount,
+			"rankedNodeCount": ranked.count,
+			"returnedTargetCount": min(limit, ranked.count),
+			"roleCounts": Dictionary(uniqueKeysWithValues: topRoles.map { ($0.key, $0.value) }),
+			"rejectedByReason": rejectedByReason,
+		]
+		return ["targets": Array(ranked.prefix(limit)).map { self.elementPayload(element: $0.0, key: "target", score: $0.1) }, "diagnostics": diagnostics]
 	}
 
 	private func axPressElement(_ request: [String: Any]) throws -> [String: Any] {
@@ -1249,9 +1270,12 @@ final class Bridge {
 		if actions.contains(kAXShowMenuAction as String) { score += 50 }
 		if actions.contains(kAXPickAction as String) { score += 45 }
 		if actions.contains(kAXConfirmAction as String) { score += 35 }
+		if actions.contains(kAXIncrementAction as String) { score += 55 }
+		if actions.contains(kAXDecrementAction as String) { score += 55 }
 		switch role {
 		case "AXButton": score += 70
 		case "AXLink": score += 60
+		case "AXScrollBar": score += 80
 		case "AXRow", "AXCell", "AXList", "AXOutline": score += 40
 		case "AXGroup", "AXToolbar", "AXWindow", "AXApplication": score -= 60
 		default: break
@@ -1339,7 +1363,7 @@ final class Bridge {
 			"description": description,
 			"value": value,
 			"actions": actions,
-			"isTextInput": textRoles.contains(role) || canSetValue,
+			"isTextInput": textRoles.contains(role),
 			"canSetValue": canSetValue,
 			"canFocus": focusedStatus == .success && focusedSettable.boolValue,
 			"canPress": actions.contains(kAXPressAction as String),
