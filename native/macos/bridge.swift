@@ -415,10 +415,18 @@ final class Bridge {
 	private func openPermissionPane(_ request: [String: Any]) throws -> [String: Any] {
 		let kind = try stringArg(request, "kind")
 		let urlString: String
+		var requested = false
 		switch kind {
 		case "accessibility":
+			let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+			_ = AXIsProcessTrustedWithOptions(options)
+			requested = true
 			urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 		case "screenRecording", "screenrecording":
+			if #available(macOS 10.15, *) {
+				_ = CGRequestScreenCaptureAccess()
+				requested = true
+			}
 			urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
 		default:
 			throw BridgeFailure(message: "Unknown permission pane '\(kind)'", code: "invalid_args")
@@ -428,7 +436,7 @@ final class Bridge {
 			throw BridgeFailure(message: "Invalid permission pane URL", code: "internal_error")
 		}
 		let opened = NSWorkspace.shared.open(url)
-		return ["opened": opened]
+		return ["opened": opened, "requested": requested]
 	}
 
 	private func listApps() -> [[String: Any]] {

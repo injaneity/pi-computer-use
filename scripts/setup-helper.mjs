@@ -14,6 +14,7 @@ const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 
 const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
+const forceInstall = args.has("--force") || process.env.PI_COMPUTER_USE_FORCE_HELPER_INSTALL === "1";
 const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
 const archTargets = {
 	arm64: "arm64-apple-macosx14.0",
@@ -144,6 +145,11 @@ async function setup() {
 	const prebuiltPath = prebuiltPathForArch(arch);
 	const prebuiltExists = await exists(prebuiltPath);
 
+	if (!forceInstall && (await isExecutable(helperDestPath))) {
+		console.log(`[pi-computer-use] using existing helper at ${helperDestPath}`);
+		return;
+	}
+
 	if (prebuiltExists) {
 		const { changed } = await copyIfChanged(prebuiltPath, helperDestPath);
 		console.log(
@@ -151,11 +157,6 @@ async function setup() {
 				? `[pi-computer-use] installed helper from prebuilt (${arch}) to ${helperDestPath}`
 				: `[pi-computer-use] helper already up to date at ${helperDestPath}`,
 		);
-		return;
-	}
-
-	if (await isExecutable(helperDestPath)) {
-		console.log(`[pi-computer-use] using existing helper at ${helperDestPath}`);
 		return;
 	}
 

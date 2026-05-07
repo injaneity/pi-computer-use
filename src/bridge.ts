@@ -1087,6 +1087,10 @@ async function runProcess(
 	});
 }
 
+function appleScriptString(value: string): string {
+	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 	const helperAlreadyPresent = await isExecutable(HELPER_STABLE_PATH);
 	if (helperAlreadyPresent && runtimeState.helperInstallChecked) {
@@ -1254,6 +1258,9 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 				checkPermissions: (permissionSignal) => checkPermissions(permissionSignal ?? signal),
 				openPermissionPane: async (kind, permissionSignal) => {
 					await bridgeCommand("openPermissionPane", { kind }, { signal: permissionSignal ?? signal });
+				},
+				copyHelperPathToClipboard: async (permissionSignal) => {
+					await runProcess("osascript", ["-e", `set the clipboard to ${appleScriptString(HELPER_STABLE_PATH)}`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
 				},
 			},
 			HELPER_STABLE_PATH,
