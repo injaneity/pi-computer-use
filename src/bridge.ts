@@ -1105,12 +1105,27 @@ async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 	}
 }
 
+function isSshSession(): boolean {
+	return Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY);
+}
+
+function helperSpawnCommand(): { command: string; args: string[] } {
+	const mode = process.env.PI_COMPUTER_USE_GUI_SESSION_LAUNCH ?? "auto";
+	const shouldUseGuiSession = mode === "1" || mode === "true" || (mode === "auto" && isSshSession());
+	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+	if (shouldUseGuiSession && process.platform === "darwin" && uid !== undefined) {
+		return { command: "launchctl", args: ["asuser", String(uid), HELPER_STABLE_PATH] };
+	}
+	return { command: HELPER_STABLE_PATH, args: [] };
+}
+
 async function startBridgeProcess(): Promise<ChildProcessWithoutNullStreams> {
 	if (!(await isExecutable(HELPER_STABLE_PATH))) {
 		throw new HelperTransportError(`Computer-use helper is missing at ${HELPER_STABLE_PATH}.`);
 	}
 
-	const child = spawn(HELPER_STABLE_PATH, [], {
+	const helperLaunch = helperSpawnCommand();
+	const child = spawn(helperLaunch.command, helperLaunch.args, {
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 

@@ -50,6 +50,12 @@ Permission setup requires an interactive Pi session because macOS permission pan
 
 Start Pi interactively, grant permissions, then retry the non-interactive workflow.
 
+## SSH Sessions And macOS Permissions
+
+When Pi is started over SSH, macOS may scope Accessibility and Screen Recording checks to the SSH launch session instead of the logged-in GUI session. `pi-computer-use` detects SSH and launches the native helper through the user's GUI launchd domain with `launchctl asuser` when possible.
+
+This requires the same user to already be logged in to the Mac's desktop session. If permissions still fail over SSH, start Pi once from a local GUI Terminal session, complete permission setup there, then retry SSH. Set `PI_COMPUTER_USE_GUI_SESSION_LAUNCH=0` to disable the SSH re-anchor, or `PI_COMPUTER_USE_GUI_SESSION_LAUNCH=1` to force it.
+
 ## A Browser Says JavaScript From Apple Events Is Disabled
 
 Some browser automation paths require the browser's per-app **Allow JavaScript from Apple Events** setting. If a browser returns the related Apple Events error, the tool error includes a model-readable hint to ask the user to enable the setting in the browser's developer menu, then retry the browser action.
