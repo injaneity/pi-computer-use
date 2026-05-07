@@ -57,26 +57,20 @@ export async function ensurePermissions(
 	while (!status.accessibility || !status.screenRecording) {
 		throwIfAborted(signal);
 
-		const missing = missingKinds(status);
 		const options: string[] = [];
-		if (!status.accessibility) options.push("Open Accessibility Settings");
-		if (!status.screenRecording) options.push("Open Screen Recording Settings");
-		options.push("Recheck", "Cancel");
+		if (!status.accessibility) options.push("Open Accessibility Settings (missing)");
+		if (!status.screenRecording) options.push("Open Screen Recording Settings (missing)");
+		options.push("Recheck permissions", "Cancel");
 
 		const prompt = [
-			"pi-computer-use needs a one-time macOS setup before its tools can run.",
-			`Missing permissions: ${missing.join(" and ")}`,
+			"pi-computer-use needs macOS permissions.",
+			permissionStatusSummary(status),
 			"",
-			"What each permission does:",
-			"- Screen Recording: lets the agent see the target window and provide screenshot/vision context",
-			"- Accessibility: lets the agent click, focus, and type in the target window",
+			`Helper: ${helperName}`,
+			`Path: ${helperPath}`,
 			"",
-			"Grant permissions to this helper:",
-			helperPath,
-			"",
-			`Open the missing System Settings panes, enable ${helperName}, then return here and choose Recheck.`,
-			`The helper path is copied to your clipboard. If ${helperName} is not listed automatically, click + in Settings, press Cmd+Shift+G, paste the helper path, add ${helperName}, enable it, then choose Recheck.`,
-			"If macOS says a restart is required, restart Pi and/or the Mac before choosing Recheck.",
+			"Open the missing setting, enable the helper, then choose Recheck.",
+			"If the helper is not listed, click +, press Cmd+Shift+G, and paste the copied path.",
 		].join("\n");
 
 		const choice = await ctx.ui.select(prompt, options, { signal });
@@ -86,21 +80,22 @@ export async function ensurePermissions(
 			);
 		}
 
-		if (choice === "Open Accessibility Settings") {
+		if (choice.startsWith("Open Accessibility Settings")) {
 			await bridge.openPermissionPane("accessibility", signal);
 			await bridge.copyHelperPathToClipboard?.(signal).catch(() => undefined);
-			ctx.ui.notify(`Requested Accessibility permission, opened settings, and copied the ${helperName} path to your clipboard. Enable ${helperName} if shown. If not, click +, press Cmd+Shift+G, paste the path, add ${helperName}, then choose Recheck. Restart Pi/the Mac if macOS asks.`, "info");
-		} else if (choice === "Open Screen Recording Settings") {
+			ctx.ui.notify(`Opened Accessibility and copied helper path: ${helperPath}`, "info");
+		} else if (choice.startsWith("Open Screen Recording Settings")) {
 			await bridge.openPermissionPane("screenRecording", signal);
 			await bridge.copyHelperPathToClipboard?.(signal).catch(() => undefined);
-			ctx.ui.notify(`Requested Screen Recording permission, opened settings, and copied the ${helperName} path to your clipboard. Enable ${helperName} if shown. If not, click +, press Cmd+Shift+G, paste the path, add ${helperName}, then choose Recheck. Restart Pi/the Mac if macOS asks.`, "info");
+			ctx.ui.notify(`Opened Screen Recording and copied helper path: ${helperPath}`, "info");
 		}
 
 		status = await bridge.checkPermissions(signal);
 		if (status.accessibility && status.screenRecording) {
-			ctx.ui.notify(`pi-computer-use permissions are ready. ${permissionStatusSummary(status)}`, "info");
+			ctx.ui.notify("pi-computer-use is ready.", "info");
 		} else {
-			ctx.ui.notify(`pi-computer-use permissions are still incomplete. ${permissionStatusSummary(status)}. If you just enabled a permission and macOS requested a restart, restart Pi and/or the Mac, then retry.`, "warning");
+			const stillMissing = missingKinds(status).join(" and ");
+			ctx.ui.notify(`Still missing: ${stillMissing}. ${permissionStatusSummary(status)}. Restart Pi/the Mac if macOS asked you to.`, "warning");
 		}
 	}
 
