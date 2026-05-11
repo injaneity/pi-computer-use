@@ -17,8 +17,8 @@ const isPostinstall = args.has("--postinstall");
 const forceInstall = args.has("--force") || process.env.PI_COMPUTER_USE_FORCE_HELPER_INSTALL === "1";
 const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
 const archTargets = {
-	arm64: "arm64-apple-macosx14.0",
-	x64: "x86_64-apple-macosx14.0",
+	arm64: "arm64-apple-macosx12.0",
+	x64: "x86_64-apple-macosx12.0",
 };
 const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use.bridge";
 
@@ -118,8 +118,6 @@ async function buildHelper(arch, outputPath) {
 		"ApplicationServices",
 		"-framework",
 		"AppKit",
-		"-framework",
-		"ScreenCaptureKit",
 		"-framework",
 		"Foundation",
 		helperSourcePath,

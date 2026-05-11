@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 const archTargets = {
-	arm64: "arm64-apple-macosx14.0",
-	x64: "x86_64-apple-macosx14.0",
+	arm64: "arm64-apple-macosx12.0",
+	x64: "x86_64-apple-macosx12.0",
 };
 const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use.bridge";
 
@@ -66,8 +66,6 @@ function swiftArgsForArch(arch, outputPath) {
 		"ApplicationServices",
 		"-framework",
 		"AppKit",
-		"-framework",
-		"ScreenCaptureKit",
 		"-framework",
 		"Foundation",
 		sourcePath,
