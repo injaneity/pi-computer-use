@@ -811,6 +811,7 @@ final class Bridge {
 
 	private func axFindTextInput(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
+		ensureEnhancedAccessibility(pid: pid)
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
 		let windowRef = optionalStringArg(request, "windowRef")
 		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
@@ -819,7 +820,8 @@ final class Bridge {
 		let textRoles: Set<String> = [
 			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
 		]
-		let elements = collectDescendants(startingAt: window, maxDepth: 8)
+		let isHybrid = containsWebArea(window: window)
+		let elements = collectDescendants(startingAt: window, maxDepth: isHybrid ? 14 : 8)
 		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
 			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
 			var valueSettable = DarwinBoolean(false)
@@ -880,7 +882,11 @@ final class Bridge {
 		let windowFrame = frameForWindow(window)
 		let windowArea = max(1.0, windowFrame.width * windowFrame.height)
 		let isBrowser = browserBundleIds.contains(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "")
-		let elements = collectDescendants(startingAt: window, maxDepth: isBrowser ? 10 : 8)
+		// Treat any window that contains an AXWebArea as a hybrid (Electron, Catalyst-with-web,
+		// embedded WebViews). Hybrid apps host their interactive content much deeper than
+		// native AppKit hierarchies, and we still want to surface those targets.
+		let isHybrid = isBrowser || containsWebArea(window: window)
+		let elements = collectDescendants(startingAt: window, maxDepth: isHybrid ? 14 : 8)
 		var roleCounts: [String: Int] = [:]
 		var rejectedByReason: [String: Int] = [:]
 		var eligibleCount = 0
@@ -915,13 +921,13 @@ final class Bridge {
 			let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 			if structuralRoles.contains(role) {
 				if normalizedLabel.isEmpty && !canScroll { reject("unlabeled_structural"); continue }
-				if role == "AXWebArea" && !isBrowser { reject("non_browser_web_area"); continue }
+				if role == "AXWebArea" && !isHybrid { reject("non_browser_web_area"); continue }
 			}
 			if role == "AXTextArea" || role == "AXTextView" {
 				if area > windowArea * 0.55 && !canSetValue { reject("large_unsettable_text_area"); continue }
 			}
-			if role == "AXButton" && normalizedLabel.isEmpty && !isBrowser { reject("unlabeled_button"); continue }
-			if isBrowser && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { reject("unlabeled_browser_control"); continue }
+			if role == "AXButton" && normalizedLabel.isEmpty && !isHybrid { reject("unlabeled_button"); continue }
+			if isHybrid && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { reject("unlabeled_browser_control"); continue }
 			if actions == [kAXShowMenuAction as String] && !isText { reject("show_menu_only"); continue }
 			eligibleCount += 1
 			var score = 0.0
@@ -947,8 +953,8 @@ final class Bridge {
 			if canScroll && role == "AXScrollArea" { score += 180 }
 			if canAdjust && role == "AXScrollBar" { score += 180 }
 			if area > windowArea * 0.7 && role != "AXTextField" && role != "AXSearchField" && role != "AXComboBox" { score -= 180 }
-			if isBrowser && (role == "AXTextField" || role == "AXSearchField" || role == "AXComboBox") { score += 100 }
-			if isBrowser && role == "AXLink" { score += 35 }
+			if isHybrid && (role == "AXTextField" || role == "AXSearchField" || role == "AXComboBox") { score += 100 }
+			if isHybrid && role == "AXLink" { score += 35 }
 			if subrole == "AXCloseButton" { score -= 140 }
 			if normalizedLabel == "close tab" { score -= 180 }
 			if normalizedLabel.count > 160 { score -= 80 }
@@ -1210,11 +1216,12 @@ final class Bridge {
 		collectDescendants(startingAt: root, maxDepth: maxDepth).first(where: predicate)
 	}
 
-	private func collectDescendants(startingAt root: AXUIElement, maxDepth: Int) -> [AXUIElement] {
+	private func collectDescendants(startingAt root: AXUIElement, maxDepth: Int, maxNodes: Int = 5000) -> [AXUIElement] {
 		var queue: [(AXUIElement, Int)] = [(root, 0)]
 		var index = 0
 		var output: [AXUIElement] = []
 		while index < queue.count {
+			if output.count >= maxNodes { break }
 			let (element, depth) = queue[index]
 			index += 1
 			output.append(element)
@@ -1225,6 +1232,30 @@ final class Bridge {
 			}
 		}
 		return output
+	}
+
+	/// Cheap BFS that returns true if the window's AX subtree contains an
+	/// `AXWebArea` within `withinDepth` levels. Used to detect Electron /
+	/// Catalyst-with-web-content / Slack-style hybrid apps so we can apply
+	/// browser-style depth and acceptance policy without bundle-id allowlists.
+	private func containsWebArea(window: AXUIElement, withinDepth: Int = 8) -> Bool {
+		var queue: [(AXUIElement, Int)] = [(window, 0)]
+		var index = 0
+		var visited = 0
+		while index < queue.count {
+			if visited >= 800 { break }
+			let (element, depth) = queue[index]
+			index += 1
+			visited += 1
+			let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+			if role == "AXWebArea" { return true }
+			if depth >= withinDepth { continue }
+			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
+			for child in children {
+				queue.append((child, depth + 1))
+			}
+		}
+		return false
 	}
 
 	private func scoreTextInputElement(_ element: AXUIElement, role: String) -> Double {
