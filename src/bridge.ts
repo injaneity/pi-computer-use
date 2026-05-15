@@ -1431,6 +1431,15 @@ async function restoreUserFocus(target: FrontmostResult, signal?: AbortSignal): 
 }
 
 async function focusControlledWindow(target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
+	// Defense in depth: this raises the target window above whatever the user is
+	// currently focused on. Stealth mode promises to never preempt the user, so
+	// callers must guard before reaching here. We re-check here so a future caller
+	// who forgets the gate cannot silently break the stealth contract.
+	if (isStrictAxMode()) {
+		strictModeBlock(
+			`Cannot raise window '${target.windowTitle}' in stealth mode \u2014 stealth promises to leave the user's frontmost app and window untouched. Use AX-only paths (axPress/axSetValue) or run without PI_COMPUTER_USE_STEALTH.`,
+		);
+	}
 	const result = await bridgeCommand<FocusWindowResult>(
 		"focusWindow",
 		nativeWindowRequest(target),
@@ -3309,6 +3318,18 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 	if (!script) {
 		throw new Error(`navigate_browser does not yet support direct URL navigation for '${target.appName}'. Use keypress Command+L, type_text, Enter instead.`);
 	}
+	// In stealth mode we promise to never activate the user's apps. Empirically,
+	// Chrome's 'set URL of active tab of front window' AppleScript pulls Chrome
+	// to the foreground (Safari's 'set URL of front document' may not, but we
+	// can't tell which AppleScript dialect this script will execute against
+	// without parsing it). The safe thing in stealth is to fail fast and let the
+	// model fall back to the AX-only path: focus the address bar via the
+	// keypress Command+L AX shortcut, set_text the URL, keypress Enter.
+	if (isStrictAxMode()) {
+		strictModeBlock(
+			`navigate_browser is not stealth-safe for '${target.appName}': the AppleScript URL set activates the browser process. Use keypress({ keys: ['Command+L'] }) to focus the address bar via AX, then set_text the URL and keypress Enter.`,
+		);
+	}
 	return await withWindowWriteLock(target, async () => {
 		await focusControlledWindow(target, signal);
 		await runAppleScript(script, signal);
@@ -3318,7 +3339,12 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 			"navigate_browser",
 			`Navigated ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
 			captureResult,
-			executionTrace("browser_open_location", "stealth", { axAttempted: false, axSucceeded: false, fallbackUsed: false }),
+			executionTrace("browser_open_location", "default", {
+				axAttempted: false,
+				axSucceeded: false,
+				fallbackUsed: true,
+				nonStealthReason: "browser_open_location_activates_browser_process",
+			}),
 			signal,
 		);
 	});
