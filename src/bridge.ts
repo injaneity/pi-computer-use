@@ -1034,12 +1034,14 @@ async function runProcess(
 	args: string[],
 	timeoutMs: number,
 	signal?: AbortSignal,
+	env?: NodeJS.ProcessEnv,
 ): Promise<void> {
 	throwIfAborted(signal);
 
 	await new Promise<void>((resolve, reject) => {
 		const child = spawn(command, args, {
 			stdio: ["ignore", "pipe", "pipe"],
+			env,
 		});
 
 		let stderr = "";
@@ -1099,7 +1101,14 @@ async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 		return;
 	}
 
-	await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal);
+	// process.execPath may be an Electron binary when this module runs inside an
+	// Electron main process. Force ELECTRON_RUN_AS_NODE so the helper script runs
+	// as plain Node instead of launching a GUI Electron app (which adds a dock
+	// icon and never exits). No-op for a regular Node executable.
+	await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal, {
+		...process.env,
+		ELECTRON_RUN_AS_NODE: "1",
+	});
 	runtimeState.helperInstallChecked = true;
 
 	if (!(await isExecutable(HELPER_STABLE_PATH))) {
