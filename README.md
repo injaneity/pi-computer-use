@@ -32,7 +32,7 @@ Codex-style computer use for [Pi](https://pi.dev/) on macOS.
 Install the Pi package:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.2.5
+pi install git:github.com/injaneity/pi-computer-use@v0.2.6
 ```
 
 Start Pi in interactive mode. On the first session, grant macOS permissions to:
@@ -170,25 +170,25 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 
 ```bash
 npm install @injaneity/pi-computer-use
-npm install @injaneity/pi-computer-use@0.2.5
+npm install @injaneity/pi-computer-use@0.2.6
 ```
 
 Pi installs should pin a GitHub release tag:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.2.5
-pi install -l git:github.com/injaneity/pi-computer-use@v0.2.5
+pi install git:github.com/injaneity/pi-computer-use@v0.2.6
+pi install -l git:github.com/injaneity/pi-computer-use@v0.2.6
 pi install /absolute/path/to/pi-computer-use
 ```
 
 Remove:
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use@v0.2.5
+pi remove git:github.com/injaneity/pi-computer-use@v0.2.6
 npm remove @injaneity/pi-computer-use
 ```
 
-For a different release, replace `v0.2.5` or `0.2.5` with the version you want to pin.
+For a different release, replace `v0.2.6` or `0.2.6` with the version you want to pin.
 
 ## Screenshots
 
