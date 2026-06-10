@@ -53,6 +53,8 @@ final class Box<T> {
 }
 
 final class InputSuppressionGuard {
+	static let maxSuppressionSeconds: TimeInterval = 30
+
 	private let lock = NSLock()
 	private var eventTap: CFMachPort?
 	private var eventTapSource: CFRunLoopSource?
@@ -105,6 +107,8 @@ final class InputSuppressionGuard {
 			options: .defaultTap,
 			eventsOfInterest: mask,
 			callback: callback,
+			// passUnretained is only safe because Bridge owns this guard for the
+			// whole process lifetime; do not give it a shorter-lived owner.
 			userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
 		) else {
 			throw BridgeFailure(message: "Failed to create input suppression event tap", code: "input_suppression_unavailable")
@@ -121,6 +125,21 @@ final class InputSuppressionGuard {
 			self.eventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 			if let source = self.eventTapSource {
 				CFRunLoopAddSource(runLoop, source, .commonModes)
+			}
+			// Watchdog: if end() never arrives (e.g. the parent process hangs
+			// mid-action), release the tap so the user is not locked out of
+			// keyboard and mouse input indefinitely.
+			let watchdog = CFRunLoopTimerCreateWithHandler(
+				kCFAllocatorDefault,
+				CFAbsoluteTimeGetCurrent() + InputSuppressionGuard.maxSuppressionSeconds,
+				0,
+				0,
+				0
+			) { [weak self] _ in
+				self?.end()
+			}
+			if let watchdog {
+				CFRunLoopAddTimer(runLoop, watchdog, .commonModes)
 			}
 			CGEvent.tapEnable(tap: tap, enable: true)
 			self.lock.unlock()
@@ -512,12 +531,14 @@ final class Bridge {
 			]
 		}
 		if let element = focusedElement {
+			let focusedRole = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+			let focusedSubrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 			result["focusedElement"] = [
-				"role": stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? "",
-				"subrole": stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? "",
+				"role": focusedRole,
+				"subrole": focusedSubrole,
 				"title": stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? "",
 				"description": stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? "",
-				"value": stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? "",
+				"value": displayValue(element, role: focusedRole, subrole: focusedSubrole),
 			]
 		}
 		return result
@@ -898,7 +919,7 @@ final class Bridge {
 			let subrole = self.stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
 			let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
 			let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
-			let value = self.stringAttribute(candidate, attribute: kAXValueAttribute as CFString) ?? ""
+			let value = self.displayValue(candidate, role: role, subrole: subrole)
 			let actions = self.actionNames(candidate)
 			var focusedSettable = DarwinBoolean(false)
 			let focusStatus = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &focusedSettable)
@@ -968,7 +989,8 @@ final class Bridge {
 				let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
 				let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
 				let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
-				let value = self.stringAttribute(candidate, attribute: kAXValueAttribute as CFString) ?? ""
+				let subrole = self.stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
+				let value = self.displayValue(candidate, role: role, subrole: subrole)
 				let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
 				let actions = self.actionNames(candidate)
 				if role == "AXWebArea" { return (candidate, label.isEmpty ? 200 : 260) }
@@ -1390,7 +1412,7 @@ final class Bridge {
 		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
 		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
-		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+		let value = displayValue(element, role: role, subrole: subrole)
 		var summary: [String: Any] = [
 			"role": role,
 			"subrole": subrole,
@@ -1411,7 +1433,7 @@ final class Bridge {
 		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
 		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
-		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+		let value = displayValue(element, role: role, subrole: subrole)
 		let frame = frameForElement(element)
 		let centerX = frame.map { $0.midX } ?? 0
 		let centerY = frame.map { $0.midY } ?? 0
@@ -1594,6 +1616,17 @@ final class Bridge {
 
 	private func stringAttribute(_ element: AXUIElement, attribute: CFString) -> String? {
 		copyAttribute(element, attribute: attribute) as? String
+	}
+
+	// Secure fields can expose plaintext through AX value in non-native apps,
+	// and serialized values flow into the model conversation. Never emit them.
+	private func isSecureTextElement(role: String, subrole: String) -> Bool {
+		role == "AXSecureTextField" || subrole == "AXSecureTextField"
+	}
+
+	private func displayValue(_ element: AXUIElement, role: String, subrole: String) -> String {
+		if isSecureTextElement(role: role, subrole: subrole) { return "" }
+		return stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
 	}
 
 	private func axElementArray(_ element: AXUIElement, attribute: CFString) -> [AXUIElement] {
@@ -1851,6 +1884,8 @@ final class Bridge {
 	private func systemScreenshotWindow(windowId: UInt32) throws -> [String: Any]? {
 		let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent("pi-cu-\(UUID().uuidString).png")
 		defer { try? FileManager.default.removeItem(at: tempUrl) }
+		// Owner-only perms in case TMPDIR ever resolves to a shared directory.
+		FileManager.default.createFile(atPath: tempUrl.path, contents: nil, attributes: [.posixPermissions: 0o600])
 
 		let process = Process()
 		process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")

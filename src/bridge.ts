@@ -3285,6 +3285,11 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 	if (!url) {
 		throw new Error("navigate_browser.url must be a non-empty URL or browser-search string.");
 	}
+	const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url)?.[1];
+	const looksLikeUrl = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.test(url) || !/\s/.test(url);
+	if (scheme && looksLikeUrl && !/^https?$/i.test(scheme)) {
+		throw new Error(`navigate_browser only supports http(s) URLs or browser-search strings; '${scheme}:' URLs are not allowed.`);
+	}
 	const script = browserOpenLocationAppleScript(target, url);
 	if (!script) {
 		throw new Error(`navigate_browser does not yet support direct URL navigation for '${target.appName}'. Use keypress Command+L, type_text, Enter instead.`);
