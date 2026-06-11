@@ -156,6 +156,7 @@ final class InputSuppressionGuard {
 			Thread.sleep(forTimeInterval: 0.01)
 		}
 		if tapRunLoop == nil {
+			end()
 			throw BridgeFailure(message: "Timed out starting input suppression", code: "input_suppression_timeout")
 		}
 	}

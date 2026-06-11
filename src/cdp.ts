@@ -38,25 +38,34 @@ export class CdpTab {
 
 	static async connect(wsUrl: string, targetId: string, title: string): Promise<CdpTab> {
 		const ws = new WebSocket(wsUrl);
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error(`Timed out connecting to CDP target at ${wsUrl}`)), COMMAND_TIMEOUT_MS);
-			ws.onopen = () => {
-				clearTimeout(timer);
-				resolve();
-			};
-			ws.onerror = () => {
-				clearTimeout(timer);
-				reject(new Error(`Failed to connect to CDP target at ${wsUrl}`));
-			};
-		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error(`Timed out connecting to CDP target at ${wsUrl}`)), COMMAND_TIMEOUT_MS);
+				ws.onopen = () => {
+					clearTimeout(timer);
+					resolve();
+				};
+				ws.onerror = () => {
+					clearTimeout(timer);
+					reject(new Error(`Failed to connect to CDP target at ${wsUrl}`));
+				};
+			});
 
-		const tab = new CdpTab(ws, targetId, title);
-		ws.onmessage = (event) => tab.handleMessage(String(event.data));
-		ws.onclose = () => tab.rejectAllPending(new Error("CDP connection closed."));
-		ws.onerror = () => tab.rejectAllPending(new Error("CDP connection error."));
-		await tab.send("Runtime.enable");
-		await tab.send("Page.enable");
-		return tab;
+			const tab = new CdpTab(ws, targetId, title);
+			ws.onmessage = (event) => tab.handleMessage(String(event.data));
+			ws.onclose = () => tab.rejectAllPending(new Error("CDP connection closed."));
+			ws.onerror = () => tab.rejectAllPending(new Error("CDP connection error."));
+			await tab.send("Runtime.enable");
+			await tab.send("Page.enable");
+			return tab;
+		} catch (error) {
+			try {
+				ws.close();
+			} catch {
+				// already closed
+			}
+			throw error;
+		}
 	}
 
 	get isOpen(): boolean {
@@ -75,10 +84,13 @@ export class CdpTab {
 		const loaded = new Promise<void>((resolve) => {
 			this.loadFired = resolve;
 		});
-		await this.send("Page.navigate", { url });
-		// SPAs and slow pages may never fire load; cap the wait and move on.
-		await Promise.race([loaded, new Promise<void>((resolve) => setTimeout(resolve, NAVIGATE_LOAD_TIMEOUT_MS))]);
-		this.loadFired = undefined;
+		try {
+			await this.send("Page.navigate", { url });
+			// SPAs and slow pages may never fire load; cap the wait and move on.
+			await Promise.race([loaded, new Promise<void>((resolve) => setTimeout(resolve, NAVIGATE_LOAD_TIMEOUT_MS))]);
+		} finally {
+			this.loadFired = undefined;
+		}
 	}
 
 	/** Evaluates a JS expression in the page and returns its primitive value. */
@@ -119,7 +131,13 @@ export class CdpTab {
 					reject(error);
 				},
 			});
-			this.ws.send(JSON.stringify({ id, method, params }));
+			try {
+				this.ws.send(JSON.stringify({ id, method, params }));
+			} catch (error) {
+				clearTimeout(timer);
+				this.pending.delete(id);
+				reject(error instanceof Error ? error : new Error(String(error)));
+			}
 		});
 	}
 
@@ -185,8 +203,10 @@ let connectedTab: CdpTab | undefined;
 let lastConnectFailureAt = 0;
 
 export function cdpEnabled(): boolean {
-	const port = Number.parseInt(process.env.PI_COMPUTER_USE_CDP_PORT ?? "", 10);
-	return Number.isInteger(port) && port > 0 && typeof WebSocket !== "undefined";
+	const rawPort = process.env.PI_COMPUTER_USE_CDP_PORT ?? "";
+	if (!/^\d+$/.test(rawPort)) return false;
+	const port = Number(rawPort);
+	return Number.isInteger(port) && port > 0 && port <= 65535 && typeof WebSocket !== "undefined";
 }
 
 /**
