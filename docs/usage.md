@@ -106,7 +106,7 @@ For shortcut sequences, use chord strings such as `Command+L`. Use arrays like `
 
 ## Browser Workflows
 
-For browser work, prefer a dedicated browser window rather than the user's active tab. The extension tries to open an isolated browser window when safe and appropriate.
+For browser work, prefer a dedicated browser window rather than the user's active tab. Open one yourself (or pick an existing one with `list_windows`) before asking Pi to control it.
 
 Common address-field workflow:
 
@@ -164,6 +164,5 @@ Blocked:
 - Raw keyboard events
 - Foreground focus fallbacks
 - Cursor takeover
-- Browser window bootstrap that requires non-AX automation
 
 Enable strict AX mode with config or environment variables. See [configuration](./configuration.md).

@@ -72,7 +72,7 @@ Use `/computer-use` in Pi to inspect the effective config and config sources.
 - Batched actions through `computer_actions`, with one post-action semantic state update plus per-action execution metadata.
 - Execution metadata that reports `stealth` for background-safe AX paths and `default` for focus/raw-event fallbacks.
 - Full pointer and keyboard primitive coverage for common GUI flows, with AX-first equivalents where available.
-- Browser-aware targeting, including isolated browser window preference where appropriate.
+- Browser-aware targeting that prefers a dedicated browser window for agent work.
 - Optional [CDP acceleration](./docs/configuration.md#optional-cdp-acceleration) for Chromium-family browsers: event-driven `navigate_browser` and browser console output in tool results, with no change to the tool surface.
 - Optional strict AX mode for background-safe operation without foreground focus, raw pointer events, raw keyboard events, or cursor takeover.
 - Official QA benchmark harness in [`benchmarks/`](./benchmarks/README.md).

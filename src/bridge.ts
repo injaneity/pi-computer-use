@@ -300,14 +300,6 @@ interface FrontmostResult {
 	windowId?: number;
 }
 
-interface RestoreUserFocusResult {
-	restored: boolean;
-	appRestored?: boolean;
-	windowRestored?: boolean;
-	appName?: string;
-	windowTitle?: string;
-}
-
 interface ScreenshotPayload {
 	pngBase64: string;
 	width: number;
@@ -524,8 +516,6 @@ const CHROME_FAMILY_APP_NAMES = new Set([
 	"helium",
 ]);
 const BROWSER_WINDOW_OPEN_TIMEOUT_MS = 10_000;
-const BROWSER_WINDOW_OPEN_POLL_MS = 200;
-const BROWSER_WINDOW_OPEN_ATTEMPTS = 12;
 
 export const HELPER_STABLE_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
 
@@ -715,13 +705,6 @@ async function withWindowWriteLock<T>(target: ResolvedTarget | CurrentTarget, wo
 	}
 }
 
-function randomStateId(): string {
-	try {
-		return randomUUID();
-	} catch {
-		return `cap_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-	}
-}
 
 function trimOrUndefined(value: string | undefined): string | undefined {
 	if (typeof value !== "string") return undefined;
@@ -892,16 +875,25 @@ function isElementRefInvalid(error: unknown): boolean {
 	return (error instanceof HelperCommandError && error.code === "element_ref_invalid") || /element reference is no longer valid|element_ref_invalid/i.test(normalizeError(error).message);
 }
 
+async function listAxTargetsRaw(target: ResolvedTarget, limit: number, signal?: AbortSignal): Promise<unknown> {
+	return await bridgeCommand(
+		"axListTargets",
+		{ ...nativeWindowRequest(target), limit },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch((error) => ({ targets: [], reason: error instanceof HelperCommandError ? (error.code ?? "ax_list_failed") : "ax_list_failed" }));
+}
+
+async function refreshAxTargets(target: ResolvedTarget, signal?: AbortSignal): Promise<AxTarget[]> {
+	const refreshed = parseAxTargets(await listAxTargetsRaw(target, 50, signal));
+	if (refreshed.length) {
+		runtimeState.currentAxTargets = refreshed;
+	}
+	return refreshed;
+}
+
 async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal?: AbortSignal): Promise<AxTarget | undefined> {
-	const refreshed = parseAxTargets(
-		await bridgeCommand(
-			"axListTargets",
-			{ ...nativeWindowRequest(target), limit: 50 },
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch(() => []),
-	);
+	const refreshed = await refreshAxTargets(target, signal);
 	if (!refreshed.length) return undefined;
-	runtimeState.currentAxTargets = refreshed;
 
 	const staleLabel = axTargetLabelKey(stale);
 	const candidates = refreshed.filter((candidate) => {
@@ -1095,10 +1087,6 @@ async function runProcess(
 	});
 }
 
-function appleScriptString(value: string): string {
-	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
 async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 	const helperAlreadyPresent = await isExecutable(HELPER_STABLE_PATH);
 	if (helperAlreadyPresent && runtimeState.helperInstallChecked) {
@@ -1290,7 +1278,7 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 					await bridgeCommand("openPermissionPane", { kind }, { signal: permissionSignal ?? signal });
 				},
 				copyHelperPathToClipboard: async (permissionSignal) => {
-					await runProcess("osascript", ["-e", `set the clipboard to ${appleScriptString(HELPER_STABLE_PATH)}`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
+					await runProcess("osascript", ["-e", `set the clipboard to "${escapeAppleScriptString(HELPER_STABLE_PATH)}"`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
 				},
 			},
 			HELPER_STABLE_PATH,
@@ -1411,31 +1399,6 @@ async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
 	};
 }
 
-async function beginInputSuppression(signal?: AbortSignal): Promise<void> {
-	await bridgeCommand("beginInputSuppression", {}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
-}
-
-async function endInputSuppression(signal?: AbortSignal): Promise<void> {
-	await bridgeCommand("endInputSuppression", {}, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(() => undefined);
-}
-
-async function restoreUserFocus(target: FrontmostResult, signal?: AbortSignal): Promise<void> {
-	const restoreResult = await bridgeCommand<RestoreUserFocusResult>(
-		"restoreUserFocus",
-		{ pid: target.pid, windowTitle: target.windowTitle },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch(() => undefined);
-
-	if (isStrictAxMode() || toBoolean(restoreResult?.windowRestored) || toBoolean(restoreResult?.appRestored)) {
-		return;
-	}
-
-	const activateTarget = target.bundleId
-		? `application id "${escapeAppleScriptString(target.bundleId)}"`
-		: `application "${escapeAppleScriptString(target.appName)}"`;
-	await runAppleScript([`tell ${activateTarget} to activate`], signal).catch(() => undefined);
-}
-
 async function focusControlledWindow(target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
 	const result = await bridgeCommand<FocusWindowResult>(
 		"focusWindow",
@@ -1463,17 +1426,6 @@ function assertBrowserUseAllowed(target: { appName: string; bundleId?: string })
 			`Browser use is disabled by pi-computer-use config, so '${target.appName}' cannot be controlled. Enable browser_use in ~/.pi/agent/extensions/pi-computer-use.json or .pi/computer-use.json to allow browser windows.`,
 		);
 	}
-}
-
-function windowIdentity(window: HelperWindow): string {
-	if (window.windowId && window.windowId > 0) {
-		return `id:${window.windowId}`;
-	}
-	if (window.windowRef) {
-		return `ref:${window.windowRef}`;
-	}
-	const { x, y, w, h } = window.framePoints;
-	return `title:${normalizeText(window.title)}|frame:${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`;
 }
 
 function windowRecordIdentity(record: Pick<WindowRefRecord, "pid" | "windowId" | "nativeWindowRef" | "windowTitle" | "framePoints">): string {
@@ -1543,30 +1495,6 @@ function escapeAppleScriptString(value: string): string {
 	return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
-function buildBrowserNewWindowAppleScript(app: HelperApp): string[] | undefined {
-	const normalizedName = normalizeText(app.appName);
-	const target = app.bundleId
-		? `application id "${escapeAppleScriptString(app.bundleId)}"`
-		: `application "${escapeAppleScriptString(app.appName)}"`;
-
-	if (app.bundleId === "com.apple.Safari" || normalizedName === "safari") {
-		return [`tell ${target} to make new document`];
-	}
-
-	if (isChromeFamilyApp(app.appName, app.bundleId)) {
-		return [`tell ${target} to make new window`];
-	}
-
-	if (app.bundleId === "org.mozilla.firefox" || normalizedName === "firefox") {
-		return [
-			`tell ${target} to activate`,
-			'tell application "System Events" to keystroke "n" using command down',
-		];
-	}
-
-	return undefined;
-}
-
 async function runAppleScript(lines: string[], signal?: AbortSignal): Promise<void> {
 	const args = lines.flatMap((line) => ["-e", line]);
 	try {
@@ -1609,64 +1537,6 @@ async function openBrowserLocationFromPendingAddress(keys: string[], target: Res
 	runtimeState.pendingBrowserAddress = undefined;
 	await runAppleScript(script, signal);
 	return true;
-}
-
-function findNewWindow(before: HelperWindow[], after: HelperWindow[]): HelperWindow | undefined {
-	const previous = new Set(before.map(windowIdentity));
-	const added = after.filter((window) => !previous.has(windowIdentity(window)));
-	if (added.length > 0) {
-		return choosePreferredWindow(added, "browser");
-	}
-
-	const promoted = after.filter((window) => {
-		const match = before.find((candidate) => windowIdentity(candidate) === windowIdentity(window));
-		if (!match) return false;
-		return (window.isFocused && !match.isFocused) || (window.isMain && !match.isMain);
-	});
-	if (promoted.length > 0) {
-		return choosePreferredWindow(promoted, "browser");
-	}
-
-	return undefined;
-}
-
-async function openIsolatedBrowserWindow(app: HelperApp, signal?: AbortSignal): Promise<HelperWindow | undefined> {
-	const script = buildBrowserNewWindowAppleScript(app);
-	if (!script) {
-		return undefined;
-	}
-	if (isStrictAxMode()) {
-		strictModeBlock(
-			`Strict AX mode cannot create an isolated browser window for '${app.appName}' because that bootstrap is not AX-only. Open a dedicated browser window first, then call screenshot again.`,
-		);
-	}
-
-	const previousFrontmost = await getFrontmost(signal).catch(() => undefined);
-	const before = await listWindows(app.pid, signal);
-	await runAppleScript(script, signal);
-
-	await beginInputSuppression(signal);
-	try {
-		for (let attempt = 0; attempt < BROWSER_WINDOW_OPEN_ATTEMPTS; attempt += 1) {
-			await sleep(BROWSER_WINDOW_OPEN_POLL_MS, signal);
-			const after = await listWindows(app.pid, signal);
-			const created = findNewWindow(before, after);
-			if (created) {
-				return created;
-			}
-			const focused = after.find((window) => window.isFocused) ?? after.find((window) => window.isMain);
-			if (focused && !before.some((window) => windowIdentity(window) === windowIdentity(focused))) {
-				return focused;
-			}
-		}
-
-		return undefined;
-	} finally {
-		if (previousFrontmost) {
-			await restoreUserFocus(previousFrontmost, signal);
-		}
-		await endInputSuppression(signal);
-	}
 }
 
 function choosePreferredWindow(windows: HelperWindow[], appName: string): HelperWindow {
@@ -2136,7 +2006,7 @@ interface CaptureResult {
 
 function captureForTarget(target: ResolvedTarget): CurrentCapture {
 	return {
-		stateId: randomStateId(),
+		stateId: randomUUID(),
 		width: Math.max(1, Math.round(target.framePoints.w * target.scaleFactor)),
 		height: Math.max(1, Math.round(target.framePoints.h * target.scaleFactor)),
 		scaleFactor: target.scaleFactor,
@@ -2165,11 +2035,7 @@ async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal): 
 		result.capture.width = recovered.image.width;
 		result.capture.height = recovered.image.height;
 		result.capture.scaleFactor = recovered.image.scaleFactor;
-		const axResult = await bridgeCommand(
-			"axListTargets",
-			{ ...nativeWindowRequest(result.target), limit: 12 },
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch((axError) => ({ targets: [], reason: axError instanceof HelperCommandError ? (axError.code ?? "ax_list_failed") : "ax_list_failed" }));
+		const axResult = await listAxTargetsRaw(result.target, 12, signal);
 		result.axTargets = parseAxTargets(axResult);
 		result.axDiagnostics = axDiagnosticsFromResult(axResult, result.target);
 	}
@@ -2179,18 +2045,12 @@ async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal): 
 	runtimeState.currentAxTargets = result.axTargets;
 }
 
-async function captureCurrentTarget(signal?: AbortSignal, priorActivation = emptyActivation()): Promise<CaptureResult> {
+async function captureCurrentTarget(signal?: AbortSignal): Promise<CaptureResult> {
 	let target = await resolveCurrentTarget(signal);
-	let activation = { ...priorActivation };
-
 	target = await ensureTargetWindowId(target, signal);
 
 	const capture = captureForTarget(target);
-	const axResult = await bridgeCommand(
-		"axListTargets",
-		{ ...nativeWindowRequest(target), limit: 12 },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch((axError) => ({ targets: [], reason: axError instanceof HelperCommandError ? (axError.code ?? "ax_list_failed") : "ax_list_failed" }));
+	const axResult = await listAxTargetsRaw(target, 12, signal);
 	const axTargets = parseAxTargets(axResult);
 	const axDiagnostics = axDiagnosticsFromResult(axResult, target);
 
@@ -2204,7 +2064,7 @@ async function captureCurrentTarget(signal?: AbortSignal, priorActivation = empt
 		capture,
 		axTargets,
 		axDiagnostics,
-		activation,
+		activation: emptyActivation(),
 	};
 }
 
@@ -2573,15 +2433,8 @@ async function focusBrowserAddressField(keys: string[], target: ResolvedTarget, 
 		return true;
 	}
 
-	const refreshed = parseAxTargets(
-		await bridgeCommand(
-			"axListTargets",
-			{ ...nativeWindowRequest(target), limit: 50 },
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch(() => []),
-	);
+	const refreshed = await refreshAxTargets(target, signal);
 	if (!refreshed.length) return false;
-	runtimeState.currentAxTargets = refreshed;
 	const field = refreshed
 		.filter((candidate) => candidate.canFocus && candidate.isTextInput && (candidate.role === "AXTextField" || candidate.role === "AXSearchField" || candidate.role === "AXComboBox"))
 		.sort((a, b) => a.y - b.y || a.x - b.x)[0];
@@ -2617,15 +2470,8 @@ function windowButtonForSemanticKey(keys: string[], targets: AxTarget[]): AxTarg
 }
 
 async function tryWindowAxKeyAction(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
-	const refreshed = parseAxTargets(
-		await bridgeCommand(
-			"axListTargets",
-			{ ...nativeWindowRequest(target), limit: 50 },
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch(() => []),
-	);
+	const refreshed = await refreshAxTargets(target, signal);
 	if (!refreshed.length) return false;
-	runtimeState.currentAxTargets = refreshed;
 	const button = windowButtonForSemanticKey(keys, refreshed);
 	if (!button) return false;
 	const result = await bridgeCommand<{ performed?: boolean }>(
@@ -2905,15 +2751,13 @@ async function dispatchDrag(
 	});
 }
 
-async function runCoordinateAction(
+async function runActionTool(
 	tool: string,
-	capture: CurrentCapture,
 	signal: AbortSignal | undefined,
 	dispatch: (target: ResolvedTarget) => Promise<ExecutionTrace>,
 	summaryFactory: (target: ResolvedTarget) => string,
 ): Promise<AgentToolResult<ComputerUseDetails>> {
 	const currentTarget = await resolveCurrentTarget(signal);
-	let activation = emptyActivation();
 	let stateMayHaveChanged = false;
 
 	try {
@@ -2923,7 +2767,7 @@ async function runCoordinateAction(
 			stateMayHaveChanged = true;
 
 			await sleep(settleMsForExecution(execution), signal);
-			const captureResult = await captureCurrentTarget(signal, activation);
+			const captureResult = await captureCurrentTarget(signal);
 			return await buildToolResult(tool, summaryFactory(captureResult.target), captureResult, execution, signal);
 		});
 	} catch (error) {
@@ -3029,7 +2873,7 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal, normalizeImageMode(params.image));
 }
 
-async function performClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performClick(params: ClickParams, signal?: AbortSignal, tool = "click"): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const capture = validateStateId(params.stateId);
@@ -3039,17 +2883,17 @@ async function performClick(params: ClickParams, signal?: AbortSignal): Promise<
 	const button = normalizeMouseButton(params.button);
 	const clickCount = normalizeClickCount(params.clickCount);
 
-	return await runCoordinateAction(
-		"click",
-		capture,
+	const verb = clickCount > 1 ? "Double-clicked" : button === "left" ? "Clicked" : `${button}-clicked`;
+	return await runActionTool(
+		tool,
 		signal,
 		async (target) => await dispatchClick({ ...params, clickCount }, capture, target, signal),
 		(target) => {
 			if (ref) {
 				const axTarget = runtimeState.currentAxTargets?.find((candidate) => candidate.ref === ref);
-				return `Clicked ${axTarget ? formatAxTargetLabel(axTarget) : ref} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
+				return `${verb} ${axTarget ? formatAxTargetLabel(axTarget) : ref} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
 			}
-			return `${clickCount > 1 ? "Double-clicked" : button === "left" ? "Clicked" : `${button}-clicked`} at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
+			return `${verb} at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
 		},
 	);
 }
@@ -3058,81 +2902,36 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
-	const currentTarget = await resolveCurrentTarget(signal);
-	let activation = emptyActivation();
-	let stateMayHaveChanged = false;
-
-	try {
-		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		return await withWindowWriteLock(readyTarget, async () => {
-			const execution = await dispatchTypeText(text, readyTarget, signal);
-
-			stateMayHaveChanged = true;
-			await sleep(settleMsForExecution(execution), signal);
-			const captureResult = await captureCurrentTarget(signal, activation);
-			const summary = `Inserted text in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-			return await buildToolResult("type_text", summary, captureResult, execution, signal);
-		});
-	} catch (error) {
-		if (stateMayHaveChanged) {
-			throw addRefreshHint(error);
-		}
-		throw normalizeError(error);
-	}
+	return await runActionTool(
+		"type_text",
+		signal,
+		async (target) => await dispatchTypeText(text, target, signal),
+		(target) => `Inserted text in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+	);
 }
 
 async function performSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
-	const currentTarget = await resolveCurrentTarget(signal);
-	let activation = emptyActivation();
-	let stateMayHaveChanged = false;
-
-	try {
-		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		return await withWindowWriteLock(readyTarget, async () => {
-			const execution = await dispatchSetText({ ...params, text }, readyTarget, signal);
-
-			stateMayHaveChanged = true;
-			await sleep(settleMsForExecution(execution), signal);
-			const captureResult = await captureCurrentTarget(signal, activation);
-			const summary = `Set text value in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-			return await buildToolResult("set_text", summary, captureResult, execution, signal);
-		});
-	} catch (error) {
-		if (stateMayHaveChanged) {
-			throw addRefreshHint(error);
-		}
-		throw normalizeError(error);
-	}
+	return await runActionTool(
+		"set_text",
+		signal,
+		async (target) => await dispatchSetText({ ...params, text }, target, signal),
+		(target) => `Set text value in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+	);
 }
 
 async function performKeypress(params: KeypressParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const keys = normalizeKeyList(params.keys);
-	const currentTarget = await resolveCurrentTarget(signal);
-	let activation = emptyActivation();
-	let stateMayHaveChanged = false;
-
-	try {
-		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
-		return await withWindowWriteLock(readyTarget, async () => {
-			const execution = await dispatchKeypress({ keys }, readyTarget, signal);
-
-			stateMayHaveChanged = true;
-			await sleep(settleMsForExecution(execution), signal);
-			const captureResult = await captureCurrentTarget(signal, activation);
-			const summary = `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-			return await buildToolResult("keypress", summary, captureResult, execution, signal);
-		});
-	} catch (error) {
-		if (stateMayHaveChanged) {
-			throw addRefreshHint(error);
-		}
-		throw normalizeError(error);
-	}
+	return await runActionTool(
+		"keypress",
+		signal,
+		async (target) => await dispatchKeypress({ keys }, target, signal),
+		(target) => `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+	);
 }
 
 async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
@@ -3142,9 +2941,8 @@ async function performScroll(params: ScrollParams, signal?: AbortSignal): Promis
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
-	return await runCoordinateAction(
+	return await runActionTool(
 		"scroll",
-		capture,
 		signal,
 		async (target) => await dispatchScroll(params, capture, target, signal),
 		(target) =>
@@ -3158,9 +2956,8 @@ async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): 
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const capture = validateStateId(params.stateId);
-	return await runCoordinateAction(
+	return await runActionTool(
 		"move_mouse",
-		capture,
 		signal,
 		async (target) => await dispatchMoveMouse(params, capture, target, signal),
 		(target) =>
@@ -3172,9 +2969,8 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const capture = validateStateId(params.stateId);
-	return await runCoordinateAction(
+	return await runActionTool(
 		"drag",
-		capture,
 		signal,
 		async (target) => await dispatchDrag(params, capture, target, signal),
 		(target) => `Dragged in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
@@ -3182,25 +2978,7 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 }
 
 async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
-	runtimeState.currentImageMode = normalizeImageMode(params.image);
-	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId);
-	const ref = trimOrUndefined(params.ref);
-	const x = toFiniteNumber(params.x, NaN);
-	const y = toFiniteNumber(params.y, NaN);
-	return await runCoordinateAction(
-		"double_click",
-		capture,
-		signal,
-		async (target) => await dispatchClick({ ...params, clickCount: 2 }, capture, target, signal),
-		(target) => {
-			if (ref) {
-				const axTarget = runtimeState.currentAxTargets?.find((candidate) => candidate.ref === ref);
-				return `Double-clicked ${axTarget ? formatAxTargetLabel(axTarget) : ref} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
-			}
-			return `Double-clicked at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
-		},
-	);
+	return await performClick({ ...params, clickCount: 2 }, signal, "double_click");
 }
 
 async function dispatchComputerAction(
@@ -3367,7 +3145,6 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 	}
 
 	const currentTarget = await resolveCurrentTarget(signal);
-	let activation = emptyActivation();
 	let stateMayHaveChanged = false;
 
 	try {
@@ -3439,13 +3216,13 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 			nonStealthReason: nonStealthReasons.size > 0 ? [...nonStealthReasons].join(",") : undefined,
 		});
 		await sleep(settleMsForExecution(execution), signal);
-		const captureResult = await captureCurrentTarget(signal, activation);
+		const captureResult = await captureCurrentTarget(signal);
 		const summary = `Executed ${actions.length} computer action${actions.length === 1 ? "" : "s"} in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
 		return await buildToolResult("computer_actions", summary, captureResult, execution, signal);
 	} catch (error) {
 		if (stateMayHaveChanged) {
 			await sleep(ACTION_SETTLE_MS, signal).catch(() => undefined);
-			await captureCurrentTarget(signal, activation).catch(() => undefined);
+			await captureCurrentTarget(signal).catch(() => undefined);
 			throw addRefreshHint(error);
 		}
 		throw normalizeError(error);
@@ -3480,155 +3257,31 @@ async function executeTool<T>(ctx: ExtensionContext, signal: AbortSignal | undef
 	});
 }
 
-export async function executeListApps(
-	_toolCallId: string,
-	_params: Record<string, never>,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ListAppsDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ListAppsDetails>> {
-	return await executeTool(ctx, signal, () => performListApps(signal));
+function makeToolExecutor<P, D>(perform: (params: P, signal?: AbortSignal) => Promise<AgentToolResult<D>>) {
+	return async (
+		_toolCallId: string,
+		params: P,
+		signal: AbortSignal | undefined,
+		_onUpdate: AgentToolUpdateCallback<D> | undefined,
+		ctx: ExtensionContext,
+	): Promise<AgentToolResult<D>> => await executeTool(ctx, signal, () => perform(params, signal));
 }
 
-export async function executeListWindows(
-	_toolCallId: string,
-	params: ListWindowsParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ListWindowsDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ListWindowsDetails>> {
-	return await executeTool(ctx, signal, () => performListWindows(params, signal));
-}
-
-export async function executeScreenshot(
-	_toolCallId: string,
-	params: ScreenshotParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performScreenshot(params, signal));
-}
-
-export async function executeClick(
-	_toolCallId: string,
-	params: ClickParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performClick(params, signal));
-}
-
-export async function executeDoubleClick(
-	_toolCallId: string,
-	params: ClickParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performDoubleClick(params, signal));
-}
-
-export async function executeMoveMouse(
-	_toolCallId: string,
-	params: MoveMouseParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performMoveMouse(params, signal));
-}
-
-export async function executeDrag(
-	_toolCallId: string,
-	params: DragParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performDrag(params, signal));
-}
-
-export async function executeScroll(
-	_toolCallId: string,
-	params: ScrollParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performScroll(params, signal));
-}
-
-export async function executeKeypress(
-	_toolCallId: string,
-	params: KeypressParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performKeypress(params, signal));
-}
-
-export async function executeTypeText(
-	_toolCallId: string,
-	params: TypeTextParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performTypeText(params, signal));
-}
-
-export async function executeSetText(
-	_toolCallId: string,
-	params: SetTextParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performSetText(params, signal));
-}
-
-export async function executeArrangeWindow(
-	_toolCallId: string,
-	params: ArrangeWindowParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performArrangeWindow(params, signal));
-}
-
-export async function executeNavigateBrowser(
-	_toolCallId: string,
-	params: NavigateBrowserParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performNavigateBrowser(params, signal));
-}
-
-export async function executeComputerActions(
-	_toolCallId: string,
-	params: ComputerActionsParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performComputerActions(params, signal));
-}
-
-export async function executeWait(
-	_toolCallId: string,
-	params: WaitParams,
-	signal: AbortSignal | undefined,
-	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<ComputerUseDetails>> {
-	return await executeTool(ctx, signal, () => performWait(params, signal));
-}
+export const executeListApps = makeToolExecutor((_params: Record<string, never>, signal) => performListApps(signal));
+export const executeListWindows = makeToolExecutor(performListWindows);
+export const executeScreenshot = makeToolExecutor(performScreenshot);
+export const executeClick = makeToolExecutor<ClickParams, ComputerUseDetails>(performClick);
+export const executeDoubleClick = makeToolExecutor(performDoubleClick);
+export const executeMoveMouse = makeToolExecutor(performMoveMouse);
+export const executeDrag = makeToolExecutor(performDrag);
+export const executeScroll = makeToolExecutor(performScroll);
+export const executeKeypress = makeToolExecutor(performKeypress);
+export const executeTypeText = makeToolExecutor(performTypeText);
+export const executeSetText = makeToolExecutor(performSetText);
+export const executeArrangeWindow = makeToolExecutor(performArrangeWindow);
+export const executeNavigateBrowser = makeToolExecutor(performNavigateBrowser);
+export const executeComputerActions = makeToolExecutor(performComputerActions);
+export const executeWait = makeToolExecutor(performWait);
 
 export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	runtimeState.currentTarget = undefined;

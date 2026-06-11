@@ -93,7 +93,6 @@ Strict AX mode blocks:
 - raw keyboard events
 - foreground focus fallbacks
 - cursor takeover
-- non-AX browser bootstrap
 
 Use AX refs from the latest `screenshot`, open a dedicated browser window manually, or disable strict AX mode for workflows that require raw event fallback.
 

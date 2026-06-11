@@ -93,4 +93,4 @@ For background-safe operation:
 }
 ```
 
-In strict AX mode, open any dedicated browser window yourself before asking Pi to control it. Browser window bootstrap can require non-AX automation and may be refused.
+In strict AX mode, open any dedicated browser window yourself before asking Pi to control it.

@@ -42,9 +42,7 @@ const listAppsTool = defineTool({
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeListApps(toolCallId, params as Record<string, never>, signal, onUpdate, ctx);
-	},
+	execute: executeListApps,
 });
 
 const listWindowsTool = defineTool({
@@ -63,9 +61,7 @@ const listWindowsTool = defineTool({
 		bundleId: Type.Optional(Type.String({ description: "Optional bundle ID filter, e.g. com.apple.Safari" })),
 		pid: Type.Optional(Type.Number({ description: "Optional process ID filter from list_apps" })),
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeListWindows(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeListWindows,
 });
 
 const screenshotTool = defineTool({
@@ -78,7 +74,6 @@ const screenshotTool = defineTool({
 		"If screenshot returns AX targets, prefer refs for click and set_text before coordinate or focus-based actions.",
 		"Call screenshot(app, windowTitle) to switch the controlled window.",
 		"For browsers, prefer a separate window for agent work instead of opening a new tab in the user's current window.",
-		"In strict AX mode, do not bootstrap a new browser window; target an existing dedicated browser window instead.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
@@ -87,9 +82,7 @@ const screenshotTool = defineTool({
 		window: windowSelectorSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeScreenshot(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeScreenshot,
 });
 
 const clickTool = defineTool({
@@ -113,9 +106,7 @@ const clickTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeClick(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeClick,
 });
 
 const doubleClickTool = defineTool({
@@ -138,9 +129,7 @@ const doubleClickTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeDoubleClick(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeDoubleClick,
 });
 
 const moveMouseTool = defineTool({
@@ -160,9 +149,7 @@ const moveMouseTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeMoveMouse(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeMoveMouse,
 });
 
 const dragTool = defineTool({
@@ -185,9 +172,7 @@ const dragTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeDrag(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeDrag,
 });
 
 const scrollTool = defineTool({
@@ -210,9 +195,7 @@ const scrollTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeScroll(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeScroll,
 });
 
 const keypressTool = defineTool({
@@ -235,9 +218,7 @@ const keypressTool = defineTool({
 			description: "Keys to press. Modifier arrays like ['Command','L'] are treated as one chord.",
 		}),
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeKeypress(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeKeypress,
 });
 
 const typeTextTool = defineTool({
@@ -257,9 +238,7 @@ const typeTextTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeTypeText(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeTypeText,
 });
 
 const setTextTool = defineTool({
@@ -281,9 +260,7 @@ const setTextTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeSetText(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeSetText,
 });
 
 const waitTool = defineTool({
@@ -302,9 +279,7 @@ const waitTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeWait(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeWait,
 });
 
 const arrangeWindowTool = defineTool({
@@ -332,9 +307,7 @@ const arrangeWindowTool = defineTool({
 		height: Type.Optional(Type.Number({ description: "Window height in screen points" })),
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeArrangeWindow(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeArrangeWindow,
 });
 
 const navigateBrowserTool = defineTool({
@@ -352,9 +325,7 @@ const navigateBrowserTool = defineTool({
 		window: windowSelectorSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeNavigateBrowser(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeNavigateBrowser,
 });
 
 const batchedActionSchema = Type.Union([
@@ -457,9 +428,7 @@ const computerActionsTool = defineTool({
 		stateId: stateIdSchema,
 		image: imageModeSchema,
 	}),
-	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeComputerActions(toolCallId, params, signal, onUpdate, ctx);
-	},
+	execute: executeComputerActions,
 });
 
 function formatConfigStatus(): string {
