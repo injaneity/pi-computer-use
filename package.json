@@ -31,7 +31,7 @@
 		"scripts/setup-helper.mjs",
 		"native/macos/bridge.swift",
 		"prebuilt/macos",
-		"assets/img.jpg",
+		"assets/reference/img.jpg",
 		"README.md",
 		"LICENSE"
 	],
@@ -39,7 +39,7 @@
 		"extensions": [
 			"./extensions"
 		],
-		"image": "./assets/img.jpg"
+		"image": "./assets/reference/img.jpg"
 	},
 	"scripts": {
 		"postinstall": "node scripts/setup-helper.mjs --postinstall",
