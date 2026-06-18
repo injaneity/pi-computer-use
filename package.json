@@ -1,6 +1,6 @@
 {
 	"name": "@injaneity/pi-computer-use",
-	"version": "0.3.1",
+	"version": "0.3.2",
 	"description": "Pi extension that brings token-efficient desktop & browser automation on macOS.",
 	"type": "module",
 	"keywords": [
