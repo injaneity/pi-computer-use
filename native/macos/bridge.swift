@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import ApplicationServices
+import Darwin
 #if PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
 import ScreenCaptureKit
 #endif
@@ -483,9 +484,15 @@ final class Bridge {
 		return ["opened": opened, "requested": requested]
 	}
 
+	private func pidIsAlive(_ pid: pid_t) -> Bool {
+		pid > 0 && kill(pid, 0) == 0
+	}
+
 	private func listApps() -> [[String: Any]] {
 		let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-		let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+		let apps = NSWorkspace.shared.runningApplications.filter { app in
+			app.activationPolicy == .regular && pidIsAlive(app.processIdentifier)
+		}
 		return apps.map { app in
 			var data: [String: Any] = [
 				"appName": app.localizedName ?? "Unknown App",
@@ -2211,7 +2218,19 @@ final class Bridge {
 	}
 
 	private func postEvent(_ event: CGEvent, pid: Int32) {
-		event.postToPid(pid)
+		// Post as a real foreground HID event. AppKit views with mouseDown handlers
+		// can ignore pid-targeted CGEvents even though postToPid reports success.
+		// Keep the target app frontmost so the HID event is delivered to the intended
+		// window, then post at the session event tap.
+		if let app = NSRunningApplication(processIdentifier: pid), !app.isActive {
+			if #available(macOS 14.0, *) {
+				_ = app.activate()
+			} else {
+				_ = app.activate(options: [.activateIgnoringOtherApps])
+			}
+			usleep(20_000)
+		}
+		event.post(tap: .cghidEventTap)
 	}
 
 	private func postMouseMove(to point: CGPoint, pid: Int32) throws {

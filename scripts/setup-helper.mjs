@@ -168,10 +168,6 @@ async function setup() {
 	const prebuiltExists = await exists(prebuiltPath);
 
 	if (!forceInstall && (await isExecutable(helperDestPath))) {
-		if (variant === "modern") {
-			console.log(`[pi-computer-use] using existing helper at ${helperDestPath}`);
-			return;
-		}
 		if (prebuiltExists) {
 			const { changed } = await copyIfChanged(prebuiltPath, helperDestPath);
 			console.log(

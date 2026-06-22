@@ -912,6 +912,21 @@ function ensurePointIsInCapture(
 	}
 }
 
+function screenPointToCapturePoint(
+	target: Pick<ResolvedTarget, "framePoints">,
+	capture: CurrentCapture,
+	screenX: number,
+	screenY: number,
+): { x: number; y: number } {
+	const frame = target.framePoints;
+	const relX = frame.w > 0 ? (screenX - frame.x) / frame.w : 0;
+	const relY = frame.h > 0 ? (screenY - frame.y) / frame.h : 0;
+	return {
+		x: Math.max(0, Math.min(capture.width - 1, relX * capture.width)),
+		y: Math.max(0, Math.min(capture.height - 1, relY * capture.height)),
+	};
+}
+
 function normalizeDragPath(path: DragParams["path"], capture: CurrentCapture): Array<{ x: number; y: number }> {
 	if (!Array.isArray(path) || path.length < 2) {
 		throw new Error("drag.path must contain at least two points.");
@@ -2326,6 +2341,23 @@ async function dispatchClick(
 	const button = normalizeMouseButton(params.button);
 	const clickCount = normalizeClickCount(params.clickCount);
 
+	const performCoordinateClick = async (clickX: number, clickY: number): Promise<void> => {
+		ensurePointIsInCapture(clickX, clickY, capture);
+		await bridgeCommand(
+			"mouseClick",
+			{
+				...nativeWindowRequest(target),
+				x: clickX,
+				y: clickY,
+				button,
+				clickCount,
+				captureWidth: capture.width,
+				captureHeight: capture.height,
+			},
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		);
+	};
+
 	if (ref) {
 		if (button !== "left") {
 			throw new Error(`AX target refs only support left-button clicks. Use coordinates for ${button}-click.`);
@@ -2366,16 +2398,37 @@ async function dispatchClick(
 		};
 
 		const axTarget = axTargetByRef(ref);
+		const originalAxTargets = runtimeState.currentAxTargets;
+		let reacquiredTarget: AxTarget | undefined;
 		let { clickedViaAX, focusedViaAX } = await attemptRefClick(axTarget);
 		if (!clickedViaAX && !focusedViaAX) {
 			const reacquired = await reacquireAxTarget(axTarget, target, signal);
 			if (reacquired) {
+				reacquiredTarget = reacquired;
 				({ clickedViaAX, focusedViaAX } = await attemptRefClick(reacquired));
 			}
 		}
+		// Reacquisition refreshes the global AX target list. During a batched action
+		// sequence, subsequent actions still refer to refs from the pre-batch state,
+		// so preserve that ref namespace until the batch returns a fresh state.
+		if (originalAxTargets) {
+			runtimeState.currentAxTargets = originalAxTargets;
+		}
 
-		if (!clickedViaAX && !focusedViaAX) {
-			throw new Error(`AX click/focus could not be completed for ${ref}.`);
+		const effectiveTarget = reacquiredTarget ?? axTarget;
+		const focusIsSufficient = focusedViaAX && (effectiveTarget.isTextInput || effectiveTarget.canFocus);
+		if (!clickedViaAX && !focusIsSufficient) {
+			if (isStrictAxMode()) {
+				strictModeBlock(`AX click/focus could not be completed for ${ref}.`);
+			}
+			const fallbackPoint = screenPointToCapturePoint(target, capture, effectiveTarget.x, effectiveTarget.y);
+			await performCoordinateClick(fallbackPoint.x, fallbackPoint.y);
+			return executionTrace(clickCount > 1 ? "coordinate_event_double_click" : "coordinate_event_click", "default", {
+				axAttempted: true,
+				axSucceeded: false,
+				fallbackUsed: true,
+				nonStealthReason: "ax_ref_click_fell_back_to_coordinate_mouse_click",
+			});
 		}
 
 		return executionTrace(clickedViaAX ? "ax_press" : "ax_focus", "stealth", {
@@ -2411,6 +2464,9 @@ async function dispatchClick(
 			clickedViaAX = false;
 		}
 
+		// For explicit coordinate clicks, AX focus is only diagnostic. Treating focus as
+		// a completed click suppresses the raw mouse event on non-actionable-but-
+		// readable views (for example AXStaticText rows with AppKit mouse handlers).
 		if (!clickedViaAX) {
 			try {
 				const focusResult = await bridgeCommand<AxFocusResult>(
@@ -2431,23 +2487,11 @@ async function dispatchClick(
 		}
 	}
 
-	if (!clickedViaAX && !focusedViaAX) {
+	if (!clickedViaAX) {
 		if (isStrictAxMode()) {
-			strictModeBlock(`AX click/focus could not be completed at (${Math.round(x)},${Math.round(y)}).`);
+			strictModeBlock(`AX click could not be completed at (${Math.round(x)},${Math.round(y)}).`);
 		}
-		await bridgeCommand(
-			"mouseClick",
-			{
-				...nativeWindowRequest(target),
-				x,
-				y,
-				button,
-				clickCount,
-				captureWidth: capture.width,
-				captureHeight: capture.height,
-			},
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		);
+		await performCoordinateClick(x, y);
 	}
 
 	const usedAxPath = clickedViaAX || focusedViaAX;
