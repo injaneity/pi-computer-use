@@ -56,6 +56,7 @@ export interface TypeTextParams extends WindowTargetParams {
 export interface SetTextParams extends WindowTargetParams {
 	text: string;
 	ref?: string;
+	method?: "ax" | "keyboard";
 }
 
 export interface KeypressParams extends WindowTargetParams {
@@ -2329,6 +2330,31 @@ async function buildToolResult(
 	return { content, details };
 }
 
+async function mouseClickAtCapturePoint(
+	target: ResolvedTarget,
+	capture: CurrentCapture,
+	x: number,
+	y: number,
+	button: MouseButtonName,
+	clickCount: number,
+	signal?: AbortSignal,
+): Promise<void> {
+	ensurePointIsInCapture(x, y, capture);
+	await bridgeCommand(
+		"mouseClick",
+		{
+			...nativeWindowRequest(target),
+			x,
+			y,
+			button,
+			clickCount,
+			captureWidth: capture.width,
+			captureHeight: capture.height,
+		},
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	);
+}
+
 async function dispatchClick(
 	params: ClickParams,
 	capture: CurrentCapture,
@@ -2342,20 +2368,7 @@ async function dispatchClick(
 	const clickCount = normalizeClickCount(params.clickCount);
 
 	const performCoordinateClick = async (clickX: number, clickY: number): Promise<void> => {
-		ensurePointIsInCapture(clickX, clickY, capture);
-		await bridgeCommand(
-			"mouseClick",
-			{
-				...nativeWindowRequest(target),
-				x: clickX,
-				y: clickY,
-				button,
-				clickCount,
-				captureWidth: capture.width,
-				captureHeight: capture.height,
-			},
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		);
+		await mouseClickAtCapturePoint(target, capture, clickX, clickY, button, clickCount, signal);
 	};
 
 	if (ref) {
@@ -2560,6 +2573,14 @@ async function setAxValue(elementRef: string, text: string, signal?: AbortSignal
 	);
 }
 
+async function replaceTextWithKeyboard(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
+	await bridgeCommand(
+		"typeText",
+		{ text, pid: target.pid },
+		{ signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) },
+	);
+}
+
 async function focusAxElement(elementRef: string, target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
 	const result = await bridgeCommand<AxFocusResult>(
 		"axFocusElement",
@@ -2571,6 +2592,43 @@ async function focusAxElement(elementRef: string, target: ResolvedTarget, signal
 
 async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
 	const ref = trimOrUndefined(params.ref);
+	const method = params.method === "keyboard" ? "keyboard" : "ax";
+	if (method === "keyboard") {
+		if (isStrictAxMode()) {
+			strictModeBlock("Keyboard text replacement is not AX-only. Use default set_text AX semantics in strict mode.");
+		}
+		if (ref) {
+			let axTarget = axTargetByRef(ref);
+			const capture = runtimeState.currentCapture;
+			if (capture) {
+				const point = screenPointToCapturePoint(target, capture, axTarget.x, axTarget.y);
+				await mouseClickAtCapturePoint(target, capture, point.x, point.y, "left", 1, signal);
+				await sleep(60, signal);
+			}
+			let focused = await focusAxElement(axTarget.elementRef, target, signal);
+			if (!focused) {
+				const reacquired = await reacquireAxTarget(axTarget, target, signal);
+				if (reacquired) {
+					axTarget = reacquired;
+					focused = await focusAxElement(axTarget.elementRef, target, signal);
+				}
+			}
+			if (!focused) {
+				throw new Error(`Could not focus AX target '${ref}' for keyboard text replacement.`);
+			}
+			await setAxValue(axTarget.elementRef, "", signal).catch(() => undefined);
+		} else {
+			await focusControlledWindow(target, signal);
+		}
+		await replaceTextWithKeyboard(params.text, target, signal);
+		return executionTrace("raw_key_text", "default", {
+			axAttempted: Boolean(ref),
+			axSucceeded: Boolean(ref),
+			fallbackUsed: false,
+			nonStealthReason: "keyboard_text_replacement_requires_foreground_key_events",
+		});
+	}
+
 	if (ref) {
 		let axTarget = axTargetByRef(ref);
 		if (axTarget.canSetValue !== false) {

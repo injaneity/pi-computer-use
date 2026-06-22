@@ -343,11 +343,13 @@ const typeTextTool = defineTool({
 const setTextTool = defineTool({
 	name: "set_text",
 	label: "Set Text",
-	description: "Replace an AX text control value by ref, or the currently focused text control when no ref is provided.",
-	promptSnippet: "Replace a text control value using AX set-value semantics. Prefer refs from the latest screenshot.",
+	description: "Replace a text control value by AX set-value, or by keyboard select-all/type when requested.",
+	promptSnippet: "Replace a text control value. Defaults to AX set-value; use method=keyboard when real typing events are required.",
 	promptGuidelines: [
 		"Use this when you need replacement semantics rather than insertion.",
 		"Prefer set_text with ref from the latest screenshot when a matching text field is available.",
+		"Default method is ax, which uses AX setValue and may not trigger keyboard-only app semantics.",
+		"Use method=keyboard to focus the field, clear it with AX when possible, and type real keyboard text events.",
 		"If no ref is available, click a field first if needed, then call set_text.",
 		"For Enter, Tab, backspace, or shortcuts, use keypress.",
 	],
@@ -355,6 +357,7 @@ const setTextTool = defineTool({
 	parameters: Type.Object({
 		text: Type.String({ description: "Replacement text value" }),
 		ref: Type.Optional(Type.String({ description: "Optional text target ref from the latest screenshot/snapshot, e.g. @e1 or @r1" })),
+		method: Type.Optional(Type.Union([Type.Literal("ax"), Type.Literal("keyboard")], { description: "Replacement backend. ax uses AX setValue (default); keyboard focuses the field, clears it with AX when possible, then types real key events." })),
 		contextId: contextIdSchema,
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
@@ -534,6 +537,7 @@ const batchedActionSchema = Type.Union([
 		type: Type.Literal("set_text"),
 		text: Type.String(),
 		ref: Type.Optional(Type.String()),
+		method: Type.Optional(Type.Union([Type.Literal("ax"), Type.Literal("keyboard")])),
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
