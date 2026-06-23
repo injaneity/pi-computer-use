@@ -197,10 +197,8 @@ interface ExecutionTrace {
 	variant?: ExecutionVariant;
 	stealthCompatible?: boolean;
 	nonStealthReason?: string;
-	coordinateVerified?: boolean;
 	coordinateStateChanged?: boolean;
 	coordinateVerification?: "ax_signature_changed" | "no_observable_change" | "unavailable";
-	retryCount?: number;
 	actionCount?: number;
 	completedActionCount?: number;
 	actions?: BatchActionTrace[];
@@ -218,10 +216,8 @@ interface BatchActionTrace {
 	variant?: ExecutionVariant;
 	stealthCompatible?: boolean;
 	nonStealthReason?: string;
-	coordinateVerified?: boolean;
 	coordinateStateChanged?: boolean;
 	coordinateVerification?: ExecutionTrace["coordinateVerification"];
-	retryCount?: number;
 }
 
 export interface ComputerUseDetails {
@@ -2364,10 +2360,8 @@ async function mouseClickAtCapturePoint(
 }
 
 interface CoordinateClickVerification {
-	verified: boolean;
 	stateChanged: boolean;
 	verification: ExecutionTrace["coordinateVerification"];
-	retryCount: number;
 }
 
 async function coordinateStateSignature(target: ResolvedTarget, signal?: AbortSignal): Promise<string | undefined> {
@@ -2396,34 +2390,14 @@ async function verifiedCoordinateClick(
 	button: MouseButtonName,
 	clickCount: number,
 	signal?: AbortSignal,
-	retryPoints: Array<{ x: number; y: number }> = [],
 ): Promise<CoordinateClickVerification> {
 	const before = await coordinateStateSignature(target, signal);
 	await mouseClickAtCapturePoint(target, capture, x, y, button, clickCount, signal);
 	await sleep(80, signal);
-	let after = await coordinateStateSignature(target, signal);
-	let retryCount = 0;
-
-	if (before && after && before === after) {
-		for (const point of retryPoints) {
-			await mouseClickAtCapturePoint(target, capture, point.x, point.y, button, clickCount, signal);
-			retryCount += 1;
-			await sleep(80, signal);
-			after = await coordinateStateSignature(target, signal);
-			if (after && after !== before) break;
-		}
-	}
-
-	if (!before || !after) {
-		return { verified: false, stateChanged: false, verification: "unavailable", retryCount };
-	}
+	const after = await coordinateStateSignature(target, signal);
+	if (!before || !after) return { stateChanged: false, verification: "unavailable" };
 	const stateChanged = before !== after;
-	return {
-		verified: stateChanged,
-		stateChanged,
-		verification: stateChanged ? "ax_signature_changed" : "no_observable_change",
-		retryCount,
-	};
+	return { stateChanged, verification: stateChanged ? "ax_signature_changed" : "no_observable_change" };
 }
 
 async function dispatchClick(
@@ -2438,9 +2412,8 @@ async function dispatchClick(
 	const button = normalizeMouseButton(params.button);
 	const clickCount = normalizeClickCount(params.clickCount);
 
-	const performCoordinateClick = async (clickX: number, clickY: number, retryPoints: Array<{ x: number; y: number }> = []): Promise<CoordinateClickVerification> => {
-		return await verifiedCoordinateClick(target, capture, clickX, clickY, button, clickCount, signal, retryPoints);
-	};
+	const performCoordinateClick = async (clickX: number, clickY: number): Promise<CoordinateClickVerification> =>
+		await verifiedCoordinateClick(target, capture, clickX, clickY, button, clickCount, signal);
 
 	if (ref) {
 		if (button !== "left") {
@@ -2506,19 +2479,14 @@ async function dispatchClick(
 				strictModeBlock(`AX click/focus could not be completed for ${ref}.`);
 			}
 			const fallbackPoint = screenPointToCapturePoint(target, capture, effectiveTarget.x, effectiveTarget.y);
-			const retryPoints = !effectiveTarget.canPress && !effectiveTarget.isTextInput
-				? [{ x: Math.max(0, fallbackPoint.x - 40), y: fallbackPoint.y }]
-				: [];
-			const verification = await performCoordinateClick(fallbackPoint.x, fallbackPoint.y, retryPoints);
+			const verification = await performCoordinateClick(fallbackPoint.x, fallbackPoint.y);
 			return executionTrace(clickCount > 1 ? "coordinate_event_double_click" : "coordinate_event_click", "default", {
 				axAttempted: true,
 				axSucceeded: false,
 				fallbackUsed: true,
 				nonStealthReason: "ax_ref_click_fell_back_to_coordinate_mouse_click",
-				coordinateVerified: verification.verified,
 				coordinateStateChanged: verification.stateChanged,
 				coordinateVerification: verification.verification,
-				retryCount: verification.retryCount,
 			});
 		}
 
@@ -2535,7 +2503,6 @@ async function dispatchClick(
 	ensurePointIsInCapture(x, y, capture);
 
 	let clickedViaAX = false;
-	let focusedViaAX = false;
 	const canTryAX = button === "left" && clickCount === 1;
 	if (canTryAX) {
 		try {
@@ -2555,27 +2522,6 @@ async function dispatchClick(
 			clickedViaAX = false;
 		}
 
-		// For explicit coordinate clicks, AX focus is only diagnostic. Treating focus as
-		// a completed click suppresses the raw mouse event on non-actionable-but-
-		// readable views (for example AXStaticText rows with AppKit mouse handlers).
-		if (!clickedViaAX) {
-			try {
-				const focusResult = await bridgeCommand<AxFocusResult>(
-					"axFocusAtPoint",
-					{
-						...nativeWindowRequest(target),
-						x,
-						y,
-						captureWidth: capture.width,
-						captureHeight: capture.height,
-					},
-					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-				);
-				focusedViaAX = toBoolean(focusResult?.focused);
-			} catch {
-				focusedViaAX = false;
-			}
-		}
 	}
 
 	let coordinateVerification: CoordinateClickVerification | undefined;
@@ -2595,12 +2541,14 @@ async function dispatchClick(
 			axSucceeded: usedAxPath,
 			fallbackUsed: canTryAX && !usedAxPath,
 			nonStealthReason: usedAxPath ? undefined : "coordinate_mouse_click_requires_pointer_event",
-			coordinateVerified: coordinateVerification?.verified,
 			coordinateStateChanged: coordinateVerification?.stateChanged,
 			coordinateVerification: coordinateVerification?.verification,
-			retryCount: coordinateVerification?.retryCount,
 		},
 	);
+}
+
+async function postKeyboardText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
+	await bridgeCommand("typeText", { text, pid: target.pid }, { signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) });
 }
 
 async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
@@ -2619,11 +2567,7 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 		strictModeBlock("Raw text insertion is not AX-only. Use set_text for AX value replacement.");
 	}
 	await focusControlledWindow(target, signal);
-	await bridgeCommand(
-		"typeText",
-		{ text, pid: target.pid },
-		{ signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) },
-	);
+	await postKeyboardText(text, target, signal);
 	return executionTrace("raw_key_text", "default", {
 		axAttempted: false,
 		axSucceeded: false,
@@ -2653,14 +2597,6 @@ async function setAxValue(elementRef: string, text: string, signal?: AbortSignal
 			value: text,
 		},
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	);
-}
-
-async function replaceTextWithKeyboard(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
-	await bridgeCommand(
-		"typeText",
-		{ text, pid: target.pid },
-		{ signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) },
 	);
 }
 
@@ -2703,7 +2639,7 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 		} else {
 			await focusControlledWindow(target, signal);
 		}
-		await replaceTextWithKeyboard(params.text, target, signal);
+		await postKeyboardText(params.text, target, signal);
 		return executionTrace("raw_key_text", "default", {
 			axAttempted: Boolean(ref),
 			axSucceeded: Boolean(ref),
@@ -3930,10 +3866,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 		let axSucceeded = false;
 		let fallbackUsed = false;
 		let stealthCompatible = true;
-		let coordinateVerified = false;
 		let coordinateStateChanged = false;
 		let coordinateVerification: ExecutionTrace["coordinateVerification"] | undefined;
-		let retryCount = 0;
 		const nonStealthReasons = new Set<string>();
 		const actionTraces: BatchActionTrace[] = [];
 
@@ -3971,10 +3905,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 				variant: trace.variant,
 				stealthCompatible: trace.stealthCompatible,
 				nonStealthReason: trace.nonStealthReason,
-				coordinateVerified: trace.coordinateVerified,
 				coordinateStateChanged: trace.coordinateStateChanged,
 				coordinateVerification: trace.coordinateVerification,
-				retryCount: trace.retryCount,
 			});
 			if (actionMayChangeState(action)) {
 				stateMayHaveChanged = true;
@@ -3982,10 +3914,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 			axAttempted ||= trace.axAttempted === true;
 			axSucceeded ||= trace.axSucceeded === true;
 			fallbackUsed ||= trace.fallbackUsed === true;
-			coordinateVerified ||= trace.coordinateVerified === true;
 			coordinateStateChanged ||= trace.coordinateStateChanged === true;
 			coordinateVerification = trace.coordinateVerification ?? coordinateVerification;
-			retryCount += trace.retryCount ?? 0;
 			stealthCompatible &&= trace.stealthCompatible === true;
 			if (trace.nonStealthReason) {
 				nonStealthReasons.add(trace.nonStealthReason);
@@ -4002,10 +3932,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 			axAttempted,
 			axSucceeded,
 			fallbackUsed,
-			coordinateVerified: coordinateVerification ? coordinateVerified : undefined,
 			coordinateStateChanged: coordinateVerification ? coordinateStateChanged : undefined,
 			coordinateVerification,
-			retryCount: retryCount || undefined,
 			nonStealthReason: nonStealthReasons.size > 0 ? [...nonStealthReasons].join(",") : undefined,
 		});
 		await sleep(settleMsForExecution(execution), signal);

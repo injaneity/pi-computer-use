@@ -343,7 +343,7 @@ const typeTextTool = defineTool({
 const setTextTool = defineTool({
 	name: "set_text",
 	label: "Set Text",
-	description: "Replace a text control value by AX set-value, or by keyboard select-all/type when requested.",
+	description: "Replace a text control value by AX set-value, or by clearing then typing keyboard events when requested.",
 	promptSnippet: "Replace a text control value. Defaults to AX set-value; use method=keyboard when real typing events are required.",
 	promptGuidelines: [
 		"Use this when you need replacement semantics rather than insertion.",
