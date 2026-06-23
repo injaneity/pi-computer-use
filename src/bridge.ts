@@ -466,6 +466,8 @@ interface HelperAxTarget {
 	canDecrement?: boolean;
 	x?: number;
 	y?: number;
+	frame?: Partial<FramePoints>;
+	parentFrame?: Partial<FramePoints>;
 	score?: number;
 	depth?: number;
 }
@@ -516,6 +518,8 @@ interface AxTarget {
 	canDecrement: boolean;
 	x: number;
 	y: number;
+	frame?: FramePoints;
+	parentFrame?: FramePoints;
 	score?: number;
 	depth?: number;
 }
@@ -932,6 +936,13 @@ function screenPointToCapturePoint(
 	};
 }
 
+function axCoordinateFallbackPoint(target: AxTarget): { x: number; y: number } {
+	const frame = target.frame;
+	const parent = target.parentFrame;
+	const parentLooksLikeRow = frame && parent && parent.w > frame.w * 1.5 && parent.h >= frame.h && parent.h <= frame.h * 3;
+	return parentLooksLikeRow ? { x: parent.x + parent.w / 2, y: frame.y + frame.h / 2 } : { x: target.x, y: target.y };
+}
+
 function normalizeDragPath(path: DragParams["path"], capture: CurrentCapture): Array<{ x: number; y: number }> {
 	if (!Array.isArray(path) || path.length < 2) {
 		throw new Error("drag.path must contain at least two points.");
@@ -1029,6 +1040,8 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				canDecrement: toBoolean(target?.canDecrement),
 				x: toFiniteNumber(target?.x, 0),
 				y: toFiniteNumber(target?.y, 0),
+				frame: parseOptionalFramePoints(target?.frame),
+				parentFrame: parseOptionalFramePoints(target?.parentFrame),
 				score: Number.isFinite(target?.score) ? Number(target.score) : undefined,
 				depth: Number.isFinite(target?.depth) ? Math.trunc(Number(target.depth)) : undefined,
 			} as AxTarget;
@@ -1521,6 +1534,12 @@ function parseFramePoints(raw: unknown): FramePoints {
 		w: Math.max(1, toFiniteNumber(frame.w, 1)),
 		h: Math.max(1, toFiniteNumber(frame.h, 1)),
 	};
+}
+
+function parseOptionalFramePoints(raw: unknown): FramePoints | undefined {
+	const frame = raw as Partial<FramePoints> | undefined;
+	if (!frame || ![frame.x, frame.y, frame.w, frame.h].every(Number.isFinite)) return undefined;
+	return { x: Number(frame.x), y: Number(frame.y), w: Math.max(1, Number(frame.w)), h: Math.max(1, Number(frame.h)) };
 }
 
 function parseWindows(result: unknown): HelperWindow[] {
@@ -2478,7 +2497,8 @@ async function dispatchClick(
 			if (isStrictAxMode()) {
 				strictModeBlock(`AX click/focus could not be completed for ${ref}.`);
 			}
-			const fallbackPoint = screenPointToCapturePoint(target, capture, effectiveTarget.x, effectiveTarget.y);
+			const screenPoint = axCoordinateFallbackPoint(effectiveTarget);
+			const fallbackPoint = screenPointToCapturePoint(target, capture, screenPoint.x, screenPoint.y);
 			const verification = await performCoordinateClick(fallbackPoint.x, fallbackPoint.y);
 			return executionTrace(clickCount > 1 ? "coordinate_event_double_click" : "coordinate_event_click", "default", {
 				axAttempted: true,
@@ -2620,7 +2640,8 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 			let axTarget = axTargetByRef(ref);
 			const capture = runtimeState.currentCapture;
 			if (capture) {
-				const point = screenPointToCapturePoint(target, capture, axTarget.x, axTarget.y);
+				const screenPoint = axCoordinateFallbackPoint(axTarget);
+				const point = screenPointToCapturePoint(target, capture, screenPoint.x, screenPoint.y);
 				await mouseClickAtCapturePoint(target, capture, point.x, point.y, "left", 1, signal);
 				await sleep(60, signal);
 			}

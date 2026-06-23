@@ -1625,6 +1625,7 @@ final class Bridge {
 		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
 		let value = displayValue(element, role: role, subrole: subrole)
 		let frame = frameForElement(element)
+		let parentFrame = copyAttribute(element, attribute: kAXParentAttribute as CFString).flatMap(asAXElement).flatMap(frameForElement)
 		let centerX = frame.map { $0.midX } ?? 0
 		let centerY = frame.map { $0.midY } ?? 0
 		var valueSettable = DarwinBoolean(false)
@@ -1657,6 +1658,9 @@ final class Bridge {
 		]
 		if let frame {
 			payload["frame"] = ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height]
+		}
+		if let parentFrame {
+			payload["parentFrame"] = ["x": parentFrame.origin.x, "y": parentFrame.origin.y, "w": parentFrame.width, "h": parentFrame.height]
 		}
 		if let score {
 			payload["score"] = score
