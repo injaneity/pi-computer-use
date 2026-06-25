@@ -169,6 +169,8 @@ interface ActivationFlags {
 }
 
 type ExecutionVariant = "stealth" | "default";
+type NativeInputDelivery = "pid" | "hid";
+type DeliveryPolicy = "ax_only" | "background" | "default";
 
 interface ExecutionTrace {
 	strategy:
@@ -183,13 +185,20 @@ interface ExecutionTrace {
 		| "coordinate_event_move"
 		| "coordinate_event_drag"
 		| "coordinate_event_scroll"
+		| "pid_event_click"
+		| "pid_event_double_click"
+		| "pid_event_move"
+		| "pid_event_drag"
+		| "pid_event_scroll"
 		| "ax_scroll"
 		| "ax_action"
 		| "browser_open_location"
 		| "cdp_navigate"
 		| "ax_set_value"
 		| "raw_keypress"
-		| "raw_key_text";
+		| "raw_key_text"
+		| "pid_keypress"
+		| "pid_key_text";
 	axAttempted?: boolean;
 	axSucceeded?: boolean;
 	fallbackUsed?: boolean;
@@ -197,6 +206,8 @@ interface ExecutionTrace {
 	variant?: ExecutionVariant;
 	stealthCompatible?: boolean;
 	nonStealthReason?: string;
+	delivery?: NativeInputDelivery;
+	deliveryPolicy?: DeliveryPolicy;
 	coordinateStateChanged?: boolean;
 	coordinateVerification?: "ax_signature_changed" | "no_observable_change" | "unavailable";
 	actionCount?: number;
@@ -216,6 +227,8 @@ interface BatchActionTrace {
 	variant?: ExecutionVariant;
 	stealthCompatible?: boolean;
 	nonStealthReason?: string;
+	delivery?: NativeInputDelivery;
+	deliveryPolicy?: DeliveryPolicy;
 	coordinateStateChanged?: boolean;
 	coordinateVerification?: ExecutionTrace["coordinateVerification"];
 }
@@ -757,6 +770,16 @@ function isRecoverableScreenshotError(error: unknown): error is HelperCommandErr
 
 function currentRuntimeMode(): ExecutionVariant {
 	return isStrictAxMode() ? "stealth" : "default";
+}
+
+function currentDeliveryPolicy(): DeliveryPolicy {
+	if (isStrictAxMode()) return "ax_only";
+	const value = (process.env.PI_COMPUTER_USE_DELIVERY_POLICY ?? process.env.PI_COMPUTER_USE_EVENT_DELIVERY ?? "default").toLowerCase();
+	return value === "background" || value === "pid" ? "background" : value === "ax_only" || value === "ax-only" ? "ax_only" : "default";
+}
+
+function nativeInputDelivery(): NativeInputDelivery {
+	return currentDeliveryPolicy() === "background" ? "pid" : "hid";
 }
 
 function executionTrace(
@@ -2478,6 +2501,7 @@ async function mouseClickAtCapturePoint(
 	y: number,
 	button: MouseButtonName,
 	clickCount: number,
+	delivery: NativeInputDelivery = nativeInputDelivery(),
 	signal?: AbortSignal,
 ): Promise<void> {
 	ensurePointIsInCapture(x, y, capture);
@@ -2491,6 +2515,7 @@ async function mouseClickAtCapturePoint(
 			clickCount,
 			captureWidth: capture.width,
 			captureHeight: capture.height,
+			delivery,
 		},
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
@@ -2526,10 +2551,11 @@ async function verifiedCoordinateClick(
 	y: number,
 	button: MouseButtonName,
 	clickCount: number,
+	delivery: NativeInputDelivery,
 	signal?: AbortSignal,
 ): Promise<CoordinateClickVerification> {
 	const before = await coordinateStateSignature(target, signal);
-	await mouseClickAtCapturePoint(target, capture, x, y, button, clickCount, signal);
+	await mouseClickAtCapturePoint(target, capture, x, y, button, clickCount, delivery, signal);
 	await sleep(80, signal);
 	const after = await coordinateStateSignature(target, signal);
 	if (!before || !after) return { stateChanged: false, verification: "unavailable" };
@@ -2548,9 +2574,13 @@ async function dispatchClick(
 	const y = toFiniteNumber(params.y, NaN);
 	const button = normalizeMouseButton(params.button);
 	const clickCount = normalizeClickCount(params.clickCount);
+	const delivery = nativeInputDelivery();
+	const deliveryPolicy = currentDeliveryPolicy();
+	const clickStrategy = (count = clickCount): ExecutionTrace["strategy"] => delivery === "pid" ? (count > 1 ? "pid_event_double_click" : "pid_event_click") : (count > 1 ? "coordinate_event_double_click" : "coordinate_event_click");
+	const nonStealthReason = delivery === "pid" ? "pid_routed_mouse_click" : "coordinate_mouse_click_requires_pointer_event";
 
 	const performCoordinateClick = async (clickX: number, clickY: number): Promise<CoordinateClickVerification> =>
-		await verifiedCoordinateClick(target, capture, clickX, clickY, button, clickCount, signal);
+		await verifiedCoordinateClick(target, capture, clickX, clickY, button, clickCount, delivery, signal);
 
 	if (ref) {
 		if (button !== "left") {
@@ -2618,11 +2648,13 @@ async function dispatchClick(
 			const screenPoint = axCoordinateFallbackPoint(effectiveTarget);
 			const fallbackPoint = screenPointToCapturePoint(target, capture, screenPoint.x, screenPoint.y);
 			const verification = await performCoordinateClick(fallbackPoint.x, fallbackPoint.y);
-			return executionTrace(clickCount > 1 ? "coordinate_event_double_click" : "coordinate_event_click", "default", {
+			return executionTrace(clickStrategy(), "default", {
 				axAttempted: true,
 				axSucceeded: false,
 				fallbackUsed: true,
-				nonStealthReason: "ax_ref_click_fell_back_to_coordinate_mouse_click",
+				nonStealthReason: delivery === "pid" ? "ax_ref_click_fell_back_to_pid_routed_mouse_click" : "ax_ref_click_fell_back_to_coordinate_mouse_click",
+				delivery,
+				deliveryPolicy,
 				coordinateStateChanged: verification.stateChanged,
 				coordinateVerification: verification.verification,
 			});
@@ -2672,21 +2704,23 @@ async function dispatchClick(
 
 	const usedAxPath = clickedViaAX;
 	return executionTrace(
-		clickedViaAX ? "ax_press" : clickCount > 1 ? "coordinate_event_double_click" : "coordinate_event_click",
+		clickedViaAX ? "ax_press" : clickStrategy(),
 		usedAxPath ? "stealth" : "default",
 		{
 			axAttempted: canTryAX,
 			axSucceeded: usedAxPath,
 			fallbackUsed: canTryAX && !usedAxPath,
-			nonStealthReason: usedAxPath ? undefined : "coordinate_mouse_click_requires_pointer_event",
+			nonStealthReason: usedAxPath ? undefined : nonStealthReason,
+			delivery: usedAxPath ? undefined : delivery,
+			deliveryPolicy: usedAxPath ? undefined : deliveryPolicy,
 			coordinateStateChanged: coordinateVerification?.stateChanged,
 			coordinateVerification: coordinateVerification?.verification,
 		},
 	);
 }
 
-async function postKeyboardText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
-	await bridgeCommand("typeText", { text, pid: target.pid }, { signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) });
+async function postKeyboardText(text: string, target: ResolvedTarget, delivery: NativeInputDelivery = nativeInputDelivery(), signal?: AbortSignal): Promise<void> {
+	await bridgeCommand("typeText", { text, pid: target.pid, delivery }, { signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) });
 }
 
 async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
@@ -2705,12 +2739,15 @@ async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: A
 		strictModeBlock("Raw text insertion is not AX-only. Use set_text for AX value replacement.");
 	}
 	await focusControlledWindow(target, signal);
-	await postKeyboardText(text, target, signal);
-	return executionTrace("raw_key_text", "default", {
+	const delivery = nativeInputDelivery();
+	await postKeyboardText(text, target, delivery, signal);
+	return executionTrace(delivery === "pid" ? "pid_key_text" : "raw_key_text", "default", {
 		axAttempted: false,
 		axSucceeded: false,
 		fallbackUsed: false,
-		nonStealthReason: "raw_text_insertion_requires_keyboard_focus",
+		delivery,
+		deliveryPolicy: currentDeliveryPolicy(),
+		nonStealthReason: delivery === "pid" ? "pid_routed_text_input" : "raw_text_insertion_requires_keyboard_focus",
 	});
 }
 
@@ -2760,7 +2797,7 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 			if (capture) {
 				const screenPoint = axCoordinateFallbackPoint(axTarget);
 				const point = screenPointToCapturePoint(target, capture, screenPoint.x, screenPoint.y);
-				await mouseClickAtCapturePoint(target, capture, point.x, point.y, "left", 1, signal);
+				await mouseClickAtCapturePoint(target, capture, point.x, point.y, "left", 1, nativeInputDelivery(), signal);
 				await sleep(60, signal);
 			}
 			let focused = await focusAxElement(axTarget.elementRef, target, signal);
@@ -2778,12 +2815,15 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 		} else {
 			await focusControlledWindow(target, signal);
 		}
-		await postKeyboardText(params.text, target, signal);
-		return executionTrace("raw_key_text", "default", {
+		const delivery = nativeInputDelivery();
+		await postKeyboardText(params.text, target, delivery, signal);
+		return executionTrace(delivery === "pid" ? "pid_key_text" : "raw_key_text", "default", {
 			axAttempted: Boolean(ref),
 			axSucceeded: Boolean(ref),
 			fallbackUsed: false,
-			nonStealthReason: "keyboard_text_replacement_requires_foreground_key_events",
+			delivery,
+			deliveryPolicy: currentDeliveryPolicy(),
+			nonStealthReason: delivery === "pid" ? "keyboard_text_replacement_uses_pid_routed_key_events" : "keyboard_text_replacement_requires_foreground_key_events",
 		});
 	}
 
@@ -2979,13 +3019,16 @@ async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, 
 	if (isStrictAxMode()) {
 		strictModeBlock("Keypress is not AX-only and no semantic AX equivalent was available.");
 	}
-	await focusControlledWindow(target, signal);
-	await bridgeCommand("keyPress", { keys, pid: target.pid }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
-	return executionTrace("raw_keypress", "default", {
+	const delivery = nativeInputDelivery();
+	if (delivery === "hid") await focusControlledWindow(target, signal);
+	await bridgeCommand("keyPress", { keys, pid: target.pid, delivery }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
+	return executionTrace(delivery === "pid" ? "pid_keypress" : "raw_keypress", "default", {
 		axAttempted: semanticActionsForKeys(keys).length > 0,
 		axSucceeded: false,
 		fallbackUsed: semanticActionsForKeys(keys).length > 0,
-		nonStealthReason: "keypress_requires_keyboard_focus",
+		delivery,
+		deliveryPolicy: currentDeliveryPolicy(),
+		nonStealthReason: delivery === "pid" ? "pid_routed_keypress" : "keypress_requires_keyboard_focus",
 	});
 }
 
@@ -3077,6 +3120,7 @@ async function dispatchScroll(
 		throw new Error(`Coordinate scroll fallback requires x and y.${reasonText} Provide coordinates from the latest screenshot or use a current AX scroll target.`);
 	}
 	ensurePointIsInCapture(x, y, capture);
+	const delivery = nativeInputDelivery();
 	await bridgeCommand(
 		"scrollWheel",
 		{
@@ -3087,14 +3131,17 @@ async function dispatchScroll(
 			scrollY,
 			captureWidth: capture.width,
 			captureHeight: capture.height,
+			delivery,
 		},
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
-	return executionTrace("coordinate_event_scroll", "default", {
+	return executionTrace(delivery === "pid" ? "pid_event_scroll" : "coordinate_event_scroll", "default", {
 		axAttempted: true,
 		axSucceeded: false,
 		fallbackUsed: true,
-		nonStealthReason: "coordinate_scroll_requires_pointer_event",
+		delivery,
+		deliveryPolicy: currentDeliveryPolicy(),
+		nonStealthReason: delivery === "pid" ? "pid_routed_scroll" : "coordinate_scroll_requires_pointer_event",
 	});
 }
 
@@ -3110,16 +3157,19 @@ async function dispatchMoveMouse(
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
 	ensurePointIsInCapture(x, y, capture);
+	const delivery = nativeInputDelivery();
 	await bridgeCommand(
 		"mouseMove",
-		{ ...nativeWindowRequest(target), x, y, captureWidth: capture.width, captureHeight: capture.height },
+		{ ...nativeWindowRequest(target), x, y, captureWidth: capture.width, captureHeight: capture.height, delivery },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
-	return executionTrace("coordinate_event_move", "default", {
+	return executionTrace(delivery === "pid" ? "pid_event_move" : "coordinate_event_move", "default", {
 		axAttempted: false,
 		axSucceeded: false,
 		fallbackUsed: false,
-		nonStealthReason: "mouse_move_requires_cursor_control",
+		delivery,
+		deliveryPolicy: currentDeliveryPolicy(),
+		nonStealthReason: delivery === "pid" ? "pid_routed_mouse_move" : "mouse_move_requires_cursor_control",
 	});
 }
 
@@ -3179,16 +3229,19 @@ async function dispatchDrag(
 	if (!path) {
 		throw new Error("drag requires path points for pointer fallback or a ref plus path for AX adjustment.");
 	}
+	const delivery = nativeInputDelivery();
 	await bridgeCommand(
 		"mouseDrag",
-		{ ...nativeWindowRequest(target), path, captureWidth: capture.width, captureHeight: capture.height },
+		{ ...nativeWindowRequest(target), path, captureWidth: capture.width, captureHeight: capture.height, delivery },
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
-	return executionTrace("coordinate_event_drag", "default", {
+	return executionTrace(delivery === "pid" ? "pid_event_drag" : "coordinate_event_drag", "default", {
 		axAttempted: Boolean(ref),
 		axSucceeded: false,
 		fallbackUsed: Boolean(ref),
-		nonStealthReason: "drag_requires_pointer_event",
+		delivery,
+		deliveryPolicy: currentDeliveryPolicy(),
+		nonStealthReason: delivery === "pid" ? "pid_routed_drag" : "drag_requires_pointer_event",
 	});
 }
 
@@ -4046,6 +4099,8 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 				variant: trace.variant,
 				stealthCompatible: trace.stealthCompatible,
 				nonStealthReason: trace.nonStealthReason,
+				delivery: trace.delivery,
+				deliveryPolicy: trace.deliveryPolicy,
 				coordinateStateChanged: trace.coordinateStateChanged,
 				coordinateVerification: trace.coordinateVerification,
 			});

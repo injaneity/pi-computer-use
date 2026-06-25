@@ -844,8 +844,9 @@ final class Bridge {
 		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
 		let button = mouseButton(optionalStringArg(request, "button") ?? "left")
 		let clickCount = max(1, min(3, optionalIntArg(request, "clickCount") ?? 1))
+		let delivery = eventDelivery(request)
 		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseClick(at: point, pid: targetPid, button: button, clickCount: clickCount)
+		try postMouseClick(at: point, pid: targetPid, button: button, clickCount: clickCount, delivery: delivery)
 		return ["clicked": true]
 	}
 
@@ -858,8 +859,9 @@ final class Bridge {
 		}
 		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
 		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+		let delivery = eventDelivery(request)
 		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseMove(to: point, pid: targetPid)
+		try postMouseMove(to: point, pid: targetPid, delivery: delivery)
 		return ["moved": true]
 	}
 
@@ -881,7 +883,7 @@ final class Bridge {
 			}
 			return try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
 		}
-		try postMouseDrag(points: points, pid: targetPid)
+		try postMouseDrag(points: points, pid: targetPid, delivery: eventDelivery(request))
 		return ["dragged": true]
 	}
 
@@ -897,7 +899,7 @@ final class Bridge {
 		let scrollX = optionalIntArg(request, "scrollX") ?? 0
 		let scrollY = optionalIntArg(request, "scrollY") ?? 0
 		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postScrollWheel(at: point, deltaX: scrollX, deltaY: scrollY, pid: targetPid)
+		try postScrollWheel(at: point, deltaX: scrollX, deltaY: scrollY, pid: targetPid, delivery: eventDelivery(request))
 		return ["scrolled": true]
 	}
 
@@ -908,7 +910,7 @@ final class Bridge {
 		guard let keys = request["keys"] as? [String], !keys.isEmpty else {
 			throw BridgeFailure(message: "keyPress requires at least one key", code: "invalid_args")
 		}
-		try postKeyPress(keys: keys, pid: targetPid)
+		try postKeyPress(keys: keys, pid: targetPid, delivery: eventDelivery(request))
 		return ["pressed": true]
 	}
 
@@ -1905,7 +1907,7 @@ final class Bridge {
 		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
 			throw BridgeFailure(message: "typeText requires pid in non-intrusive mode", code: "pid_required")
 		}
-		try postUnicodeText(text, pid: targetPid)
+		try postUnicodeText(text, pid: targetPid, delivery: eventDelivery(request))
 		return ["typed": true]
 	}
 
@@ -2313,7 +2315,15 @@ final class Bridge {
 		return CGPoint(x: screenX, y: screenY)
 	}
 
-	private func postEvent(_ event: CGEvent, pid: Int32) {
+	private func eventDelivery(_ request: [String: Any]) -> String {
+		optionalStringArg(request, "delivery") == "pid" ? "pid" : "hid"
+	}
+
+	private func postEvent(_ event: CGEvent, pid: Int32, delivery: String = "hid") {
+		if delivery == "pid" {
+			event.postToPid(pid)
+			return
+		}
 		// Post as a real foreground HID event. AppKit views with mouseDown handlers
 		// can ignore pid-targeted CGEvents even though postToPid reports success.
 		// Keep the target app frontmost so the HID event is delivered to the intended
@@ -2329,11 +2339,11 @@ final class Bridge {
 		event.post(tap: .cghidEventTap)
 	}
 
-	private func postMouseMove(to point: CGPoint, pid: Int32) throws {
+	private func postMouseMove(to point: CGPoint, pid: Int32, delivery: String = "hid") throws {
 		guard let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) else {
 			throw BridgeFailure(message: "Failed to create mouse move event", code: "input_failed")
 		}
-		postEvent(move, pid: pid)
+		postEvent(move, pid: pid, delivery: delivery)
 	}
 
 	private func mouseButton(_ name: String) -> CGMouseButton {
@@ -2380,8 +2390,8 @@ final class Bridge {
 		}
 	}
 
-	private func postMouseClick(at point: CGPoint, pid: Int32, button: CGMouseButton = .left, clickCount: Int = 1) throws {
-		try postMouseMove(to: point, pid: pid)
+	private func postMouseClick(at point: CGPoint, pid: Int32, button: CGMouseButton = .left, clickCount: Int = 1, delivery: String = "hid") throws {
+		try postMouseMove(to: point, pid: pid, delivery: delivery)
 		for index in 1...max(1, clickCount) {
 			guard let down = CGEvent(mouseEventSource: nil, mouseType: mouseDownType(for: button), mouseCursorPosition: point, mouseButton: button),
 				let up = CGEvent(mouseEventSource: nil, mouseType: mouseUpType(for: button), mouseCursorPosition: point, mouseButton: button)
@@ -2390,31 +2400,31 @@ final class Bridge {
 			}
 			down.setIntegerValueField(.mouseEventClickState, value: Int64(index))
 			up.setIntegerValueField(.mouseEventClickState, value: Int64(index))
-			postEvent(down, pid: pid)
+			postEvent(down, pid: pid, delivery: delivery)
 			usleep(12_000)
-			postEvent(up, pid: pid)
+			postEvent(up, pid: pid, delivery: delivery)
 			if index < clickCount {
 				usleep(70_000)
 			}
 		}
 	}
 
-	private func postMouseDrag(points: [CGPoint], pid: Int32) throws {
+	private func postMouseDrag(points: [CGPoint], pid: Int32, delivery: String = "hid") throws {
 		guard points.count >= 2, let first = points.first else {
 			throw BridgeFailure(message: "Drag requires at least two points", code: "invalid_args")
 		}
-		try postMouseMove(to: first, pid: pid)
+		try postMouseMove(to: first, pid: pid, delivery: delivery)
 		guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: first, mouseButton: .left) else {
 			throw BridgeFailure(message: "Failed to create mouse down event", code: "input_failed")
 		}
-		postEvent(down, pid: pid)
+		postEvent(down, pid: pid, delivery: delivery)
 		usleep(12_000)
 
 		for point in points.dropFirst() {
 			guard let drag = CGEvent(mouseEventSource: nil, mouseType: mouseDraggedType(for: .left), mouseCursorPosition: point, mouseButton: .left) else {
 				throw BridgeFailure(message: "Failed to create mouse drag event", code: "input_failed")
 			}
-			postEvent(drag, pid: pid)
+			postEvent(drag, pid: pid, delivery: delivery)
 			usleep(8_000)
 		}
 
@@ -2423,11 +2433,11 @@ final class Bridge {
 		else {
 			throw BridgeFailure(message: "Failed to create mouse up event", code: "input_failed")
 		}
-		postEvent(up, pid: pid)
+		postEvent(up, pid: pid, delivery: delivery)
 	}
 
-	private func postScrollWheel(at point: CGPoint, deltaX: Int, deltaY: Int, pid: Int32) throws {
-		try postMouseMove(to: point, pid: pid)
+	private func postScrollWheel(at point: CGPoint, deltaX: Int, deltaY: Int, pid: Int32, delivery: String = "hid") throws {
+		try postMouseMove(to: point, pid: pid, delivery: delivery)
 		guard let event = CGEvent(
 			scrollWheelEvent2Source: nil,
 			units: .pixel,
@@ -2439,7 +2449,7 @@ final class Bridge {
 			throw BridgeFailure(message: "Failed to create scroll event", code: "input_failed")
 		}
 		event.location = point
-		postEvent(event, pid: pid)
+		postEvent(event, pid: pid, delivery: delivery)
 	}
 
 	private func modifierFlag(_ key: String) -> CGEventFlags? {
@@ -2491,9 +2501,9 @@ final class Bridge {
 		return (flags, keys.last ?? "")
 	}
 
-	private func postKeyPress(keys: [String], pid: Int32) throws {
+	private func postKeyPress(keys: [String], pid: Int32, delivery: String = "hid") throws {
 		if let chord = keyChord(keys) {
-			try postKey(chord.key, flags: chord.flags, pid: pid)
+			try postKey(chord.key, flags: chord.flags, pid: pid, delivery: delivery)
 			return
 		}
 
@@ -2503,17 +2513,17 @@ final class Bridge {
 				.map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
 				.filter { !$0.isEmpty }
 			if let chord = keyChord(parts) {
-				try postKey(chord.key, flags: chord.flags, pid: pid)
+				try postKey(chord.key, flags: chord.flags, pid: pid, delivery: delivery)
 			} else {
-				try postKey(key, flags: [], pid: pid)
+				try postKey(key, flags: [], pid: pid, delivery: delivery)
 			}
 		}
 	}
 
-	private func postKey(_ key: String, flags: CGEventFlags, pid: Int32) throws {
+	private func postKey(_ key: String, flags: CGEventFlags, pid: Int32, delivery: String = "hid") throws {
 		guard let code = keyCode(key) else {
 			if key.count == 1 {
-				try postUnicodeText(key, pid: pid)
+				try postUnicodeText(key, pid: pid, delivery: delivery)
 				return
 			}
 			throw BridgeFailure(message: "Unsupported key '\(key)'", code: "invalid_args")
@@ -2525,12 +2535,12 @@ final class Bridge {
 		}
 		down.flags = flags
 		up.flags = flags
-		postEvent(down, pid: pid)
+		postEvent(down, pid: pid, delivery: delivery)
 		usleep(8_000)
-		postEvent(up, pid: pid)
+		postEvent(up, pid: pid, delivery: delivery)
 	}
 
-	private func postUnicodeText(_ text: String, pid: Int32) throws {
+	private func postUnicodeText(_ text: String, pid: Int32, delivery: String = "hid") throws {
 		for scalar in text.unicodeScalars {
 			let char = String(scalar)
 			guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
@@ -2540,9 +2550,9 @@ final class Bridge {
 			}
 			setUnicodeString(event: down, text: char)
 			setUnicodeString(event: up, text: char)
-			postEvent(down, pid: pid)
+			postEvent(down, pid: pid, delivery: delivery)
 			usleep(8_000)
-			postEvent(up, pid: pid)
+			postEvent(up, pid: pid, delivery: delivery)
 		}
 	}
 
