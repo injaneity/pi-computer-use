@@ -9,7 +9,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const helperDestPath = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
+const helperRoot = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use");
+const helperDestPath = path.join(helperRoot, "bridge");
+const helperAppPath = path.join(helperRoot, "PiComputerUseBridge.app");
+const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
 const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 
 const args = new Set(process.argv.slice(2));
@@ -118,15 +121,30 @@ function moduleCachePath(arch, variant) {
 	return path.join(os.tmpdir(), `pi-computer-use-swift-module-cache-${arch}-${variant}`);
 }
 
-async function signHelper(outputPath) {
+async function signHelper(outputPath, identifier = defaultCodeSignIdentifier) {
 	if (process.env.PI_COMPUTER_USE_NO_SIGN === "1") {
 		return;
 	}
 
 	const identity = process.env.PI_COMPUTER_USE_CODESIGN_IDENTITY ?? "-";
-	const identifier = process.env.PI_COMPUTER_USE_CODESIGN_IDENTIFIER ?? defaultCodeSignIdentifier;
 	const commandArgs = ["--force", "-i", identifier, "--timestamp=none", "--sign", identity, outputPath];
 	await run("codesign", commandArgs);
+}
+
+async function installHelperApp(sourcePath) {
+	await fs.mkdir(path.dirname(helperAppExecutablePath), { recursive: true });
+	await fs.copyFile(sourcePath, helperAppExecutablePath);
+	await fs.chmod(helperAppExecutablePath, 0o755);
+	await fs.writeFile(path.join(helperAppPath, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.injaneity.pi-computer-use.bridge</string>
+<key>CFBundleName</key><string>PiComputerUseBridge</string>
+<key>CFBundleExecutable</key><string>bridge</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSUIElement</key><true/>
+</dict></plist>\n`);
+	await signHelper(helperAppPath, "com.injaneity.pi-computer-use.bridge");
 }
 
 async function buildHelper(arch, variant, outputPath) {
@@ -170,6 +188,7 @@ async function setup() {
 	if (!forceInstall && (await isExecutable(helperDestPath))) {
 		if (prebuiltExists) {
 			const { changed } = await copyIfChanged(prebuiltPath, helperDestPath);
+			await installHelperApp(helperDestPath);
 			console.log(
 				changed
 					? `[pi-computer-use] installed ${variant} helper from prebuilt (${arch}) to ${helperDestPath}`
@@ -185,6 +204,7 @@ async function setup() {
 
 	if (prebuiltExists) {
 		const { changed } = await copyIfChanged(prebuiltPath, helperDestPath);
+		await installHelperApp(helperDestPath);
 		console.log(
 			changed
 				? `[pi-computer-use] installed ${variant} helper from prebuilt (${arch}) to ${helperDestPath}`
@@ -196,6 +216,7 @@ async function setup() {
 	if (allowBuildFallback) {
 		console.log(`[pi-computer-use] ${variant} prebuilt helper missing; attempting source build with xcrun swiftc...`);
 		await buildHelper(arch, variant, helperDestPath);
+		await installHelperApp(helperDestPath);
 		console.log(`[pi-computer-use] built ${variant} helper at ${helperDestPath}`);
 		return;
 	}

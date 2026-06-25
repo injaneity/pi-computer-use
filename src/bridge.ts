@@ -576,6 +576,7 @@ interface RuntimeState {
 	allowNextTypeTextAxReplacement?: boolean;
 	pendingBrowserAddress?: PendingBrowserAddress;
 	helper?: ChildProcessWithoutNullStreams;
+	daemonAvailable?: boolean;
 	managedBrowser?: ChildProcess;
 	helperStdoutBuffer: string;
 	pending: Map<string, PendingRequest>;
@@ -686,6 +687,8 @@ const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 export const HELPER_STABLE_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
+const HELPER_APP_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "PiComputerUseBridge.app");
+const HELPER_SOCKET_PATH = path.join(os.homedir(), "Library", "Caches", "pi-computer-use", "bridge.sock");
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SETUP_HELPER_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "setup-helper.mjs");
@@ -1402,12 +1405,76 @@ async function ensureBridgeProcess(): Promise<ChildProcessWithoutNullStreams> {
 	return await startBridgeProcess();
 }
 
+async function launchHelperDaemon(signal?: AbortSignal): Promise<void> {
+	if (process.env.PI_COMPUTER_USE_HELPER_DAEMON === "0") return;
+	await runProcess("open", ["-n", "-g", HELPER_APP_PATH, "--args", "serve", "--socket", HELPER_SOCKET_PATH], COMMAND_TIMEOUT_MS, signal);
+}
+
+async function daemonCommand<T>(cmd: string, args: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+	return await new Promise<T>((resolve, reject) => {
+		const id = `req_${++runtimeState.requestSequence}`;
+		const socket = net.createConnection(HELPER_SOCKET_PATH);
+		let buffer = "";
+		const timer = setTimeout(() => { socket.destroy(); reject(new HelperTransportError(`Daemon command '${cmd}' timed out after ${timeoutMs}ms.`)); }, timeoutMs);
+		const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
+		const onAbort = () => { socket.destroy(); cleanup(); reject(new Error("Operation aborted.")); };
+		signal?.addEventListener("abort", onAbort, { once: true });
+		socket.setEncoding("utf8");
+		socket.on("connect", () => socket.write(`${JSON.stringify({ id, cmd, ...args })}\n`));
+		socket.on("data", (chunk) => {
+			buffer += chunk;
+			const newline = buffer.indexOf("\n");
+			if (newline < 0) return;
+			cleanup();
+			socket.end();
+			try {
+				const parsed = JSON.parse(buffer.slice(0, newline));
+				if (parsed.ok === true) resolve(parsed.result as T);
+				else reject(new HelperCommandError(parsed?.error?.message ?? `Daemon command '${cmd}' failed.`, parsed?.error?.code));
+			} catch (error) {
+				reject(error);
+			}
+		});
+		socket.on("error", (error) => { cleanup(); reject(new HelperTransportError(error.message)); });
+	});
+}
+
+async function ensureDaemon(signal?: AbortSignal): Promise<boolean> {
+	if (process.env.PI_COMPUTER_USE_HELPER_DAEMON === "0") return false;
+	if (runtimeState.daemonAvailable) return true;
+	try {
+		await daemonCommand("diagnostics", {}, 1_000, signal);
+		runtimeState.daemonAvailable = true;
+		return true;
+	} catch {}
+	await launchHelperDaemon(signal).catch(() => undefined);
+	for (let index = 0; index < 30; index += 1) {
+		try {
+			await daemonCommand("diagnostics", {}, 1_000, signal);
+			runtimeState.daemonAvailable = true;
+			return true;
+		} catch {
+			await sleep(100, signal);
+		}
+	}
+	return false;
+}
+
 async function bridgeCommand<T>(
 	cmd: string,
 	args: Record<string, unknown> = {},
 	options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<T> {
 	const timeoutMs = options?.timeoutMs ?? COMMAND_TIMEOUT_MS;
+
+	if (await ensureDaemon(options?.signal)) {
+		try {
+			return await daemonCommand<T>(cmd, args, timeoutMs, options?.signal);
+		} catch (error) {
+			runtimeState.daemonAvailable = false;
+			if (!(error instanceof HelperTransportError)) throw normalizeError(error);
+		}
+	}
 
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		throwIfAborted(options?.signal);
@@ -1528,6 +1595,7 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 	runtimeState.lastPermissionCheckAt = now;
 
 	if (!status.accessibility || !status.screenRecording) {
+		const permissionPath = runtimeState.daemonAvailable ? HELPER_APP_PATH : HELPER_STABLE_PATH;
 		const parentHint = runtimeState.helperDiagnostics?.parentAppName
 			? `Launcher: ${runtimeState.helperDiagnostics.parentAppName}${runtimeState.helperDiagnostics.parentBundleId ? ` (${runtimeState.helperDiagnostics.parentBundleId})` : ""}. On some macOS versions Screen Recording may also need to remain enabled for this launcher.`
 			: undefined;
@@ -1539,11 +1607,11 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 					await bridgeCommand("openPermissionPane", { kind }, { signal: permissionSignal ?? signal });
 				},
 				copyHelperPathToClipboard: async (permissionSignal) => {
-					await runProcess("osascript", ["-e", `set the clipboard to "${escapeAppleScriptString(HELPER_STABLE_PATH)}"`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
+					await runProcess("osascript", ["-e", `set the clipboard to "${escapeAppleScriptString(permissionPath)}"`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
 				},
 				permissionHint: parentHint,
 			},
-			HELPER_STABLE_PATH,
+			permissionPath,
 			signal,
 		);
 	}

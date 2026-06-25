@@ -208,8 +208,13 @@ final class Bridge {
 	]
 	private var enhancedAccessibilityPids = Set<Int32>()
 	private var stdinBuffer = Data()
+	private var output = FileHandle.standardOutput
 
 	func run() {
+		if CommandLine.arguments.contains("serve") {
+			runServer(socketPath: argumentValue("--socket") ?? defaultSocketPath())
+			return
+		}
 		while true {
 			autoreleasepool {
 				let data = FileHandle.standardInput.availableData
@@ -219,6 +224,50 @@ final class Bridge {
 				stdinBuffer.append(data)
 				processBufferedInput()
 			}
+		}
+	}
+
+	private func argumentValue(_ name: String) -> String? {
+		guard let index = CommandLine.arguments.firstIndex(of: name), CommandLine.arguments.indices.contains(index + 1) else { return nil }
+		return CommandLine.arguments[index + 1]
+	}
+
+	private func defaultSocketPath() -> String {
+		let home = FileManager.default.homeDirectoryForCurrentUser.path
+		return "\(home)/Library/Caches/pi-computer-use/bridge.sock"
+	}
+
+	private func runServer(socketPath: String) {
+		try? FileManager.default.createDirectory(atPath: (socketPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+		unlink(socketPath)
+		let server = socket(AF_UNIX, SOCK_STREAM, 0)
+		if server < 0 { exit(1) }
+		var address = sockaddr_un()
+		address.sun_family = sa_family_t(AF_UNIX)
+		let sunPathCapacity = MemoryLayout.size(ofValue: address.sun_path)
+		let bytes = Array(socketPath.utf8.prefix(sunPathCapacity - 1))
+		withUnsafeMutablePointer(to: &address.sun_path) { pointer in
+			pointer.withMemoryRebound(to: CChar.self, capacity: sunPathCapacity) { dest in
+				for (index, byte) in bytes.enumerated() { dest[index] = CChar(bitPattern: byte) }
+			}
+		}
+		let bindStatus = withUnsafePointer(to: &address) { pointer in
+			pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(server, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+		}
+		if bindStatus != 0 || listen(server, 8) != 0 { close(server); exit(1) }
+		while true {
+			let client = accept(server, nil, nil)
+			if client < 0 { continue }
+			stdinBuffer.removeAll()
+			output = FileHandle(fileDescriptor: client, closeOnDealloc: true)
+			while true {
+				let data = output.availableData
+				if data.isEmpty { break }
+				stdinBuffer.append(data)
+				processBufferedInput()
+			}
+			output.closeFile()
+			output = FileHandle.standardOutput
 		}
 	}
 
@@ -304,7 +353,7 @@ final class Bridge {
 		}
 
 		if let out = (line + "\n").data(using: .utf8) {
-			FileHandle.standardOutput.write(out)
+			output.write(out)
 		}
 	}
 
