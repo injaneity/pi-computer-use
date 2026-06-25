@@ -200,6 +200,7 @@ final class InputSuppressionGuard {
 }
 
 final class Bridge {
+	private let protocolVersion = 1
 	private let refStore = AXRefStore()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let browserBundleIds: Set<String> = [
@@ -311,6 +312,8 @@ final class Bridge {
 		let cmd = try stringArg(request, "cmd")
 
 		switch cmd {
+		case "diagnostics":
+			return diagnostics()
 		case "checkPermissions":
 			return checkPermissions()
 		case "openPermissionPane":
@@ -441,6 +444,27 @@ final class Bridge {
 			return Double(value)
 		}
 		throw BridgeFailure(message: "Missing numeric argument '\(key)'", code: "invalid_args")
+	}
+
+	private func diagnostics() -> [String: Any] {
+		let permissions = checkPermissions()
+		#if arch(arm64)
+		let arch = "arm64"
+		#elseif arch(x86_64)
+		let arch = "x86_64"
+		#else
+		let arch = "unknown"
+		#endif
+		return [
+			"protocolVersion": protocolVersion,
+			"pid": Int32(getpid()),
+			"parentPid": Int32(getppid()),
+			"executablePath": CommandLine.arguments.first ?? "",
+			"macOS": ProcessInfo.processInfo.operatingSystemVersionString,
+			"arch": arch,
+			"accessibility": permissions["accessibility"] ?? false,
+			"screenRecording": permissions["screenRecording"] ?? false,
+		]
 	}
 
 	private func checkPermissions() -> [String: Any] {

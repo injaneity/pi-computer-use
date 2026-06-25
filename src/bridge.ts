@@ -220,6 +220,17 @@ interface BatchActionTrace {
 	coordinateVerification?: ExecutionTrace["coordinateVerification"];
 }
 
+interface HelperDiagnostics {
+	protocolVersion: number;
+	pid: number;
+	parentPid?: number;
+	executablePath?: string;
+	macOS?: string;
+	arch?: string;
+	accessibility?: boolean;
+	screenRecording?: boolean;
+}
+
 export interface ComputerUseDetails {
 	tool: string;
 	target: {
@@ -246,6 +257,7 @@ export interface ComputerUseDetails {
 		browser_use: boolean;
 		stealth_mode: boolean;
 	};
+	helper?: HelperDiagnostics;
 	status?: "ok";
 	axDiagnostics?: {
 		reason?: string;
@@ -278,6 +290,7 @@ export interface ListAppsDetails {
 		browser_use: boolean;
 		stealth_mode: boolean;
 	};
+	helper?: HelperDiagnostics;
 }
 
 export interface ListWindowsDetails {
@@ -566,6 +579,7 @@ interface RuntimeState {
 	requestSequence: number;
 	queueTail: Promise<void>;
 	permissionStatus?: PermissionStatus;
+	helperDiagnostics?: HelperDiagnostics;
 	lastPermissionCheckAt: number;
 	helperInstallChecked: boolean;
 }
@@ -602,6 +616,7 @@ const CURRENT_TARGET_GONE_ERROR =
 const NON_MACOS_ERROR = "pi-computer-use currently supports macOS 12+ only.";
 
 const COMMAND_TIMEOUT_MS = 15_000;
+const HELPER_PROTOCOL_VERSION = 1;
 const SCREENSHOT_TIMEOUT_MS = 25_000;
 const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const ACTION_SETTLE_MS = 280;
@@ -1457,6 +1472,29 @@ async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus>
 	};
 }
 
+async function helperDiagnostics(signal?: AbortSignal): Promise<HelperDiagnostics> {
+	const result = await bridgeCommand<any>("diagnostics", {}, { signal });
+	return {
+		protocolVersion: Math.trunc(toFiniteNumber(result?.protocolVersion, 0)),
+		pid: Math.trunc(toFiniteNumber(result?.pid, 0)),
+		parentPid: Math.trunc(toFiniteNumber(result?.parentPid, 0)) || undefined,
+		executablePath: toOptionalString(result?.executablePath),
+		macOS: toOptionalString(result?.macOS),
+		arch: toOptionalString(result?.arch),
+		accessibility: toBoolean(result?.accessibility),
+		screenRecording: toBoolean(result?.screenRecording),
+	};
+}
+
+async function ensureHelperProtocol(signal?: AbortSignal): Promise<void> {
+	const diagnostics = await helperDiagnostics(signal);
+	runtimeState.helperDiagnostics = diagnostics;
+	if (diagnostics.protocolVersion !== HELPER_PROTOCOL_VERSION) {
+		stopBridge();
+		throw new Error(`pi-computer-use helper protocol mismatch: expected ${HELPER_PROTOCOL_VERSION}, got ${diagnostics.protocolVersion}. Restart Pi so the updated helper can be loaded.`);
+	}
+}
+
 async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
 	loadComputerUseConfig(ctx.cwd);
 
@@ -1467,6 +1505,7 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 	throwIfAborted(signal);
 	await ensureHelperInstalled(signal);
 	await ensureBridgeProcess();
+	await ensureHelperProtocol(signal);
 
 	const now = Date.now();
 	const canUseCachedPermissions =
@@ -2326,6 +2365,7 @@ async function buildToolResult(
 		axDiagnostics: result.axDiagnostics,
 		status: "ok",
 		config: getComputerUseConfig(),
+		helper: runtimeState.helperDiagnostics,
 		imageReason: fallbackReason?.reason,
 	};
 
@@ -3138,11 +3178,13 @@ async function performListApps(signal?: AbortSignal): Promise<AgentToolResult<Li
 			browserUseAllowed: config.browser_use || !isBrowserApp(app.appName, app.bundleId),
 		})),
 		config,
+		helper: runtimeState.helperDiagnostics,
 	};
 	const lines = details.apps.map(formatAppLine);
+	const helperLine = details.helper ? `Helper protocol ${details.helper.protocolVersion}, pid ${details.helper.pid}, macOS ${details.helper.macOS ?? "unknown"}.\n` : "";
 	const text = lines.length
-		? `Found ${lines.length} running app${lines.length === 1 ? "" : "s"}. Use list_windows with app, bundleId, or pid to inspect target windows.\n${lines.join("\n")}`
-		: "No running apps were available to pi-computer-use.";
+		? `${helperLine}Found ${lines.length} running app${lines.length === 1 ? "" : "s"}. Use list_windows with app, bundleId, or pid to inspect target windows.\n${lines.join("\n")}`
+		: `${helperLine}No running apps were available to pi-computer-use.`;
 	return { content: [{ type: "text", text }], details };
 }
 
