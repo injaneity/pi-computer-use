@@ -446,6 +446,12 @@ final class Bridge {
 		throw BridgeFailure(message: "Missing numeric argument '\(key)'", code: "invalid_args")
 	}
 
+	private func processPath(pid: pid_t) -> String? {
+		var buffer = [CChar](repeating: 0, count: 4096)
+		let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+		return length > 0 ? String(cString: buffer) : nil
+	}
+
 	private func diagnostics() -> [String: Any] {
 		let permissions = checkPermissions()
 		#if arch(arm64)
@@ -455,16 +461,29 @@ final class Bridge {
 		#else
 		let arch = "unknown"
 		#endif
-		return [
+		let parentPid = Int32(getppid())
+		let parentApp = NSRunningApplication(processIdentifier: parentPid)
+		let parentPath = processPath(pid: parentPid)
+		var output: [String: Any] = [
 			"protocolVersion": protocolVersion,
 			"pid": Int32(getpid()),
-			"parentPid": Int32(getppid()),
+			"parentPid": parentPid,
 			"executablePath": CommandLine.arguments.first ?? "",
 			"macOS": ProcessInfo.processInfo.operatingSystemVersionString,
 			"arch": arch,
 			"accessibility": permissions["accessibility"] ?? false,
 			"screenRecording": permissions["screenRecording"] ?? false,
 		]
+		if let parentPath {
+			output["parentPath"] = parentPath
+		}
+		if let parentAppName = parentApp?.localizedName ?? parentPath.map({ URL(fileURLWithPath: $0).lastPathComponent }) {
+			output["parentAppName"] = parentAppName
+		}
+		if let parentBundleId = parentApp?.bundleIdentifier {
+			output["parentBundleId"] = parentBundleId
+		}
+		return output
 	}
 
 	private func checkPermissions() -> [String: Any] {

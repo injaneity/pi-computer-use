@@ -9,6 +9,7 @@ export interface PermissionBridge {
 	checkPermissions(signal?: AbortSignal): Promise<PermissionStatus>;
 	openPermissionPane(kind: "accessibility" | "screenRecording", signal?: AbortSignal): Promise<void>;
 	copyHelperPathToClipboard?(signal?: AbortSignal): Promise<void>;
+	permissionHint?: string;
 }
 
 const NON_INTERACTIVE_PERMISSION_ERROR =
@@ -68,10 +69,12 @@ export async function ensurePermissions(
 			"",
 			`Helper: ${helperName}`,
 			`Path: ${helperPath}`,
+			bridge.permissionHint,
 			"",
 			"Open the missing setting, enable the helper, then choose Recheck.",
 			"If the helper is not listed, click +, press Cmd+Shift+G, and paste the copied path.",
-		].join("\n");
+			"If macOS grants a launcher such as Terminal instead, leave that enabled and also add/enable the helper path above.",
+		].filter(Boolean).join("\n");
 
 		const choice = await ctx.ui.select(prompt, options, { signal });
 		if (!choice || choice === "Cancel") {

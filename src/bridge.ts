@@ -224,6 +224,9 @@ interface HelperDiagnostics {
 	protocolVersion: number;
 	pid: number;
 	parentPid?: number;
+	parentAppName?: string;
+	parentBundleId?: string;
+	parentPath?: string;
 	executablePath?: string;
 	macOS?: string;
 	arch?: string;
@@ -1478,6 +1481,9 @@ async function helperDiagnostics(signal?: AbortSignal): Promise<HelperDiagnostic
 		protocolVersion: Math.trunc(toFiniteNumber(result?.protocolVersion, 0)),
 		pid: Math.trunc(toFiniteNumber(result?.pid, 0)),
 		parentPid: Math.trunc(toFiniteNumber(result?.parentPid, 0)) || undefined,
+		parentAppName: toOptionalString(result?.parentAppName),
+		parentBundleId: toOptionalString(result?.parentBundleId),
+		parentPath: toOptionalString(result?.parentPath),
 		executablePath: toOptionalString(result?.executablePath),
 		macOS: toOptionalString(result?.macOS),
 		arch: toOptionalString(result?.arch),
@@ -1522,6 +1528,9 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 	runtimeState.lastPermissionCheckAt = now;
 
 	if (!status.accessibility || !status.screenRecording) {
+		const parentHint = runtimeState.helperDiagnostics?.parentAppName
+			? `Launcher: ${runtimeState.helperDiagnostics.parentAppName}${runtimeState.helperDiagnostics.parentBundleId ? ` (${runtimeState.helperDiagnostics.parentBundleId})` : ""}. On some macOS versions Screen Recording may also need to remain enabled for this launcher.`
+			: undefined;
 		status = await ensurePermissions(
 			ctx,
 			{
@@ -1532,6 +1541,7 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 				copyHelperPathToClipboard: async (permissionSignal) => {
 					await runProcess("osascript", ["-e", `set the clipboard to "${escapeAppleScriptString(HELPER_STABLE_PATH)}"`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
 				},
+				permissionHint: parentHint,
 			},
 			HELPER_STABLE_PATH,
 			signal,
