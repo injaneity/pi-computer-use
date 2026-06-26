@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import ApplicationServices
 import Darwin
+import Vision
 #if PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
 import ScreenCaptureKit
 #endif
@@ -387,6 +388,8 @@ final class Bridge {
 			return try setWindowFrame(request)
 		case "screenshot":
 			return try screenshot(request)
+		case "visionTargets":
+			return try visionTargets(request)
 		case "mouseClick":
 			return try mouseClick(request)
 		case "mouseMove":
@@ -841,6 +844,56 @@ final class Bridge {
 		let windowId = UInt32(try intArg(request, "windowId"))
 		let maxDimension = optionalIntArg(request, "maxDimension").map { max(1, $0) }
 		return try captureWindow(windowId: windowId, maxDimension: maxDimension)
+	}
+
+	private func visionTargets(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		let maxDimension = optionalIntArg(request, "maxDimension").map { max(1, $0) }
+		let payload = try captureWindow(windowId: windowId, maxDimension: maxDimension)
+		guard let base64 = payload["pngBase64"] as? String,
+			let data = Data(base64Encoded: base64),
+			let imageRep = NSBitmapImageRep(data: data),
+			let image = imageRep.cgImage
+		else {
+			throw BridgeFailure(message: "Failed to capture image for vision grounding", code: "vision_capture_failed")
+		}
+		let minConfidence = max(0, min(1, (request["minConfidence"] as? NSNumber)?.doubleValue ?? 0.35))
+		let semaphore = DispatchSemaphore(value: 0)
+		let recognized = Box<[[String: Any]]>([])
+		let recognizedError = Box<Error?>(nil)
+		let request = VNRecognizeTextRequest { request, error in
+			defer { semaphore.signal() }
+			if let error {
+				recognizedError.value = error
+				return
+			}
+			let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
+			recognized.value = observations.compactMap { observation in
+				guard let candidate = observation.topCandidates(1).first, Double(candidate.confidence) >= minConfidence else { return nil }
+				let box = observation.boundingBox
+				let x = box.origin.x * Double(image.width)
+				let y = (1.0 - box.origin.y - box.height) * Double(image.height)
+				let w = box.width * Double(image.width)
+				let h = box.height * Double(image.height)
+				return [
+					"text": candidate.string,
+					"confidence": Double(candidate.confidence),
+					"x": x + w / 2,
+					"y": y + h / 2,
+					"frame": ["x": x, "y": y, "w": w, "h": h],
+				]
+			}
+		}
+		request.recognitionLevel = .accurate
+		request.usesLanguageCorrection = false
+		try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+		if semaphore.wait(timeout: .now() + .seconds(8)) == .timedOut {
+			throw BridgeFailure(message: "Vision grounding timed out", code: "vision_timeout")
+		}
+		if let error = recognizedError.value {
+			throw BridgeFailure(message: "Vision grounding failed: \(error.localizedDescription)", code: "vision_failed")
+		}
+		return ["targets": recognized.value, "width": image.width, "height": image.height]
 	}
 
 	private func mouseClick(_ request: [String: Any]) throws -> [String: Any] {
@@ -1727,6 +1780,7 @@ final class Bridge {
 		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
 		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
+		let identifier = stringAttribute(element, attribute: "AXIdentifier" as CFString) ?? ""
 		let value = displayValue(element, role: role, subrole: subrole)
 		let frame = frameForElement(element)
 		let parentFrame = copyAttribute(element, attribute: kAXParentAttribute as CFString).flatMap(asAXElement).flatMap(frameForElement)
@@ -1748,6 +1802,7 @@ final class Bridge {
 			"subrole": subrole,
 			"title": title,
 			"description": description,
+			"identifier": identifier,
 			"value": value,
 			"actions": actions,
 			"isTextInput": textRoles.contains(role),

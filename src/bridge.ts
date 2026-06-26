@@ -170,7 +170,9 @@ interface ActivationFlags {
 
 type ExecutionVariant = "stealth" | "default";
 type NativeInputDelivery = "pid" | "hid";
+type ActionDelivery = "ax" | NativeInputDelivery;
 type DeliveryPolicy = "ax_only" | "background" | "default";
+type Grounding = "ax" | "vision";
 
 interface ExecutionTrace {
 	strategy:
@@ -206,7 +208,8 @@ interface ExecutionTrace {
 	variant?: ExecutionVariant;
 	stealthCompatible?: boolean;
 	nonStealthReason?: string;
-	delivery?: NativeInputDelivery;
+	grounding?: Grounding;
+	delivery?: ActionDelivery;
 	deliveryPolicy?: DeliveryPolicy;
 	coordinateStateChanged?: boolean;
 	coordinateVerification?: "ax_signature_changed" | "no_observable_change" | "unavailable";
@@ -227,7 +230,8 @@ interface BatchActionTrace {
 	variant?: ExecutionVariant;
 	stealthCompatible?: boolean;
 	nonStealthReason?: string;
-	delivery?: NativeInputDelivery;
+	grounding?: Grounding;
+	delivery?: ActionDelivery;
 	deliveryPolicy?: DeliveryPolicy;
 	coordinateStateChanged?: boolean;
 	coordinateVerification?: ExecutionTrace["coordinateVerification"];
@@ -267,6 +271,7 @@ export interface ComputerUseDetails {
 		coordinateSpace: "window-relative-screenshot-pixels";
 	};
 	axTargets?: AxTarget[];
+	visionTargets?: VisionTarget[];
 	activation: ActivationFlags;
 	execution: ExecutionTrace;
 	config?: {
@@ -459,6 +464,15 @@ interface ScreenshotPayload {
 	scaleFactor: number;
 }
 
+interface VisionTarget {
+	ref: string;
+	text: string;
+	confidence: number;
+	x: number;
+	y: number;
+	frame?: FramePoints;
+}
+
 interface FocusedElementResult {
 	exists: boolean;
 	elementRef?: string;
@@ -491,6 +505,7 @@ interface HelperAxTarget {
 	subrole?: string;
 	title?: string;
 	description?: string;
+	identifier?: string;
 	value?: string;
 	actions?: string[];
 	source?: string;
@@ -543,6 +558,7 @@ interface AxTarget {
 	subrole: string;
 	title: string;
 	description: string;
+	identifier: string;
 	value: string;
 	actions: string[];
 	source: AxTargetSource;
@@ -589,6 +605,7 @@ interface RuntimeState {
 	currentStateTarget?: StateTargetSnapshot;
 	currentImageMode?: ImageMode;
 	currentAxTargets?: AxTarget[];
+	currentVisionTargets?: VisionTarget[];
 	browserSnapshots: Map<string, CdpPageSnapshot>;
 	windowRefs: Map<string, WindowRefRecord>;
 	windowRefByIdentity: Map<string, string>;
@@ -790,6 +807,19 @@ function nativeInputDelivery(): NativeInputDelivery {
 	return currentDeliveryPolicy() === "background" ? "pid" : "hid";
 }
 
+function inferredTraceGrounding(strategy: ExecutionTrace["strategy"]): Grounding | undefined {
+	if (strategy.startsWith("ax_")) return "ax";
+	if (strategy.startsWith("coordinate_") || strategy.startsWith("pid_event_")) return "vision";
+	return undefined;
+}
+
+function inferredTraceDelivery(strategy: ExecutionTrace["strategy"]): ActionDelivery | undefined {
+	if (strategy.startsWith("ax_")) return "ax";
+	if (strategy.startsWith("pid_")) return "pid";
+	if (strategy.startsWith("coordinate_") || strategy.startsWith("raw_")) return "hid";
+	return undefined;
+}
+
 function executionTrace(
 	strategy: ExecutionTrace["strategy"],
 	variant: ExecutionVariant,
@@ -800,6 +830,8 @@ function executionTrace(
 		runtimeMode: currentRuntimeMode(),
 		variant,
 		stealthCompatible: variant === "stealth",
+		grounding: metadata.grounding ?? inferredTraceGrounding(strategy),
+		delivery: metadata.delivery ?? inferredTraceDelivery(strategy),
 		...metadata,
 	};
 }
@@ -1058,6 +1090,29 @@ function parseAxTargetSource(value: unknown): AxTargetSource {
 	return value === "desktop_ax" || value === "browser_chrome_ax" || value === "web_content_ax" ? value : "unknown_ax";
 }
 
+function parseVisionTargets(result: unknown): VisionTarget[] {
+	const items = Array.isArray(result) ? result : (isRecord(result) ? result.targets : undefined);
+	if (!Array.isArray(items)) return [];
+	return items
+		.map((raw, index) => {
+			const text = toOptionalString((raw as any)?.text);
+			if (!text) return undefined;
+			return {
+				ref: `@v${index + 1}`,
+				text,
+				confidence: Math.max(0, Math.min(1, toFiniteNumber((raw as any)?.confidence, 0))),
+				x: toFiniteNumber((raw as any)?.x, 0),
+				y: toFiniteNumber((raw as any)?.y, 0),
+				frame: parseOptionalFramePoints((raw as any)?.frame),
+			} as VisionTarget;
+		})
+		.filter((item): item is VisionTarget => Boolean(item));
+}
+
+function formatVisionTargetLabel(target: VisionTarget): string {
+	return `${target.ref} vision ${JSON.stringify(target.text)} at (${Math.round(target.x)},${Math.round(target.y)}) confidence=${target.confidence.toFixed(2)}`;
+}
+
 function previewAxText(value: unknown): string {
 	const text = toOptionalString(value) ?? "";
 	return text.length > AX_TARGET_TEXT_PREVIEW_CHARS ? `${text.slice(0, AX_TARGET_TEXT_PREVIEW_CHARS)}…` : text;
@@ -1080,6 +1135,7 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				subrole: toOptionalString(target?.subrole) ?? "",
 				title: previewAxText(target?.title),
 				description: previewAxText(target?.description),
+				identifier: previewAxText(target?.identifier),
 				value: previewAxText(target?.value),
 				actions,
 				source: parseAxTargetSource(target?.source),
@@ -1103,6 +1159,7 @@ function parseAxTargets(result: unknown): AxTarget[] {
 
 function formatAxTargetLabel(target: AxTarget): string {
 	const label = target.title || target.description || target.value || "(unlabeled)";
+	const identifier = target.identifier ? ` id=${JSON.stringify(target.identifier)}` : "";
 	const capabilities = [
 		target.canSetValue ? "setValue" : undefined,
 		target.canPress ? "press" : undefined,
@@ -1111,7 +1168,11 @@ function formatAxTargetLabel(target: AxTarget): string {
 		target.canIncrement || target.canDecrement ? "adjust" : undefined,
 	].filter((item): item is string => Boolean(item));
 	const source = target.source !== "unknown_ax" ? ` source=${target.source}` : "";
-	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""}${source} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
+	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""}${source}${identifier} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
+}
+
+function visionTargetByRef(ref: string): VisionTarget | undefined {
+	return runtimeState.currentVisionTargets?.find((candidate) => candidate.ref === ref);
 }
 
 function axTargetByRef(ref: string): AxTarget {
@@ -1152,9 +1213,11 @@ async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal
 	if (!refreshed.length) return undefined;
 
 	const staleLabel = axTargetLabelKey(stale);
+	const staleIdentifier = normalizeText(stale.identifier);
 	const candidates = refreshed.filter((candidate) => {
 		if (candidate.role !== stale.role) return false;
-		if (staleLabel && axTargetLabelKey(candidate) !== staleLabel) return false;
+		if (staleIdentifier && normalizeText(candidate.identifier) !== staleIdentifier) return false;
+		if (!staleIdentifier && staleLabel && axTargetLabelKey(candidate) !== staleLabel) return false;
 		if (stale.canSetValue && !candidate.canSetValue) return false;
 		if (stale.canPress && !candidate.canPress) return false;
 		if (stale.canScroll && !candidate.canScroll) return false;
@@ -1162,7 +1225,7 @@ async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal
 		if (stale.canDecrement && !candidate.canDecrement) return false;
 		return true;
 	});
-	const pool = candidates.length ? candidates : refreshed.filter((candidate) => staleLabel && axTargetLabelKey(candidate) === staleLabel);
+	const pool = candidates.length ? candidates : refreshed.filter((candidate) => staleIdentifier ? normalizeText(candidate.identifier) === staleIdentifier : staleLabel && axTargetLabelKey(candidate) === staleLabel);
 	const best = pool.sort((a, b) => Math.hypot(a.x - stale.x, a.y - stale.y) - Math.hypot(b.x - stale.x, b.y - stale.y))[0];
 	return best ? { ...best, ref: stale.ref } : undefined;
 }
@@ -2332,6 +2395,11 @@ async function helperScreenshot(windowId: number, signal?: AbortSignal, maxDimen
 	};
 }
 
+async function helperVisionTargets(windowId: number, signal?: AbortSignal, maxDimension?: number): Promise<VisionTarget[]> {
+	const result = await bridgeCommand<unknown>("visionTargets", { windowId, maxDimension }, { timeoutMs: SCREENSHOT_TIMEOUT_MS + 8_000, signal }).catch(() => undefined);
+	return parseVisionTargets(result);
+}
+
 function windowsByCaptureRecoveryPriority(
 	windows: HelperWindow[],
 	target: ResolvedTarget,
@@ -2392,6 +2460,7 @@ interface CaptureResult {
 	capture: CurrentCapture;
 	image?: ScreenshotPayload;
 	axTargets: AxTarget[];
+	visionTargets?: VisionTarget[];
 	axDiagnostics?: { reason?: string; message?: string; debug?: AxDiagnosticsDebug };
 	activation: ActivationFlags;
 }
@@ -2472,6 +2541,10 @@ async function buildToolResult(
 	if (fallbackReason) {
 		await ensureCaptureImage(result, signal, imageMode === "always" ? EXPLICIT_IMAGE_MAX_DIMENSION : AUTO_IMAGE_MAX_DIMENSION);
 	}
+	if ((fallbackReason || imageMode === "always") && !result.visionTargets?.length && result.target.windowId > 0) {
+		result.visionTargets = await helperVisionTargets(result.target.windowId, signal, imageMode === "always" ? EXPLICIT_IMAGE_MAX_DIMENSION : AUTO_IMAGE_MAX_DIMENSION);
+	}
+	runtimeState.currentVisionTargets = result.visionTargets;
 
 	const details: ComputerUseDetails = {
 		tool,
@@ -2493,6 +2566,7 @@ async function buildToolResult(
 			coordinateSpace: "window-relative-screenshot-pixels",
 		},
 		axTargets: result.axTargets,
+		visionTargets: result.visionTargets,
 		activation: result.activation,
 		execution,
 		axDiagnostics: result.axDiagnostics,
@@ -2517,8 +2591,11 @@ async function buildToolResult(
 	const axTargetText = result.axTargets.length
 		? `\n\nPrefer these AX targets over coordinate clicks or focus-based text replacement when one matches your intent:\n${result.axTargets.map(formatAxTargetLabel).join("\n")}`
 		: "";
+	const visionText = result.visionTargets?.length
+		? `\n\nVision targets:\n${result.visionTargets.map(formatVisionTargetLabel).join("\n")}`
+		: "";
 	const fallbackText = fallbackReason ? `\n\n${fallbackReason.message}` : "";
-	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${consoleText}${axTargetText}${fallbackText}` }];
+	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${consoleText}${axTargetText}${visionText}${fallbackText}` }];
 	if (fallbackReason) {
 		content.push({ type: "image", data: result.image!.pngBase64, mimeType: "image/png" });
 	}
@@ -2595,6 +2672,19 @@ async function verifiedCoordinateClick(
 	return { stateChanged, verification: stateChanged ? "ax_signature_changed" : "no_observable_change" };
 }
 
+function visionClickPoint(visual: VisionTarget, capture: CurrentCapture): { x: number; y: number } {
+	const containers = (runtimeState.currentAxTargets ?? [])
+		.map((target) => target.frame)
+		.filter((frame): frame is FramePoints => Boolean(frame && frame.w > 80 && frame.h > 24));
+	const containing = containers
+		.filter((frame) => visual.y >= frame.y && visual.y <= frame.y + frame.h && visual.x >= frame.x && visual.x <= frame.x + frame.w)
+		.sort((a, b) => a.w * a.h - b.w * b.h)[0];
+	if (containing && containing.w > Math.max((visual.frame?.w ?? 0) * 2, 120)) {
+		return { x: Math.min(capture.width - 1, Math.max(0, containing.x + containing.w / 2)), y: visual.y };
+	}
+	return { x: visual.x, y: visual.y };
+}
+
 async function dispatchClick(
 	params: ClickParams,
 	capture: CurrentCapture,
@@ -2615,6 +2705,24 @@ async function dispatchClick(
 		await verifiedCoordinateClick(target, capture, clickX, clickY, button, clickCount, delivery, signal);
 
 	if (ref) {
+		const visual = visionTargetByRef(ref);
+		if (visual) {
+			if (isStrictAxMode()) strictModeBlock(`Vision ref '${ref}' requires coordinate input.`);
+			if (button !== "left") throw new Error(`Vision refs only support left-button clicks. Use coordinates for ${button}-click.`);
+			const point = visionClickPoint(visual, capture);
+			const verification = await performCoordinateClick(point.x, point.y);
+			return executionTrace(clickStrategy(), "default", {
+				axAttempted: false,
+				axSucceeded: false,
+				fallbackUsed: true,
+				nonStealthReason: delivery === "pid" ? "vision_ref_click_uses_pid_routed_mouse_click" : "vision_ref_click_uses_coordinate_mouse_click",
+				grounding: "vision",
+				delivery,
+				deliveryPolicy,
+				coordinateStateChanged: verification.stateChanged,
+				coordinateVerification: verification.verification,
+			});
+		}
 		if (button !== "left") {
 			throw new Error(`AX target refs only support left-button clicks. Use coordinates for ${button}-click.`);
 		}
@@ -2685,6 +2793,7 @@ async function dispatchClick(
 				axSucceeded: false,
 				fallbackUsed: true,
 				nonStealthReason: delivery === "pid" ? "ax_ref_click_fell_back_to_pid_routed_mouse_click" : "ax_ref_click_fell_back_to_coordinate_mouse_click",
+				grounding: "ax",
 				delivery,
 				deliveryPolicy,
 				coordinateStateChanged: verification.stateChanged,
@@ -2696,6 +2805,8 @@ async function dispatchClick(
 			axAttempted: true,
 			axSucceeded: true,
 			fallbackUsed: false,
+			grounding: "ax",
+			delivery: "ax",
 		});
 	}
 
@@ -2743,7 +2854,8 @@ async function dispatchClick(
 			axSucceeded: usedAxPath,
 			fallbackUsed: canTryAX && !usedAxPath,
 			nonStealthReason: usedAxPath ? undefined : nonStealthReason,
-			delivery: usedAxPath ? undefined : delivery,
+			grounding: usedAxPath ? "ax" : "vision",
+			delivery: usedAxPath ? "ax" : delivery,
 			deliveryPolicy: usedAxPath ? undefined : deliveryPolicy,
 			coordinateStateChanged: coordinateVerification?.stateChanged,
 			coordinateVerification: coordinateVerification?.verification,
@@ -4140,6 +4252,7 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 				variant: trace.variant,
 				stealthCompatible: trace.stealthCompatible,
 				nonStealthReason: trace.nonStealthReason,
+				grounding: trace.grounding,
 				delivery: trace.delivery,
 				deliveryPolicy: trace.deliveryPolicy,
 				coordinateStateChanged: trace.coordinateStateChanged,
