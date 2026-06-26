@@ -326,6 +326,10 @@ export interface ListWindowsDetails {
 		isOnscreen: boolean;
 		isMain: boolean;
 		isFocused: boolean;
+		isModal: boolean;
+		sheetCount: number;
+		role?: string;
+		subrole?: string;
 		browserUseAllowed: boolean;
 		score: number;
 	}>;
@@ -428,12 +432,16 @@ interface HelperWindow {
 	windowId?: number;
 	windowRef?: string;
 	title: string;
+	role?: string;
+	subrole?: string;
 	framePoints: FramePoints;
 	scaleFactor: number;
 	isMinimized: boolean;
 	isOnscreen: boolean;
 	isMain: boolean;
 	isFocused: boolean;
+	isModal: boolean;
+	sheetCount: number;
 }
 
 interface FrontmostResult {
@@ -1690,12 +1698,16 @@ function parseWindows(result: unknown): HelperWindow[] {
 		windowId: Number.isFinite((raw as any)?.windowId) ? Math.trunc((raw as any).windowId) : undefined,
 		windowRef: toOptionalString((raw as any)?.windowRef),
 		title: toOptionalString((raw as any)?.title) ?? "",
+		role: toOptionalString((raw as any)?.role),
+		subrole: toOptionalString((raw as any)?.subrole),
 		framePoints: parseFramePoints(raw),
 		scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
 		isMinimized: toBoolean((raw as any)?.isMinimized),
 		isOnscreen: toBoolean((raw as any)?.isOnscreen),
 		isMain: toBoolean((raw as any)?.isMain),
 		isFocused: toBoolean((raw as any)?.isFocused),
+		isModal: toBoolean((raw as any)?.isModal),
+		sheetCount: Math.max(0, Math.trunc(toFiniteNumber((raw as any)?.sheetCount, 0))),
 	}));
 }
 
@@ -1731,6 +1743,8 @@ function formatWindowLine(window: ListWindowsDetails["windows"][number]): string
 	const flags = [
 		window.isFocused ? "focused" : undefined,
 		window.isMain ? "main" : undefined,
+		window.isModal ? "modal" : undefined,
+		window.sheetCount > 0 ? `sheets=${window.sheetCount}` : undefined,
 		window.isOnscreen ? "onscreen" : undefined,
 		window.isMinimized ? "minimized" : undefined,
 		window.browserUseAllowed ? undefined : "browser_use_disabled",
@@ -1907,8 +1921,14 @@ function choosePreferredWindow(windows: HelperWindow[], appName: string): Helper
 	return scored[0];
 }
 
+function isDialogLikeWindow(window: Pick<HelperWindow, "subrole" | "role">): boolean {
+	return /dialog|modal|sheet/i.test(`${window.role ?? ""} ${window.subrole ?? ""}`);
+}
+
 function scoreWindow(window: HelperWindow): number {
 	let score = 0;
+	if (window.isModal || isDialogLikeWindow(window)) score += 180;
+	if (window.sheetCount > 0) score += 160;
 	if (window.isFocused) score += 100;
 	if (window.isMain) score += 80;
 	if (!window.isMinimized) score += 40;
@@ -2100,6 +2120,13 @@ async function selectWindowIfProvided(selector: WindowSelector | undefined, sign
 	}
 }
 
+function shouldPreferForegroundModalWindow(current: HelperWindow, candidate: HelperWindow): boolean {
+	if (candidate.windowId === current.windowId && candidate.windowRef === current.windowRef) return false;
+	if (!candidate.isOnscreen || candidate.isMinimized) return false;
+	if (candidate.isModal || candidate.sheetCount > 0 || isDialogLikeWindow(candidate)) return scoreWindow(candidate) >= scoreWindow(current);
+	return false;
+}
+
 async function resolveCurrentTarget(signal?: AbortSignal): Promise<ResolvedTarget> {
 	const current = currentTargetOrThrow();
 	const windows = await listWindows(current.pid, signal);
@@ -2131,6 +2158,11 @@ async function resolveCurrentTarget(signal?: AbortSignal): Promise<ResolvedTarge
 	if (!match) {
 		throw new Error(CURRENT_TARGET_GONE_ERROR);
 	}
+
+	const modal = windows
+		.filter((window) => shouldPreferForegroundModalWindow(match!, window))
+		.sort((a, b) => scoreWindow(b) - scoreWindow(a))[0];
+	if (modal) match = modal;
 
 	const app: HelperApp = {
 		appName: current.appName,
@@ -2791,13 +2823,15 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 		if (isStrictAxMode()) {
 			strictModeBlock("Keyboard text replacement is not AX-only. Use default set_text AX semantics in strict mode.");
 		}
+		const delivery = nativeInputDelivery();
+		let keyboardTextElementRef: string | undefined;
 		if (ref) {
 			let axTarget = axTargetByRef(ref);
 			const capture = runtimeState.currentCapture;
 			if (capture) {
 				const screenPoint = axCoordinateFallbackPoint(axTarget);
 				const point = screenPointToCapturePoint(target, capture, screenPoint.x, screenPoint.y);
-				await mouseClickAtCapturePoint(target, capture, point.x, point.y, "left", 1, nativeInputDelivery(), signal);
+				await mouseClickAtCapturePoint(target, capture, point.x, point.y, "left", 1, delivery, signal);
 				await sleep(60, signal);
 			}
 			let focused = await focusAxElement(axTarget.elementRef, target, signal);
@@ -2811,11 +2845,14 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 			if (!focused) {
 				throw new Error(`Could not focus AX target '${ref}' for keyboard text replacement.`);
 			}
-			await setAxValue(axTarget.elementRef, "", signal).catch(() => undefined);
+			keyboardTextElementRef = axTarget.elementRef;
 		} else {
 			await focusControlledWindow(target, signal);
 		}
-		const delivery = nativeInputDelivery();
+		if (keyboardTextElementRef) {
+			await bridgeCommand("selectText", { elementRef: keyboardTextElementRef }, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(() => undefined);
+			await sleep(60, signal);
+		}
 		await postKeyboardText(params.text, target, delivery, signal);
 		return executionTrace(delivery === "pid" ? "pid_key_text" : "raw_key_text", "default", {
 			axAttempted: Boolean(ref),
@@ -3340,6 +3377,10 @@ async function collectWindowDetails(apps: HelperApp[], config: ReturnType<typeof
 				isOnscreen: window.isOnscreen,
 				isMain: window.isMain,
 				isFocused: window.isFocused,
+				isModal: window.isModal,
+				sheetCount: window.sheetCount,
+				role: window.role,
+				subrole: window.subrole,
 				browserUseAllowed: config.browser_use || !isBrowserApp(app.appName, app.bundleId),
 				score: scoreWindow(window),
 			});

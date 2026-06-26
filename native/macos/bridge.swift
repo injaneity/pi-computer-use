@@ -425,6 +425,8 @@ final class Bridge {
 			return try focusedElement(request)
 		case "setValue":
 			return try setValue(request)
+		case "selectText":
+			return try selectText(request)
 		case "axReadText":
 			return try axReadText(request)
 		case "typeText":
@@ -788,6 +790,8 @@ final class Bridge {
 		var output: [[String: Any]] = []
 		for window in windows {
 			let axTitle = stringAttribute(window, attribute: kAXTitleAttribute as CFString) ?? ""
+			let axRole = stringAttribute(window, attribute: kAXRoleAttribute as CFString) ?? ""
+			let axSubrole = stringAttribute(window, attribute: kAXSubroleAttribute as CFString) ?? ""
 			let axFrame = frameForWindow(window)
 			let candidate = bestCandidate(frame: axFrame, title: axTitle, candidates: candidates, usedIds: usedIds)
 			if let candidate {
@@ -802,11 +806,17 @@ final class Bridge {
 			let isMinimized = boolAttribute(window, attribute: kAXMinimizedAttribute as CFString) ?? false
 			let isMain = boolAttribute(window, attribute: kAXMainAttribute as CFString) ?? false
 			let isFocused = boolAttribute(window, attribute: kAXFocusedAttribute as CFString) ?? false
+			let isModal = boolAttribute(window, attribute: "AXModal" as CFString) ?? false
+			let sheetCount = axElementArray(window, attribute: "AXSheets" as CFString).count
 			let scale = displayScaleFactor(for: effectiveFrame)
 
 			var item: [String: Any] = [
 				"windowRef": windowRef,
 				"title": title,
+				"role": axRole,
+				"subrole": axSubrole,
+				"isModal": isModal,
+				"sheetCount": sheetCount,
 				"framePoints": [
 					"x": effectiveFrame.origin.x,
 					"y": effectiveFrame.origin.y,
@@ -1871,6 +1881,25 @@ final class Bridge {
 			throw BridgeFailure(message: "Failed to set value (AX error \(status.rawValue))", code: "set_value_failed")
 		}
 		return ["set": true]
+	}
+
+	private func selectText(_ request: [String: Any]) throws -> [String: Any] {
+		let elementRef = try stringArg(request, "elementRef")
+		guard let element = refStore.element(for: elementRef) else {
+			throw BridgeFailure(message: "Element reference is no longer valid", code: "element_ref_invalid")
+		}
+		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
+		let value = displayValue(element, role: role, subrole: subrole)
+		var range = CFRange(location: max(0, optionalIntArg(request, "start") ?? 0), length: max(0, optionalIntArg(request, "length") ?? value.count))
+		guard let axRange = AXValueCreate(.cfRange, &range) else {
+			throw BridgeFailure(message: "Failed to create selected text range", code: "select_text_failed")
+		}
+		let status = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
+		if status != .success {
+			throw BridgeFailure(message: "Failed to select text (AX error \(status.rawValue))", code: "select_text_failed")
+		}
+		return ["selected": true, "length": range.length]
 	}
 
 	private func axReadText(_ request: [String: Any]) throws -> [String: Any] {
