@@ -12,3 +12,6 @@ tmp/
 # Manual run outputs
 results/
 scripts/cubench-results.json
+
+# Rust build artifacts
+target/

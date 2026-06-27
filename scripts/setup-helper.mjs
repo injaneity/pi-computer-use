@@ -17,6 +17,8 @@ const helperAppPath = "/Applications/pi-computer-use.app";
 const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
 const helperSourceHashPath = path.join(helperAppPath, "Contents", "Resources", "source.sha256");
 const helperBundleId = "com.injaneity.pi-computer-use";
+const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
+const windowsHelperDestPath = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
 const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 const packageJsonPath = path.join(rootDir, "package.json");
 const releaseRepo = "injaneity/pi-computer-use";
@@ -26,6 +28,12 @@ const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
 const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
 const allowAdhocUpdate = args.has("--allow-adhoc-update") || process.env.PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE === "1";
+
+function getArg(name) {
+	const index = process.argv.indexOf(name);
+	if (index >= 0 && index + 1 < process.argv.length) return process.argv[index + 1];
+	return undefined;
+}
 const archTriples = {
 	arm64: "arm64-apple-macosx",
 	x64: "x86_64-apple-macosx",
@@ -99,6 +107,37 @@ async function exists(filePath) {
 	} catch {
 		return false;
 	}
+}
+
+async function hashFile(filePath) {
+	const data = await fs.readFile(filePath);
+	return createHash("sha256").update(data).digest("hex");
+}
+
+async function copyIfChanged(sourcePath, destinationPath) {
+	const destinationExists = await exists(destinationPath);
+	if (destinationExists) {
+		const [sourceHash, destinationHash] = await Promise.all([hashFile(sourcePath), hashFile(destinationPath)]);
+		if (sourceHash === destinationHash) {
+			await fs.chmod(destinationPath, 0o755);
+			return { changed: false };
+		}
+	}
+
+	await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+	const tempPath = `${destinationPath}.tmp-${process.pid}-${Date.now()}`;
+	await fs.copyFile(sourcePath, tempPath);
+	await fs.chmod(tempPath, 0o755);
+	try {
+		await fs.rename(tempPath, destinationPath);
+	} catch (err) {
+		await fs.rm(tempPath, { force: true }).catch(() => {});
+		if (err.code === "EPERM") {
+			throw new Error(`Cannot update helper at ${destinationPath} — the existing helper process is still running. Close the helper process and re-run this script.`);
+		}
+		throw err;
+	}
+	return { changed: true };
 }
 
 async function run(command, commandArgs) {
@@ -428,13 +467,55 @@ async function buildHelper(arch, variant, outputPath) {
 	await signHelper(outputPath);
 }
 
+function windowsBinaryPath() {
+	const releaseDir = path.join(windowsCrateDir, "target", "release");
+	return {
+		exePath: path.join(releaseDir, "windows-bridge.exe"),
+		binPath: path.join(releaseDir, "windows-bridge"),
+	};
+}
+
+async function setupWindowsHelper() {
+	const prebuiltPath = path.join(rootDir, "prebuilt", "windows", "windows-bridge.exe");
+	if (await exists(prebuiltPath)) {
+		const { changed } = await copyIfChanged(prebuiltPath, windowsHelperDestPath);
+		console.log(changed
+			? `[pi-computer-use] installed Windows helper from prebuilt to ${windowsHelperDestPath}`
+			: `[pi-computer-use] Windows helper already up to date at ${windowsHelperDestPath}`);
+		return;
+	}
+
+	if (allowBuildFallback) {
+		console.log("[pi-computer-use] Windows prebuilt helper missing; attempting source build with cargo...");
+		await run("cargo", ["build", "--release", "--manifest-path", path.join(windowsCrateDir, "Cargo.toml")]);
+		const { exePath, binPath } = windowsBinaryPath();
+		const cargoOutput = (await exists(exePath)) ? exePath : (await exists(binPath)) ? binPath : exePath;
+		const { changed } = await copyIfChanged(cargoOutput, windowsHelperDestPath);
+		console.log(changed
+			? `[pi-computer-use] built and installed Windows helper at ${windowsHelperDestPath}`
+			: `[pi-computer-use] Windows helper already up to date at ${windowsHelperDestPath}`);
+		return;
+	}
+
+	throw new Error(
+		`No Windows prebuilt helper found at ${prebuiltPath}. ` +
+			"Run 'node scripts/build-native.mjs --platform windows' to build, or set PI_COMPUTER_USE_ALLOW_BUILD=1 to build at install time.",
+	);
+}
+
 async function setup() {
+	const explicitPlatform = getArg("--platform");
+	if (explicitPlatform === "windows" || (!explicitPlatform && process.platform === "win32")) {
+		await setupWindowsHelper();
+		return;
+	}
+
 	if (process.platform !== "darwin") {
 		if (isPostinstall) {
 			console.warn("[pi-computer-use] skipping helper setup: platform is not macOS.");
 			return;
 		}
-		throw new Error("pi-computer-use helper is only supported on macOS.");
+		throw new Error("pi-computer-use helper is only supported on macOS. Use --platform windows on Windows.");
 	}
 
 	const arch = normalizeArch(process.arch);
