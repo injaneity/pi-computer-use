@@ -1,0 +1,23 @@
+[package]
+name = "windows-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Protocol skeleton for the pi-computer-use Windows helper"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_UI_Accessibility",
+    "Win32_System_Com",
+    "Win32_Foundation",
+] }
+
+[lib]
+name = "windows_bridge"
+path = "src/lib.rs"

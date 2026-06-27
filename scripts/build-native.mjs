@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
+const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
 const archTriples = {
 	arm64: "arm64-apple-macosx",
 	x64: "x86_64-apple-macosx",
@@ -25,6 +26,15 @@ const helperVariants = {
 	},
 };
 const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use.bridge";
+
+async function exists(filePath) {
+	try {
+		await fs.access(filePath);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 function getArg(name) {
 	const index = process.argv.indexOf(name);
@@ -130,9 +140,67 @@ async function buildUniversal(variant, outputPath) {
 	await fs.rm(tempDir, { recursive: true, force: true });
 }
 
+/**
+ * Return the actual cargo binary path, handling platform suffix differences.
+ * On Windows, the binary is named "windows-bridge.exe"; on other platforms it's "windows-bridge".
+ */
+function windowsBinaryPath(crateDir) {
+	const releaseDir = path.join(crateDir, "target", "release");
+	const exePath = path.join(releaseDir, "windows-bridge.exe");
+	const binPath = path.join(releaseDir, "windows-bridge");
+	// Return both candidates; callers should check existence (e.g., with exists()).
+	// The .exe variant is preferred on Windows; the bare variant is used on non-Windows hosts
+	// when cross-compiling the Windows helper binary.
+	return { exePath, binPath };
+}
+
+async function buildWindowsHelper(prebuiltOutput) {
+	const prebuiltDir = prebuiltOutput
+		? path.resolve(process.cwd(), prebuiltOutput, "..")
+		: path.join(rootDir, "prebuilt", "windows");
+	const manifestPath = path.join(windowsCrateDir, "Cargo.toml");
+
+	console.log("Building Windows helper with cargo...");
+	await run("cargo", [
+		"build",
+		"--release",
+		"--manifest-path",
+		manifestPath,
+	]);
+
+	await fs.mkdir(prebuiltDir, { recursive: true });
+
+	const { exePath, binPath } = windowsBinaryPath(windowsCrateDir);
+	const cargoOutput = (await exists(exePath))
+		? exePath
+		: (await exists(binPath))
+			? binPath
+			: exePath;
+	const prebuiltDest = path.join(prebuiltDir, "windows-bridge.exe");
+	await fs.copyFile(cargoOutput, prebuiltDest);
+	await fs.chmod(prebuiltDest, 0o755);
+	console.log(`Built Windows helper at ${prebuiltDest}`);
+}
+
 async function main() {
-	if (process.platform !== "darwin") {
-		throw new Error("build-native is only supported on macOS.");
+	const explicitPlatform = getArg("--platform");
+
+	if (explicitPlatform === "windows") {
+		await buildWindowsHelper(getArg("--output"));
+		return;
+	}
+
+	if (explicitPlatform === "darwin") {
+		// Fall through to macOS build logic below.
+	} else if (process.platform === "win32") {
+		await buildWindowsHelper(getArg("--output"));
+		return;
+	} else if (process.platform !== "darwin") {
+		console.log(
+			`Skipping native build: unsupported platform "${process.platform}". ` +
+				"Use --platform windows to build the Windows helper, or run on macOS for the macOS helper.",
+		);
+		return;
 	}
 
 	const arch = normalizeArch(getArg("--arch") ?? process.arch);

@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url);
+const root = fileURLToPath(new URL("..", import.meta.url));
 const files = ["extensions/computer-use.ts"];
 const failures = [];
 
 for (const file of files) {
-  const path = join(root.pathname, file);
+  const path = join(root, file);
   const source = readFileSync(path, "utf8");
 
   const checks = [
