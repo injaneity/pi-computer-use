@@ -34,7 +34,7 @@ pi --no-extensions -e .
 The runtime helper lives in the app bundle:
 
 ```text
-~/.pi/agent/helpers/pi-computer-use/PiComputerUseBridge.app
+~/Applications/PiComputerUseBridge.app
 ```
 
 The helper app needs:
@@ -76,7 +76,7 @@ prebuilt/macos/x64/modern/bridge
 prebuilt/macos/x64/legacy/bridge
 ```
 
-`setup-helper.mjs` selects `modern` on macOS 14+ and `legacy` on macOS 12/13, installs the selected binary inside `PiComputerUseBridge.app`, signs the app bundle, and removes the old standalone `bridge` helper from v0.3.2 and earlier.
+`setup-helper.mjs` selects `modern` on macOS 14+ and `legacy` on macOS 12/13, installs the selected binary inside `PiComputerUseBridge.app`, signs the app bundle, and removes old helpers under `~/.pi/agent/helpers/pi-computer-use` from v0.3.2 and earlier.
 
 Local helper builds are ad-hoc codesigned by default. For release builds, use a Developer ID Application certificate:
 

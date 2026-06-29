@@ -714,7 +714,7 @@ const BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS = 2_000;
 const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-const HELPER_APP_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "PiComputerUseBridge.app");
+const HELPER_APP_PATH = path.join(os.homedir(), "Applications", "PiComputerUseBridge.app");
 const HELPER_APP_EXECUTABLE_PATH = path.join(HELPER_APP_PATH, "Contents", "MacOS", "bridge");
 const HELPER_SOCKET_PATH = path.join(os.homedir(), "Library", "Caches", "pi-computer-use", "bridge.sock");
 

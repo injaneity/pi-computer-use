@@ -8,9 +8,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const helperRoot = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use");
-const legacyHelperPath = path.join(helperRoot, "bridge");
-const helperAppPath = path.join(helperRoot, "PiComputerUseBridge.app");
+const legacyHelperRoot = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use");
+const legacyHelperPath = path.join(legacyHelperRoot, "bridge");
+const legacyHelperAppPath = path.join(legacyHelperRoot, "PiComputerUseBridge.app");
+const helperAppPath = path.join(os.homedir(), "Applications", "PiComputerUseBridge.app");
 const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
 const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 
@@ -113,10 +114,14 @@ async function installHelperApp(sourcePath) {
 	await signHelper(helperAppPath, "com.injaneity.pi-computer-use.bridge");
 }
 
-async function removeLegacyHelper() {
-	if (!(await exists(legacyHelperPath))) return false;
-	await fs.rm(legacyHelperPath, { force: true });
-	return true;
+async function removeLegacyHelpers() {
+	const removed = [];
+	for (const legacyPath of [legacyHelperPath, legacyHelperAppPath]) {
+		if (!(await exists(legacyPath))) continue;
+		await fs.rm(legacyPath, { force: true, recursive: true });
+		removed.push(legacyPath);
+	}
+	return removed;
 }
 
 async function buildHelper(arch, variant, outputPath) {
@@ -159,9 +164,9 @@ async function setup() {
 
 	if (prebuiltExists) {
 		await installHelperApp(prebuiltPath);
-		const removedLegacy = await removeLegacyHelper();
+		const removedLegacy = await removeLegacyHelpers();
 		console.log(`[pi-computer-use] installed ${variant} helper app (${arch}) at ${helperAppPath}`);
-		if (removedLegacy) console.log(`[pi-computer-use] removed legacy helper binary at ${legacyHelperPath}`);
+		for (const removedPath of removedLegacy) console.log(`[pi-computer-use] removed legacy helper at ${removedPath}`);
 		return;
 	}
 
@@ -171,9 +176,9 @@ async function setup() {
 			console.log(`[pi-computer-use] ${variant} prebuilt helper missing; attempting source build with xcrun swiftc...`);
 			await buildHelper(arch, variant, tempPath);
 			await installHelperApp(tempPath);
-			const removedLegacy = await removeLegacyHelper();
+			const removedLegacy = await removeLegacyHelpers();
 			console.log(`[pi-computer-use] built ${variant} helper app at ${helperAppPath}`);
-			if (removedLegacy) console.log(`[pi-computer-use] removed legacy helper binary at ${legacyHelperPath}`);
+			for (const removedPath of removedLegacy) console.log(`[pi-computer-use] removed legacy helper at ${removedPath}`);
 		} finally {
 			await fs.rm(tempPath, { force: true }).catch(() => {});
 		}

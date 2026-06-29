@@ -18,7 +18,7 @@ node scripts/setup-helper.mjs --force
 Confirm the helper app exists:
 
 ```text
-~/.pi/agent/helpers/pi-computer-use/PiComputerUseBridge.app
+~/Applications/PiComputerUseBridge.app
 ```
 
 ## macOS Permissions Still Fail
@@ -26,7 +26,7 @@ Confirm the helper app exists:
 Grant both permissions to the helper app:
 
 ```text
-~/.pi/agent/helpers/pi-computer-use/PiComputerUseBridge.app
+~/Applications/PiComputerUseBridge.app
 ```
 
 Required permissions:
@@ -41,7 +41,7 @@ If macOS still denies access:
 3. If the helper app is not listed, click `+`, press `Cmd+Shift+G`, paste the copied helper app path, add it, then enable it.
 4. Restart Pi or the Mac if macOS asks, then retry `screenshot`. The Recheck action reports which permission is still missing.
 
-Upgrading from v0.3.2 or earlier removes the old standalone `bridge` helper. Old permission entries such as `bridge`, Terminal, Ghostty, node, or Codex are no longer the canonical helper identity; grant `PiComputerUseBridge.app`.
+Upgrading from v0.3.2 or earlier removes old helpers under `~/.pi/agent/helpers/pi-computer-use`. Old permission entries such as `bridge`, Terminal, Ghostty, node, or Codex are no longer the canonical helper identity; grant `PiComputerUseBridge.app`.
 
 ## Non-Interactive Setup Fails
 
