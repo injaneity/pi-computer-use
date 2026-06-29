@@ -13,7 +13,7 @@ export interface PermissionBridge {
 }
 
 const NON_INTERACTIVE_PERMISSION_ERROR =
-	"pi-computer-use setup requires an interactive session. Start pi in interactive mode and grant Accessibility and Screen Recording to the pi-computer-use helper. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.";
+	"pi-computer-use setup requires an interactive session. Start pi in interactive mode and grant Accessibility and Screen Recording to PiComputerUseBridge.app. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.";
 
 function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) {
@@ -64,22 +64,22 @@ export async function ensurePermissions(
 		options.push("Recheck permissions", "Cancel");
 
 		const prompt = [
-			"pi-computer-use needs macOS permissions.",
+			"pi-computer-use needs macOS permissions for its helper app.",
 			permissionStatusSummary(status),
 			"",
 			`Helper: ${helperName}`,
 			`Path: ${helperPath}`,
 			bridge.permissionHint,
 			"",
-			"Open the missing setting, enable the helper, then choose Recheck.",
-			"If the helper is not listed, click +, press Cmd+Shift+G, and paste the copied path.",
-			"If macOS grants a launcher such as Terminal instead, leave that enabled and also add/enable the helper path above.",
+			"Open the missing setting, enable PiComputerUseBridge.app, then choose Recheck.",
+			"If it is not listed, click +, press Cmd+Shift+G, and paste the copied path.",
+			"If you are upgrading from pi-computer-use 0.3.2 or earlier, old entries such as bridge, Terminal, Ghostty, node, or Codex are not the canonical helper anymore. Grant PiComputerUseBridge.app.",
 		].filter(Boolean).join("\n");
 
 		const choice = await ctx.ui.select(prompt, options, { signal });
 		if (!choice || choice === "Cancel") {
 			throw new Error(
-				`pi-computer-use setup is incomplete. Grant Accessibility and Screen Recording to ${helperPath}, then retry. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.`,
+				`pi-computer-use setup is incomplete. Grant Accessibility and Screen Recording to PiComputerUseBridge.app at ${helperPath}, then retry. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.`,
 			);
 		}
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -10,14 +9,13 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const helperRoot = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use");
-const helperDestPath = path.join(helperRoot, "bridge");
+const legacyHelperPath = path.join(helperRoot, "bridge");
 const helperAppPath = path.join(helperRoot, "PiComputerUseBridge.app");
 const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
 const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 
 const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
-const forceInstall = args.has("--force") || process.env.PI_COMPUTER_USE_FORCE_HELPER_INSTALL === "1";
 const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
 const archTriples = {
 	arm64: "arm64-apple-macosx",
@@ -71,38 +69,6 @@ async function exists(filePath) {
 	}
 }
 
-async function isExecutable(filePath) {
-	try {
-		await fs.access(filePath, fsConstants.X_OK);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-async function hashFile(filePath) {
-	const data = await fs.readFile(filePath);
-	return createHash("sha256").update(data).digest("hex");
-}
-
-async function copyIfChanged(sourcePath, destinationPath) {
-	const destinationExists = await exists(destinationPath);
-	if (destinationExists) {
-		const [sourceHash, destinationHash] = await Promise.all([hashFile(sourcePath), hashFile(destinationPath)]);
-		if (sourceHash === destinationHash) {
-			await fs.chmod(destinationPath, 0o755);
-			return { changed: false };
-		}
-	}
-
-	await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-	const tempPath = `${destinationPath}.tmp-${process.pid}-${Date.now()}`;
-	await fs.copyFile(sourcePath, tempPath);
-	await fs.chmod(tempPath, 0o755);
-	await fs.rename(tempPath, destinationPath);
-	return { changed: true };
-}
-
 async function run(command, commandArgs) {
 	await new Promise((resolve, reject) => {
 		const child = spawn(command, commandArgs, { stdio: "inherit" });
@@ -147,6 +113,12 @@ async function installHelperApp(sourcePath) {
 	await signHelper(helperAppPath, "com.injaneity.pi-computer-use.bridge");
 }
 
+async function removeLegacyHelper() {
+	if (!(await exists(legacyHelperPath))) return false;
+	await fs.rm(legacyHelperPath, { force: true });
+	return true;
+}
+
 async function buildHelper(arch, variant, outputPath) {
 	if (!(await exists(helperSourcePath))) {
 		throw new Error(`Native helper source not found at ${helperSourcePath}`);
@@ -185,44 +157,31 @@ async function setup() {
 	const prebuiltPath = prebuiltPathForArch(arch, variant);
 	const prebuiltExists = await exists(prebuiltPath);
 
-	if (!forceInstall && (await isExecutable(helperDestPath))) {
-		if (prebuiltExists) {
-			const { changed } = await copyIfChanged(prebuiltPath, helperDestPath);
-			await installHelperApp(helperDestPath);
-			console.log(
-				changed
-					? `[pi-computer-use] installed ${variant} helper from prebuilt (${arch}) to ${helperDestPath}`
-					: `[pi-computer-use] ${variant} helper already up to date at ${helperDestPath}`,
-			);
-			return;
-		}
-		if (!allowBuildFallback) {
-			console.log(`[pi-computer-use] using existing helper at ${helperDestPath}`);
-			return;
-		}
-	}
-
 	if (prebuiltExists) {
-		const { changed } = await copyIfChanged(prebuiltPath, helperDestPath);
-		await installHelperApp(helperDestPath);
-		console.log(
-			changed
-				? `[pi-computer-use] installed ${variant} helper from prebuilt (${arch}) to ${helperDestPath}`
-				: `[pi-computer-use] ${variant} helper already up to date at ${helperDestPath}`,
-		);
+		await installHelperApp(prebuiltPath);
+		const removedLegacy = await removeLegacyHelper();
+		console.log(`[pi-computer-use] installed ${variant} helper app (${arch}) at ${helperAppPath}`);
+		if (removedLegacy) console.log(`[pi-computer-use] removed legacy helper binary at ${legacyHelperPath}`);
 		return;
 	}
 
 	if (allowBuildFallback) {
-		console.log(`[pi-computer-use] ${variant} prebuilt helper missing; attempting source build with xcrun swiftc...`);
-		await buildHelper(arch, variant, helperDestPath);
-		await installHelperApp(helperDestPath);
-		console.log(`[pi-computer-use] built ${variant} helper at ${helperDestPath}`);
+		const tempPath = path.join(os.tmpdir(), `pi-computer-use-bridge-${process.pid}-${Date.now()}`);
+		try {
+			console.log(`[pi-computer-use] ${variant} prebuilt helper missing; attempting source build with xcrun swiftc...`);
+			await buildHelper(arch, variant, tempPath);
+			await installHelperApp(tempPath);
+			const removedLegacy = await removeLegacyHelper();
+			console.log(`[pi-computer-use] built ${variant} helper app at ${helperAppPath}`);
+			if (removedLegacy) console.log(`[pi-computer-use] removed legacy helper binary at ${legacyHelperPath}`);
+		} finally {
+			await fs.rm(tempPath, { force: true }).catch(() => {});
+		}
 		return;
 	}
 
 	throw new Error(
-		`No ${variant} prebuilt helper found for ${arch} at ${prebuiltPath}. Run 'node scripts/build-native.mjs --variant ${variant} --output ${helperDestPath}' to build locally.`,
+		`No ${variant} prebuilt helper found for ${arch} at ${prebuiltPath}. Run 'npm run build:native' to build locally.`,
 	);
 }
 

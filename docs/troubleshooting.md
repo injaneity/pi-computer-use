@@ -11,50 +11,43 @@ node scripts/setup-helper.mjs --runtime
 Or build it locally:
 
 ```bash
-node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridge
+npm run build:native
+node scripts/setup-helper.mjs --force
 ```
 
-Confirm the helper exists:
+Confirm the helper app exists:
 
 ```text
-~/.pi/agent/helpers/pi-computer-use/bridge
+~/.pi/agent/helpers/pi-computer-use/PiComputerUseBridge.app
 ```
 
 ## macOS Permissions Still Fail
 
-Grant both permissions to the helper:
+Grant both permissions to the helper app:
 
 ```text
-~/.pi/agent/helpers/pi-computer-use/bridge
+~/.pi/agent/helpers/pi-computer-use/PiComputerUseBridge.app
 ```
 
 Required permissions:
 
 - Accessibility
-- Screen Recording
+- Screen Recording / Screen & System Audio Recording
 
 If macOS still denies access:
 
-1. Remove the helper from the permission list instead of only toggling it off/on.
-2. If there are multiple helper rows with the same name, remove all of them.
-3. Start Pi again and let `pi-computer-use` request permission for the current helper. The setup flow opens the settings pane and copies the helper path to your clipboard.
-4. Enable the newly added helper row.
-5. If the helper is not added automatically, click `+`, press `Cmd+Shift+G`, paste the copied helper path, add the helper, then enable it.
-6. Restart Pi or the Mac if macOS asks, then retry `screenshot`. The Recheck action reports which permission is still missing.
+1. Start Pi interactively and let `pi-computer-use` request permission. The setup flow opens the settings pane and copies the helper app path to your clipboard.
+2. Enable `PiComputerUseBridge.app` in each missing permission pane.
+3. If the helper app is not listed, click `+`, press `Cmd+Shift+G`, paste the copied helper app path, add it, then enable it.
+4. Restart Pi or the Mac if macOS asks, then retry `screenshot`. The Recheck action reports which permission is still missing.
 
-macOS can keep stale Screen Recording entries for an older ad-hoc-signed helper after the helper binary changes. The setup script preserves an existing executable helper by default to avoid changing its macOS permission identity unnecessarily. To intentionally replace it, run setup with `--force` or set `PI_COMPUTER_USE_FORCE_HELPER_INSTALL=1`.
+Upgrading from v0.3.2 or earlier removes the old standalone `bridge` helper. Old permission entries such as `bridge`, Terminal, Ghostty, node, or Codex are no longer the canonical helper identity; grant `PiComputerUseBridge.app`.
 
 ## Non-Interactive Setup Fails
 
 Permission setup requires an interactive Pi session because macOS permission panes are user-controlled.
 
 Start Pi interactively, grant permissions, then retry the non-interactive workflow.
-
-## SSH Sessions And macOS Permissions
-
-When Pi is started over SSH, macOS may scope Accessibility and Screen Recording checks to the SSH launch session instead of the logged-in GUI session. `pi-computer-use` detects SSH and launches the native helper through the user's GUI launchd domain with `launchctl asuser` when possible.
-
-This requires the same user to already be logged in to the Mac's desktop session. If permissions still fail over SSH, start Pi once from a local GUI Terminal session, complete permission setup there, then retry SSH. Set `PI_COMPUTER_USE_GUI_SESSION_LAUNCH=0` to disable the SSH re-anchor, or `PI_COMPUTER_USE_GUI_SESSION_LAUNCH=1` to force it.
 
 ## A Browser Says JavaScript From Apple Events Is Disabled
 

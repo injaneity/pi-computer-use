@@ -19,19 +19,21 @@
 Install the extension from the latest release tag:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.3.2
+pi install git:github.com/injaneity/pi-computer-use@v0.3.3
 ```
 
-Start Pi and grant macOS permissions when prompted. The helper that needs access is:
+Start Pi and grant macOS permissions when prompted. The helper app that needs access is:
 
 ```text
-~/.pi/agent/helpers/pi-computer-use/bridge
+~/.pi/agent/helpers/pi-computer-use/PiComputerUseBridge.app
 ```
 
 Required permissions:
 
 - Accessibility
-- Screen Recording
+- Screen Recording / Screen & System Audio Recording
+
+Upgrading from v0.3.2 or earlier removes the old standalone `bridge` helper. If macOS still shows old entries such as `bridge`, Terminal, Ghostty, node, or Codex, they are no longer the canonical helper identity; grant `PiComputerUseBridge.app`.
 
 Then ask Pi to use computer-use tools. A good first request is:
 

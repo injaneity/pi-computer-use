@@ -31,16 +31,16 @@ pi --no-extensions -e .
 
 ## Helper Install Path
 
-The runtime helper lives at:
+The runtime helper lives in the app bundle:
 
 ```text
-~/.pi/agent/helpers/pi-computer-use/bridge
+~/.pi/agent/helpers/pi-computer-use/PiComputerUseBridge.app
 ```
 
-The helper needs:
+The helper app needs:
 
 - Accessibility
-- Screen Recording
+- Screen Recording / Screen & System Audio Recording
 
 If permissions are missing, start Pi interactively and let the extension guide setup.
 
@@ -52,12 +52,14 @@ Build for the current architecture into the repo prebuilt path:
 npm run build:native
 ```
 
-Build directly to the installed helper path. Use `modern` for macOS 14+ ScreenCaptureKit support, or `legacy` for the macOS 12+ CGWindow/screencapture helper:
+Build the repo prebuilt, then install/sign the helper app:
 
 ```bash
-node scripts/build-native.mjs --variant modern --output ~/.pi/agent/helpers/pi-computer-use/bridge
-node scripts/build-native.mjs --variant legacy --output ~/.pi/agent/helpers/pi-computer-use/bridge
+npm run build:native
+node scripts/setup-helper.mjs --force
 ```
+
+Use `modern` for macOS 14+ ScreenCaptureKit support, or `legacy` for the macOS 12+ CGWindow/screencapture helper when building release prebuilts.
 
 Build both release prebuilts for both helper variants:
 
@@ -74,7 +76,7 @@ prebuilt/macos/x64/modern/bridge
 prebuilt/macos/x64/legacy/bridge
 ```
 
-`setup-helper.mjs` selects `modern` on macOS 14+ and `legacy` on macOS 12/13, then copies the selected binary to `~/.pi/agent/helpers/pi-computer-use/bridge`.
+`setup-helper.mjs` selects `modern` on macOS 14+ and `legacy` on macOS 12/13, installs the selected binary inside `PiComputerUseBridge.app`, signs the app bundle, and removes the old standalone `bridge` helper from v0.3.2 and earlier.
 
 Local helper builds are ad-hoc codesigned by default. For release builds, use a Developer ID Application certificate:
 
@@ -91,7 +93,7 @@ The default signing identifier is:
 com.injaneity.pi-computer-use.bridge
 ```
 
-Keep that identifier stable for release builds so macOS permissions remain tied to the same helper identity across updates.
+Keep that identifier stable for release builds so macOS permissions remain tied to `PiComputerUseBridge.app` across updates.
 
 ## Validation
 

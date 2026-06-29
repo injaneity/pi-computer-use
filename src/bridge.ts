@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
@@ -533,13 +533,6 @@ interface ResolvedTarget extends CurrentTarget {
 	isFocused: boolean;
 }
 
-interface PendingRequest {
-	cmd: string;
-	resolve: (value: any) => void;
-	reject: (reason?: unknown) => void;
-	timer: ReturnType<typeof setTimeout>;
-	abortListener?: () => void;
-}
 
 type AxTargetSource = "desktop_ax" | "browser_chrome_ax" | "web_content_ax" | "unknown_ax";
 
@@ -613,11 +606,8 @@ interface RuntimeState {
 	nextWindowRefIndex: number;
 	allowNextTypeTextAxReplacement?: boolean;
 	pendingBrowserAddress?: PendingBrowserAddress;
-	helper?: ChildProcessWithoutNullStreams;
 	daemonAvailable?: boolean;
 	managedBrowser?: ChildProcess;
-	helperStdoutBuffer: string;
-	pending: Map<string, PendingRequest>;
 	requestSequence: number;
 	queueTail: Promise<void>;
 	permissionStatus?: PermissionStatus;
@@ -724,16 +714,14 @@ const BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS = 2_000;
 const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-export const HELPER_STABLE_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
 const HELPER_APP_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "PiComputerUseBridge.app");
+const HELPER_APP_EXECUTABLE_PATH = path.join(HELPER_APP_PATH, "Contents", "MacOS", "bridge");
 const HELPER_SOCKET_PATH = path.join(os.homedir(), "Library", "Caches", "pi-computer-use", "bridge.sock");
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SETUP_HELPER_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "setup-helper.mjs");
 
 const runtimeState: RuntimeState = {
-	helperStdoutBuffer: "",
-	pending: new Map(),
 	requestSequence: 0,
 	queueTail: Promise.resolve(),
 	lastPermissionCheckAt: 0,
@@ -1295,55 +1283,6 @@ function emptyActivation(): ActivationFlags {
 	return { activated: false, unminimized: false, raised: false };
 }
 
-function rejectAllPending(error: Error): void {
-	for (const [id, pending] of runtimeState.pending) {
-		clearTimeout(pending.timer);
-		if (pending.abortListener) {
-			pending.abortListener();
-		}
-		runtimeState.pending.delete(id);
-		pending.reject(error);
-	}
-}
-
-function handleHelperStdoutChunk(chunk: string): void {
-	runtimeState.helperStdoutBuffer += chunk;
-
-	while (true) {
-		const newlineIndex = runtimeState.helperStdoutBuffer.indexOf("\n");
-		if (newlineIndex < 0) break;
-
-		const line = runtimeState.helperStdoutBuffer.slice(0, newlineIndex).trim();
-		runtimeState.helperStdoutBuffer = runtimeState.helperStdoutBuffer.slice(newlineIndex + 1);
-		if (!line) continue;
-
-		let parsed: any;
-		try {
-			parsed = JSON.parse(line);
-		} catch {
-			continue;
-		}
-
-		const id = typeof parsed?.id === "string" ? parsed.id : undefined;
-		if (!id) continue;
-
-		const pending = runtimeState.pending.get(id);
-		if (!pending) continue;
-		runtimeState.pending.delete(id);
-		clearTimeout(pending.timer);
-		if (pending.abortListener) pending.abortListener();
-
-		if (parsed.ok === true) {
-			pending.resolve(parsed.result);
-		} else {
-			const message =
-				typeof parsed?.error?.message === "string" ? parsed.error.message : `Helper command '${pending.cmd}' failed.`;
-			const code = typeof parsed?.error?.code === "string" ? parsed.error.code : undefined;
-			pending.reject(new HelperCommandError(message, code));
-		}
-	}
-}
-
 async function isExecutable(filePath: string): Promise<boolean> {
 	try {
 		await access(filePath, fsConstants.X_OK);
@@ -1415,15 +1354,9 @@ async function runProcess(
 	});
 }
 
-function helperDaemonEnabled(): boolean {
-	return process.env.PI_COMPUTER_USE_HELPER_DAEMON !== "0";
-}
 
 async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
-	const helperAlreadyPresent = await isExecutable(HELPER_STABLE_PATH);
-	if (helperAlreadyPresent && runtimeState.helperInstallChecked) {
-		return;
-	}
+	if ((await isExecutable(HELPER_APP_EXECUTABLE_PATH)) && runtimeState.helperInstallChecked) return;
 
 	// process.execPath may be an Electron binary when this module runs inside an
 	// Electron main process. Force ELECTRON_RUN_AS_NODE so the helper script runs
@@ -1435,79 +1368,13 @@ async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 	});
 	runtimeState.helperInstallChecked = true;
 
-	if (!(await isExecutable(HELPER_STABLE_PATH))) {
-		throw new Error(`Failed to install pi-computer-use helper at ${HELPER_STABLE_PATH}.`);
-	}
-	if (helperDaemonEnabled() && !(await isExecutable(path.join(HELPER_APP_PATH, "Contents", "MacOS", "bridge")))) {
+	if (!(await isExecutable(HELPER_APP_EXECUTABLE_PATH))) {
 		throw new Error(`Failed to install pi-computer-use helper app at ${HELPER_APP_PATH}.`);
 	}
 }
 
-function isSshSession(): boolean {
-	return Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY);
-}
-
-function helperSpawnCommand(): { command: string; args: string[] } {
-	const mode = process.env.PI_COMPUTER_USE_GUI_SESSION_LAUNCH ?? "auto";
-	const shouldUseGuiSession = mode === "1" || mode === "true" || (mode === "auto" && isSshSession());
-	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-	if (shouldUseGuiSession && process.platform === "darwin" && uid !== undefined) {
-		return { command: "launchctl", args: ["asuser", String(uid), HELPER_STABLE_PATH] };
-	}
-	return { command: HELPER_STABLE_PATH, args: [] };
-}
-
-async function startBridgeProcess(): Promise<ChildProcessWithoutNullStreams> {
-	if (!(await isExecutable(HELPER_STABLE_PATH))) {
-		throw new HelperTransportError(`Computer-use helper is missing at ${HELPER_STABLE_PATH}.`);
-	}
-
-	const helperLaunch = helperSpawnCommand();
-	const child = spawn(helperLaunch.command, helperLaunch.args, {
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-
-	child.stdout.setEncoding("utf8");
-	child.stderr.setEncoding("utf8");
-	child.stdin.setDefaultEncoding("utf8");
-
-	child.stdout.on("data", (chunk: string) => {
-		handleHelperStdoutChunk(chunk);
-	});
-
-	child.stderr.on("data", (_chunk: string) => {
-		// helper diagnostics are intentionally not forwarded to tool output
-	});
-
-	child.on("error", (error) => {
-		if (runtimeState.helper === child) {
-			runtimeState.helper = undefined;
-		}
-		rejectAllPending(new HelperTransportError(`Computer-use helper crashed: ${error.message}`));
-	});
-
-	child.on("exit", (code, sig) => {
-		if (runtimeState.helper === child) {
-			runtimeState.helper = undefined;
-		}
-		const reason = sig ? `signal ${sig}` : `exit code ${code ?? "unknown"}`;
-		rejectAllPending(new HelperTransportError(`Computer-use helper exited (${reason}).`));
-	});
-
-	runtimeState.helper = child;
-	runtimeState.helperStdoutBuffer = "";
-	return child;
-}
-
-async function ensureBridgeProcess(): Promise<ChildProcessWithoutNullStreams> {
-	if (runtimeState.helper && runtimeState.helper.exitCode === null && !runtimeState.helper.killed) {
-		return runtimeState.helper;
-	}
-	return await startBridgeProcess();
-}
 
 async function launchHelperDaemon(signal?: AbortSignal): Promise<void> {
-	if (!helperDaemonEnabled()) return;
 	await mkdir(path.dirname(HELPER_SOCKET_PATH), { recursive: true });
 	await runProcess("open", ["-n", "-g", HELPER_APP_PATH, "--args", "serve", "--socket", HELPER_SOCKET_PATH], COMMAND_TIMEOUT_MS, signal);
 }
@@ -1542,7 +1409,6 @@ async function daemonCommand<T>(cmd: string, args: Record<string, unknown>, time
 }
 
 async function ensureDaemon(signal?: AbortSignal): Promise<boolean> {
-	if (!helperDaemonEnabled()) return false;
 	if (runtimeState.daemonAvailable) return true;
 	try {
 		await daemonCommand("diagnostics", {}, 1_000, signal);
@@ -1568,76 +1434,17 @@ async function bridgeCommand<T>(
 	options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<T> {
 	const timeoutMs = options?.timeoutMs ?? COMMAND_TIMEOUT_MS;
-
-	if (helperDaemonEnabled()) {
-		if (!(await ensureDaemon(options?.signal))) {
-			throw new HelperTransportError(`pi-computer-use helper app daemon is unavailable at ${HELPER_APP_PATH}.`);
-		}
-		try {
-			return await daemonCommand<T>(cmd, args, timeoutMs, options?.signal);
-		} catch (error) {
-			runtimeState.daemonAvailable = false;
-			throw normalizeError(error);
-		}
+	if (!(await ensureDaemon(options?.signal))) {
+		throw new HelperTransportError(`pi-computer-use helper app daemon is unavailable at ${HELPER_APP_PATH}.`);
 	}
-
-	for (let attempt = 0; attempt < 2; attempt += 1) {
-		throwIfAborted(options?.signal);
-		const helper = await ensureBridgeProcess();
-		const id = `req_${++runtimeState.requestSequence}`;
-
-		try {
-			const result = await new Promise<T>((resolve, reject) => {
-				const payload = `${JSON.stringify({ id, cmd, ...args })}\n`;
-				const timer = setTimeout(() => {
-					runtimeState.pending.delete(id);
-					reject(new HelperTransportError(`Helper command '${cmd}' timed out after ${timeoutMs}ms.`));
-				}, timeoutMs);
-
-				const pending: PendingRequest = {
-					cmd,
-					resolve,
-					reject,
-					timer,
-				};
-
-				const abortListener = () => {
-					if (runtimeState.pending.delete(id)) {
-						clearTimeout(timer);
-						reject(new Error("Operation aborted."));
-					}
-				};
-
-				if (options?.signal) {
-					options.signal.addEventListener("abort", abortListener, { once: true });
-					pending.abortListener = () => options.signal?.removeEventListener("abort", abortListener);
-				}
-
-				runtimeState.pending.set(id, pending);
-
-				helper.stdin.write(payload, (error) => {
-					if (!error) return;
-					const p = runtimeState.pending.get(id);
-					if (!p) return;
-					runtimeState.pending.delete(id);
-					clearTimeout(p.timer);
-					if (p.abortListener) p.abortListener();
-					reject(new HelperTransportError(`Failed to send command '${cmd}': ${error.message}`));
-				});
-			});
-
-			return result;
-		} catch (error) {
-			if (error instanceof HelperTransportError && attempt === 0) {
-				stopBridge();
-				continue;
-			}
-			throw normalizeError(error);
-		}
+	try {
+		return await daemonCommand<T>(cmd, args, timeoutMs, options?.signal);
+	} catch (error) {
+		runtimeState.daemonAvailable = false;
+		throw normalizeError(error);
 	}
-
-	throw new Error(`Helper command '${cmd}' failed.`);
 }
+
 
 async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus> {
 	const result = await bridgeCommand<any>("checkPermissions", {}, { signal });
@@ -1682,12 +1489,8 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 
 	throwIfAborted(signal);
 	await ensureHelperInstalled(signal);
-	if (helperDaemonEnabled()) {
-		if (!(await ensureDaemon(signal))) {
-			throw new Error(`pi-computer-use helper app daemon did not start. Helper app: ${HELPER_APP_PATH}`);
-		}
-	} else {
-		await ensureBridgeProcess();
+	if (!(await ensureDaemon(signal))) {
+		throw new Error(`pi-computer-use helper app daemon did not start. Helper app: ${HELPER_APP_PATH}`);
 	}
 	await ensureHelperProtocol(signal);
 
@@ -1706,7 +1509,7 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 	runtimeState.lastPermissionCheckAt = now;
 
 	if (!status.accessibility || !status.screenRecording) {
-		const permissionPath = helperDaemonEnabled() ? HELPER_APP_PATH : HELPER_STABLE_PATH;
+		const permissionPath = HELPER_APP_PATH;
 		const parentHint = runtimeState.helperDiagnostics?.parentAppName
 			? `Launcher: ${runtimeState.helperDiagnostics.parentAppName}${runtimeState.helperDiagnostics.parentBundleId ? ` (${runtimeState.helperDiagnostics.parentBundleId})` : ""}. On some macOS versions Screen Recording may also need to remain enabled for this launcher.`
 			: undefined;
@@ -4463,14 +4266,5 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 }
 
 export function stopBridge(): void {
-	rejectAllPending(new HelperTransportError("Computer-use helper stopped."));
-
-	const helper = runtimeState.helper;
-	runtimeState.helper = undefined;
-	runtimeState.helperStdoutBuffer = "";
-	runtimeState.currentAxTargets = undefined;
-
-	if (helper && helper.exitCode === null && !helper.killed) {
-		helper.kill("SIGTERM");
-	}
+	runtimeState.daemonAvailable = false;
 }
