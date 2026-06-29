@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -1415,6 +1415,10 @@ async function runProcess(
 	});
 }
 
+function helperDaemonEnabled(): boolean {
+	return process.env.PI_COMPUTER_USE_HELPER_DAEMON !== "0";
+}
+
 async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 	const helperAlreadyPresent = await isExecutable(HELPER_STABLE_PATH);
 	if (helperAlreadyPresent && runtimeState.helperInstallChecked) {
@@ -1433,6 +1437,9 @@ async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 
 	if (!(await isExecutable(HELPER_STABLE_PATH))) {
 		throw new Error(`Failed to install pi-computer-use helper at ${HELPER_STABLE_PATH}.`);
+	}
+	if (helperDaemonEnabled() && !(await isExecutable(path.join(HELPER_APP_PATH, "Contents", "MacOS", "bridge")))) {
+		throw new Error(`Failed to install pi-computer-use helper app at ${HELPER_APP_PATH}.`);
 	}
 }
 
@@ -1500,7 +1507,8 @@ async function ensureBridgeProcess(): Promise<ChildProcessWithoutNullStreams> {
 }
 
 async function launchHelperDaemon(signal?: AbortSignal): Promise<void> {
-	if (process.env.PI_COMPUTER_USE_HELPER_DAEMON === "0") return;
+	if (!helperDaemonEnabled()) return;
+	await mkdir(path.dirname(HELPER_SOCKET_PATH), { recursive: true });
 	await runProcess("open", ["-n", "-g", HELPER_APP_PATH, "--args", "serve", "--socket", HELPER_SOCKET_PATH], COMMAND_TIMEOUT_MS, signal);
 }
 
@@ -1534,7 +1542,7 @@ async function daemonCommand<T>(cmd: string, args: Record<string, unknown>, time
 }
 
 async function ensureDaemon(signal?: AbortSignal): Promise<boolean> {
-	if (process.env.PI_COMPUTER_USE_HELPER_DAEMON === "0") return false;
+	if (!helperDaemonEnabled()) return false;
 	if (runtimeState.daemonAvailable) return true;
 	try {
 		await daemonCommand("diagnostics", {}, 1_000, signal);
@@ -1561,12 +1569,15 @@ async function bridgeCommand<T>(
 ): Promise<T> {
 	const timeoutMs = options?.timeoutMs ?? COMMAND_TIMEOUT_MS;
 
-	if (await ensureDaemon(options?.signal)) {
+	if (helperDaemonEnabled()) {
+		if (!(await ensureDaemon(options?.signal))) {
+			throw new HelperTransportError(`pi-computer-use helper app daemon is unavailable at ${HELPER_APP_PATH}.`);
+		}
 		try {
 			return await daemonCommand<T>(cmd, args, timeoutMs, options?.signal);
 		} catch (error) {
 			runtimeState.daemonAvailable = false;
-			if (!(error instanceof HelperTransportError)) throw normalizeError(error);
+			throw normalizeError(error);
 		}
 	}
 
@@ -1671,7 +1682,13 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 
 	throwIfAborted(signal);
 	await ensureHelperInstalled(signal);
-	await ensureBridgeProcess();
+	if (helperDaemonEnabled()) {
+		if (!(await ensureDaemon(signal))) {
+			throw new Error(`pi-computer-use helper app daemon did not start. Helper app: ${HELPER_APP_PATH}`);
+		}
+	} else {
+		await ensureBridgeProcess();
+	}
 	await ensureHelperProtocol(signal);
 
 	const now = Date.now();
@@ -1689,7 +1706,7 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 	runtimeState.lastPermissionCheckAt = now;
 
 	if (!status.accessibility || !status.screenRecording) {
-		const permissionPath = runtimeState.daemonAvailable ? HELPER_APP_PATH : HELPER_STABLE_PATH;
+		const permissionPath = helperDaemonEnabled() ? HELPER_APP_PATH : HELPER_STABLE_PATH;
 		const parentHint = runtimeState.helperDiagnostics?.parentAppName
 			? `Launcher: ${runtimeState.helperDiagnostics.parentAppName}${runtimeState.helperDiagnostics.parentBundleId ? ` (${runtimeState.helperDiagnostics.parentBundleId})` : ""}. On some macOS versions Screen Recording may also need to remain enabled for this launcher.`
 			: undefined;
