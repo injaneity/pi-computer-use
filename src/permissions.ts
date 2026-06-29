@@ -13,7 +13,7 @@ export interface PermissionBridge {
 }
 
 const NON_INTERACTIVE_PERMISSION_ERROR =
-	"pi-computer-use setup requires an interactive session. Start pi in interactive mode and grant Accessibility and Screen Recording to PiComputerUseBridge.app. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.";
+	"pi-computer-use setup requires an interactive session. Start pi in interactive mode and grant Accessibility and Screen Recording to pi-computer-use.app. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.";
 
 function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) {
@@ -71,15 +71,15 @@ export async function ensurePermissions(
 			`Path: ${helperPath}`,
 			bridge.permissionHint,
 			"",
-			"Open the missing setting, enable PiComputerUseBridge.app, then choose Recheck.",
-			"If it is not listed, click +, press Cmd+Shift+G, and paste the copied path.",
-			"If you are upgrading from pi-computer-use 0.3.2 or earlier, old entries such as bridge, Terminal, Ghostty, node, or Codex are not the canonical helper anymore. Grant PiComputerUseBridge.app.",
+			"Open the missing setting, enable pi-computer-use.app, then choose Recheck.",
+			"If it is not listed, click +, choose Applications, select pi-computer-use.app, add it, then enable it.",
+			"If you are upgrading from pi-computer-use 0.3.2 or earlier, old entries such as bridge, Terminal, Ghostty, node, or Codex are not the canonical helper anymore. Grant pi-computer-use.app.",
 		].filter(Boolean).join("\n");
 
 		const choice = await ctx.ui.select(prompt, options, { signal });
 		if (!choice || choice === "Cancel") {
 			throw new Error(
-				`pi-computer-use setup is incomplete. Grant Accessibility and Screen Recording to PiComputerUseBridge.app at ${helperPath}, then retry. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.`,
+				`pi-computer-use setup is incomplete. Grant Accessibility and Screen Recording to pi-computer-use.app at ${helperPath}, then retry. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.`,
 			);
 		}
 

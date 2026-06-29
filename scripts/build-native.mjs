@@ -24,7 +24,7 @@ const helperVariants = {
 		frameworks: ["ApplicationServices", "AppKit", "ScreenCaptureKit", "Foundation"],
 	},
 };
-const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use.bridge";
+const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use";
 
 function getArg(name) {
 	const index = process.argv.indexOf(name);

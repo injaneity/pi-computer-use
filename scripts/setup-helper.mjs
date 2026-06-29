@@ -11,8 +11,11 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const legacyHelperRoot = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use");
 const legacyHelperPath = path.join(legacyHelperRoot, "bridge");
 const legacyHelperAppPath = path.join(legacyHelperRoot, "PiComputerUseBridge.app");
-const helperAppPath = path.join(os.homedir(), "Applications", "PiComputerUseBridge.app");
+const legacyUserHelperAppPath = path.join(os.homedir(), "Applications", "PiComputerUseBridge.app");
+const legacySystemHelperAppPath = "/Applications/PiComputerUseBridge.app";
+const helperAppPath = "/Applications/pi-computer-use.app";
 const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
+const helperBundleId = "com.injaneity.pi-computer-use";
 const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 
 const args = new Set(process.argv.slice(2));
@@ -34,7 +37,7 @@ const helperVariants = {
 		frameworks: ["ApplicationServices", "AppKit", "ScreenCaptureKit", "Foundation"],
 	},
 };
-const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use.bridge";
+const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use";
 
 function normalizeArch(arch) {
 	if (arch === "arm64" || arch === "x64") return arch;
@@ -105,28 +108,29 @@ async function registerHelperApp() {
 }
 
 async function installHelperApp(sourcePath) {
+	await fs.access(path.dirname(helperAppPath), fsConstants.W_OK);
 	await fs.mkdir(path.dirname(helperAppExecutablePath), { recursive: true });
 	await fs.copyFile(sourcePath, helperAppExecutablePath);
 	await fs.chmod(helperAppExecutablePath, 0o755);
 	await fs.writeFile(path.join(helperAppPath, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>com.injaneity.pi-computer-use.bridge</string>
-<key>CFBundleName</key><string>PiComputerUseBridge</string>
-<key>CFBundleDisplayName</key><string>PiComputerUseBridge</string>
+<key>CFBundleIdentifier</key><string>${helperBundleId}</string>
+<key>CFBundleName</key><string>pi-computer-use</string>
+<key>CFBundleDisplayName</key><string>pi-computer-use</string>
 <key>CFBundleExecutable</key><string>bridge</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.3.3</string>
 <key>CFBundleVersion</key><string>0.3.3</string>
 <key>LSUIElement</key><true/>
 </dict></plist>\n`);
-	await signHelper(helperAppPath, "com.injaneity.pi-computer-use.bridge");
+	await signHelper(helperAppPath, helperBundleId);
 	await registerHelperApp();
 }
 
 async function removeLegacyHelpers() {
 	const removed = [];
-	for (const legacyPath of [legacyHelperPath, legacyHelperAppPath]) {
+	for (const legacyPath of [legacyHelperPath, legacyHelperAppPath, legacyUserHelperAppPath, legacySystemHelperAppPath]) {
 		if (!(await exists(legacyPath))) continue;
 		await fs.rm(legacyPath, { force: true, recursive: true });
 		removed.push(legacyPath);

@@ -714,7 +714,8 @@ const BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS = 2_000;
 const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-const HELPER_APP_PATH = path.join(os.homedir(), "Applications", "PiComputerUseBridge.app");
+const HELPER_BUNDLE_ID = "com.injaneity.pi-computer-use";
+const HELPER_APP_PATH = "/Applications/pi-computer-use.app";
 const HELPER_APP_EXECUTABLE_PATH = path.join(HELPER_APP_PATH, "Contents", "MacOS", "bridge");
 const HELPER_SOCKET_PATH = path.join(os.homedir(), "Library", "Caches", "pi-computer-use", "bridge.sock");
 
@@ -1376,7 +1377,7 @@ async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
 
 async function launchHelperDaemon(signal?: AbortSignal): Promise<void> {
 	await mkdir(path.dirname(HELPER_SOCKET_PATH), { recursive: true });
-	await runProcess("open", ["-n", "-g", HELPER_APP_PATH, "--args", "serve", "--socket", HELPER_SOCKET_PATH], COMMAND_TIMEOUT_MS, signal);
+	await runProcess("open", ["-n", "-g", "-b", HELPER_BUNDLE_ID, "--args", "serve", "--socket", HELPER_SOCKET_PATH], COMMAND_TIMEOUT_MS, signal);
 }
 
 async function daemonCommand<T>(cmd: string, args: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<T> {

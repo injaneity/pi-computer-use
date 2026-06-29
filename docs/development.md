@@ -34,7 +34,7 @@ pi --no-extensions -e .
 The runtime helper lives in the app bundle:
 
 ```text
-~/Applications/PiComputerUseBridge.app
+/Applications/pi-computer-use.app
 ```
 
 The helper app needs:
@@ -76,7 +76,7 @@ prebuilt/macos/x64/modern/bridge
 prebuilt/macos/x64/legacy/bridge
 ```
 
-`setup-helper.mjs` selects `modern` on macOS 14+ and `legacy` on macOS 12/13, installs the selected binary inside `PiComputerUseBridge.app`, signs the app bundle, and removes old helpers under `~/.pi/agent/helpers/pi-computer-use` from v0.3.2 and earlier.
+`setup-helper.mjs` selects `modern` on macOS 14+ and `legacy` on macOS 12/13, installs the selected binary inside `pi-computer-use.app`, signs the app bundle, and removes old helpers under `~/.pi/agent/helpers/pi-computer-use`, `~/Applications/PiComputerUseBridge.app`, and `/Applications/PiComputerUseBridge.app` from v0.3.2 and earlier.
 
 Local helper builds are ad-hoc codesigned by default. For release builds, use a Developer ID Application certificate:
 
@@ -90,10 +90,10 @@ node scripts/build-native.mjs --arch all --variant all \
 The default signing identifier is:
 
 ```text
-com.injaneity.pi-computer-use.bridge
+com.injaneity.pi-computer-use
 ```
 
-Keep that identifier stable for release builds so macOS permissions remain tied to `PiComputerUseBridge.app` across updates.
+Keep that identifier stable for release builds so macOS permissions remain tied to `pi-computer-use.app` across updates.
 
 ## Validation
 
