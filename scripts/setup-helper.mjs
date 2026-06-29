@@ -98,6 +98,12 @@ async function signHelper(outputPath, identifier = defaultCodeSignIdentifier) {
 	await run("codesign", commandArgs);
 }
 
+async function registerHelperApp() {
+	const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+	if (!(await exists(lsregister))) return;
+	await run(lsregister, ["-f", helperAppPath]).catch(() => {});
+}
+
 async function installHelperApp(sourcePath) {
 	await fs.mkdir(path.dirname(helperAppExecutablePath), { recursive: true });
 	await fs.copyFile(sourcePath, helperAppExecutablePath);
@@ -107,11 +113,15 @@ async function installHelperApp(sourcePath) {
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.injaneity.pi-computer-use.bridge</string>
 <key>CFBundleName</key><string>PiComputerUseBridge</string>
+<key>CFBundleDisplayName</key><string>PiComputerUseBridge</string>
 <key>CFBundleExecutable</key><string>bridge</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.3.3</string>
+<key>CFBundleVersion</key><string>0.3.3</string>
 <key>LSUIElement</key><true/>
 </dict></plist>\n`);
 	await signHelper(helperAppPath, "com.injaneity.pi-computer-use.bridge");
+	await registerHelperApp();
 }
 
 async function removeLegacyHelpers() {
