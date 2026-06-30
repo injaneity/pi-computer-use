@@ -5,11 +5,11 @@ import { access } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cdpClickForContext, cdpEvaluateForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeForContext, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputerUseConfig } from "./config.ts";
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
+import { platformForRuntime } from "./platform/index.ts";
 
 type WindowSelector = string | number;
 type ImageMode = "auto" | "always" | "never";
@@ -558,7 +558,8 @@ interface RuntimeState {
 	queueTail: Promise<void>;
 	permissionStatus?: PermissionStatus;
 	lastPermissionCheckAt: number;
-	helperInstallChecked: boolean;
+	/** stateId returned by Windows listWindows, used for subsequent screenshot calls. */
+	windowsStateId?: string;
 }
 
 type MouseButtonName = "left" | "right" | "middle";
@@ -590,11 +591,10 @@ const TOOL_NAMES = new Set([
 const MISSING_TARGET_ERROR = "No current controlled window. Call screenshot first to choose a target window.";
 const CURRENT_TARGET_GONE_ERROR =
 	"The current controlled window is no longer available. Call screenshot to choose a new target window.";
-const NON_MACOS_ERROR = "pi-computer-use currently supports macOS 12+ only.";
+const currentPlatform = platformForRuntime();
 
 const COMMAND_TIMEOUT_MS = 15_000;
 const SCREENSHOT_TIMEOUT_MS = 25_000;
-const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const ACTION_SETTLE_MS = 280;
 const BATCH_ACTION_GAP_MS = 80;
 const BATCH_MAX_ACTIONS = 20;
@@ -658,10 +658,7 @@ const BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS = 2_000;
 const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-export const HELPER_STABLE_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
-
-const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SETUP_HELPER_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "setup-helper.mjs");
+export { HELPER_STABLE_PATH } from "./platform/macos.ts";
 
 const runtimeState: RuntimeState = {
 	helperStdoutBuffer: "",
@@ -669,7 +666,6 @@ const runtimeState: RuntimeState = {
 	requestSequence: 0,
 	queueTail: Promise.resolve(),
 	lastPermissionCheckAt: 0,
-	helperInstallChecked: false,
 	allowNextTypeTextAxReplacement: false,
 	browserSnapshots: new Map(),
 	windowRefs: new Map(),
@@ -1267,47 +1263,12 @@ async function runProcess(
 	});
 }
 
-async function ensureHelperInstalled(signal?: AbortSignal): Promise<void> {
-	const helperAlreadyPresent = await isExecutable(HELPER_STABLE_PATH);
-	if (helperAlreadyPresent && runtimeState.helperInstallChecked) {
-		return;
-	}
-
-	// process.execPath may be an Electron binary when this module runs inside an
-	// Electron main process. Force ELECTRON_RUN_AS_NODE so the helper script runs
-	// as plain Node instead of launching a GUI Electron app (which adds a dock
-	// icon and never exits). No-op for a regular Node executable.
-	await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal, {
-		...process.env,
-		ELECTRON_RUN_AS_NODE: "1",
-	});
-	runtimeState.helperInstallChecked = true;
-
-	if (!(await isExecutable(HELPER_STABLE_PATH))) {
-		throw new Error(`Failed to install pi-computer-use helper at ${HELPER_STABLE_PATH}.`);
-	}
-}
-
-function isSshSession(): boolean {
-	return Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY);
-}
-
-function helperSpawnCommand(): { command: string; args: string[] } {
-	const mode = process.env.PI_COMPUTER_USE_GUI_SESSION_LAUNCH ?? "auto";
-	const shouldUseGuiSession = mode === "1" || mode === "true" || (mode === "auto" && isSshSession());
-	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-	if (shouldUseGuiSession && process.platform === "darwin" && uid !== undefined) {
-		return { command: "launchctl", args: ["asuser", String(uid), HELPER_STABLE_PATH] };
-	}
-	return { command: HELPER_STABLE_PATH, args: [] };
-}
-
 async function startBridgeProcess(): Promise<ChildProcessWithoutNullStreams> {
-	if (!(await isExecutable(HELPER_STABLE_PATH))) {
-		throw new HelperTransportError(`Computer-use helper is missing at ${HELPER_STABLE_PATH}.`);
+	if (!(await isExecutable(currentPlatform.helperStablePath))) {
+		throw new HelperTransportError(`Computer-use helper is missing at ${currentPlatform.helperStablePath}.`);
 	}
 
-	const helperLaunch = helperSpawnCommand();
+	const helperLaunch = currentPlatform.helperSpawnCommand();
 	const child = spawn(helperLaunch.command, helperLaunch.args, {
 		stdio: ["pipe", "pipe", "pipe"],
 	});
@@ -1358,6 +1319,22 @@ async function bridgeCommand<T>(
 ): Promise<T> {
 	const timeoutMs = options?.timeoutMs ?? COMMAND_TIMEOUT_MS;
 
+	// Platform-level command support check.
+	const commandSupport = currentPlatform.supportsCommand(cmd);
+	if (commandSupport === "capability_deferred") {
+		throw new HelperCommandError(
+			"Windows ref-backed actions are deferred in PR #1. " +
+				"This PR supports window discovery, screenshots, state IDs, and read-only UIA element discovery.",
+			"capability_deferred",
+		);
+	}
+	if (commandSupport === "unsupported_command") {
+		throw new HelperCommandError(
+			`The '${cmd}' command is not supported on ${currentPlatform.name}.`,
+			"unsupported_command",
+		);
+	}
+
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		throwIfAborted(options?.signal);
 		const helper = await ensureBridgeProcess();
@@ -1365,7 +1342,13 @@ async function bridgeCommand<T>(
 
 		try {
 			const result = await new Promise<T>((resolve, reject) => {
-				const payload = `${JSON.stringify({ id, cmd, ...args })}\n`;
+				// Build the payload in the platform-appropriate format.
+				// macOS helper expects flat JSON: {id, cmd, ...args}
+				// Windows helper expects envelope: {protocolVersion, id, cmd, args}
+				const payload =
+					currentPlatform.name === "windows"
+						? `${JSON.stringify({ protocolVersion: 1, id, cmd, args })}\n`
+						: `${JSON.stringify({ id, cmd, ...args })}\n`;
 				const timer = setTimeout(() => {
 					runtimeState.pending.delete(id);
 					reject(new HelperTransportError(`Helper command '${cmd}' timed out after ${timeoutMs}ms.`));
@@ -1427,13 +1410,14 @@ async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus>
 async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
 	loadComputerUseConfig(ctx.cwd);
 
-	if (process.platform !== "darwin") {
-		throw new Error(NON_MACOS_ERROR);
-	}
-
 	throwIfAborted(signal);
-	await ensureHelperInstalled(signal);
+	await currentPlatform.ensureHelperInstalled(signal);
 	await ensureBridgeProcess();
+
+	if (currentPlatform.name !== "macos") {
+		// Windows permission flow is deferred until the helper is implemented.
+		return;
+	}
 
 	const now = Date.now();
 	const canUseCachedPermissions =
@@ -1458,10 +1442,10 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 					await bridgeCommand("openPermissionPane", { kind }, { signal: permissionSignal ?? signal });
 				},
 				copyHelperPathToClipboard: async (permissionSignal) => {
-					await runProcess("osascript", ["-e", `set the clipboard to "${escapeAppleScriptString(HELPER_STABLE_PATH)}"`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
+					await runProcess("osascript", ["-e", `set the clipboard to "${escapeAppleScriptString(currentPlatform.helperStablePath)}"`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
 				},
 			},
-			HELPER_STABLE_PATH,
+			currentPlatform.helperStablePath,
 			signal,
 		);
 	}
@@ -1494,12 +1478,17 @@ function parseApps(result: unknown): HelperApp[] {
 }
 
 function parseFramePoints(raw: unknown): FramePoints {
-	const frame = (raw as any)?.framePoints ?? {};
+	// macOS helper returns framePoints {x,y,w,h}.
+	// Windows helper returns bounds {x,y,width,height}.
+	const frame =
+		(raw as any)?.framePoints ??
+		(raw as any)?.bounds ??
+		{};
 	return {
 		x: toFiniteNumber(frame.x, 0),
 		y: toFiniteNumber(frame.y, 0),
-		w: Math.max(1, toFiniteNumber(frame.w, 1)),
-		h: Math.max(1, toFiniteNumber(frame.h, 1)),
+		w: Math.max(1, toFiniteNumber(frame.w ?? frame.width, 1)),
+		h: Math.max(1, toFiniteNumber(frame.h ?? frame.height, 1)),
 	};
 }
 
@@ -1509,7 +1498,8 @@ function parseWindows(result: unknown): HelperWindow[] {
 
 	return array.map((raw) => ({
 		windowId: Number.isFinite((raw as any)?.windowId) ? Math.trunc((raw as any).windowId) : undefined,
-		windowRef: toOptionalString((raw as any)?.windowRef),
+		// macOS helper provides windowRef; Windows helper provides ref.
+		windowRef: toOptionalString((raw as any)?.windowRef ?? (raw as any)?.ref),
 		title: toOptionalString((raw as any)?.title) ?? "",
 		framePoints: parseFramePoints(raw),
 		scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
@@ -1520,13 +1510,51 @@ function parseWindows(result: unknown): HelperWindow[] {
 	}));
 }
 
+/// Extract unique apps (processName → appName, pid) from a Windows
+/// listWindows response so that listWindows tool dispatch works without a
+/// dedicated listApps helper command.
+function parseAppsFromWindowsList(result: unknown): HelperApp[] {
+	const windows = isRecord(result) ? (result as any)?.windows : undefined;
+	if (!Array.isArray(windows)) return [];
+
+	const seen = new Set<number>();
+	const apps: HelperApp[] = [];
+	for (const w of windows as Array<Record<string, unknown>>) {
+		const pid = Math.trunc(toFiniteNumber(w.pid, 0));
+		if (pid <= 0 || seen.has(pid)) continue;
+		seen.add(pid);
+		const processName = toOptionalString(w.processName) ?? "Unknown";
+		apps.push({
+			appName: processName.replace(/\.exe$/i, ""),
+			bundleId: undefined,
+			pid,
+			isFrontmost: toBoolean(w.isFocused),
+		});
+	}
+	return apps;
+}
+
 async function listApps(signal?: AbortSignal): Promise<HelperApp[]> {
+	// On Windows, derive per-process entries from the window list since the
+	// Rust helper does not expose a separate listApps command in PR #1.
+	if (currentPlatform.name === "windows") {
+		const result = await bridgeCommand<unknown>("listWindows", {}, { signal });
+		if (isRecord(result)) {
+			runtimeState.windowsStateId = toOptionalString((result as any).stateId);
+		}
+		return parseAppsFromWindowsList(result);
+	}
 	const result = await bridgeCommand<unknown>("listApps", {}, { signal });
 	return parseApps(result);
 }
 
 async function listWindows(pid: number, signal?: AbortSignal): Promise<HelperWindow[]> {
 	const result = await bridgeCommand<unknown>("listWindows", { pid }, { signal });
+	// Capture the stateId on Windows so subsequent screenshot calls can
+	// reference the ref store populated by this listWindows call.
+	if (currentPlatform.name === "windows" && isRecord(result)) {
+		runtimeState.windowsStateId = toOptionalString((result as any).stateId);
+	}
 	return parseWindows(result);
 }
 
@@ -2090,7 +2118,9 @@ async function resolveTargetForScreenshot(selection: ScreenshotParams, signal?: 
 }
 
 async function ensureTargetWindowId(target: ResolvedTarget, signal?: AbortSignal): Promise<ResolvedTarget> {
-	if (target.windowId > 0) {
+	// On Windows the helper uses @wN refs + stateId rather than numeric
+	// windowIds, so the windowId is always 0 here.  Skip the re-resolution.
+	if (target.windowId > 0 || currentPlatform.name === "windows") {
 		return target;
 	}
 
@@ -2101,12 +2131,34 @@ async function ensureTargetWindowId(target: ResolvedTarget, signal?: AbortSignal
 	return refreshed;
 }
 
-async function helperScreenshot(windowId: number, signal?: AbortSignal, maxDimension?: number): Promise<ScreenshotPayload> {
+async function helperScreenshot(target: ResolvedTarget, signal?: AbortSignal, maxDimension?: number): Promise<ScreenshotPayload> {
+	const args: Record<string, unknown> =
+		currentPlatform.name === "windows"
+			? { ref: target.nativeWindowRef, stateId: runtimeState.windowsStateId }
+			: { windowId: target.windowId, maxDimension };
+
 	const result = await bridgeCommand<any>(
 		"screenshot",
-		{ windowId, maxDimension },
+		args,
 		{ timeoutMs: SCREENSHOT_TIMEOUT_MS, signal },
 	);
+
+	if (currentPlatform.name === "windows") {
+		const capture = isRecord(result) ? (result as any)?.capture : undefined;
+		if (!isRecord(capture)) {
+			throw new Error("Windows helper returned an invalid screenshot payload.");
+		}
+		const base64 = toOptionalString(capture.imageBase64);
+		if (!base64) {
+			throw new Error("Windows helper returned a screenshot payload with no image data.");
+		}
+		return {
+			pngBase64: base64,
+			width: Math.max(1, Math.trunc(toFiniteNumber(capture.width, 1))),
+			height: Math.max(1, Math.trunc(toFiniteNumber(capture.height, 1))),
+			scaleFactor: 1,
+		};
+	}
 
 	const base64 = toOptionalString(result?.pngBase64);
 	if (!base64) {
@@ -2163,7 +2215,7 @@ async function recoverCaptureFromHelperFailure(
 	for (const candidateWindow of candidates) {
 		const candidateTarget = toResolvedTarget(app, candidateWindow);
 		try {
-			const image = await helperScreenshot(candidateTarget.windowId, signal, maxDimension);
+			const image = await helperScreenshot(candidateTarget, signal, maxDimension);
 			return { target: candidateTarget, image };
 		} catch (candidateError) {
 			if (!isRecoverableScreenshotError(candidateError)) {
@@ -2198,7 +2250,7 @@ function captureForTarget(target: ResolvedTarget): CurrentCapture {
 async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal, maxDimension = AUTO_IMAGE_MAX_DIMENSION): Promise<void> {
 	if (result.image) return;
 	try {
-		result.image = await helperScreenshot(result.target.windowId, signal, maxDimension);
+		result.image = await helperScreenshot(result.target, signal, maxDimension);
 		result.capture.width = result.image.width;
 		result.capture.height = result.image.height;
 		result.capture.scaleFactor = result.image.scaleFactor;
