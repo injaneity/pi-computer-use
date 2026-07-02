@@ -150,8 +150,15 @@ async function installPrebuiltHelperApp(sourceAppPath) {
 		await registerHelperApp();
 		return false;
 	}
+	// The sealed bundle must arrive intact — a broken signature would burn
+	// the user's TCC grants on an identity that can never validate.
+	await run("codesign", ["--verify", "--strict", sourceAppPath]);
 	await fs.rm(helperAppPath, { force: true, recursive: true });
-	await fs.cp(sourceAppPath, helperAppPath, { recursive: true });
+	// ditto preserves the bundle byte-for-byte (signature + stapled
+	// notarization ticket). The sealed app is NEVER re-signed here: its
+	// Developer ID designated requirement (identifier + team) is exactly
+	// what lets TCC grant rows survive future updates.
+	await run("/usr/bin/ditto", [sourceAppPath, helperAppPath]);
 	await registerHelperApp();
 	return true;
 }
@@ -240,7 +247,13 @@ async function setup() {
 
 	const arch = normalizeArch(process.arch);
 	const variant = selectedHelperVariant();
-	const prebuiltAppPath = prebuiltAppPathForArch(arch, variant);
+	// Prefer the release-signed universal bundle (one artifact for both
+	// arches, produced by .github/workflows/release-helper.yml) over
+	// per-arch bundles, over loose binaries (dev fallback).
+	const universalAppPath = prebuiltAppPathForArch("universal", variant);
+	const prebuiltAppPath = (await exists(universalAppPath))
+		? universalAppPath
+		: prebuiltAppPathForArch(arch, variant);
 	const prebuiltPath = prebuiltPathForArch(arch, variant);
 	const prebuiltAppExists = await exists(prebuiltAppPath);
 	const prebuiltExists = await exists(prebuiltPath);

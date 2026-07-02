@@ -72,3 +72,42 @@ The helper installed for permissions is:
 ```
 
 The built helper binary is stored under `prebuilt/macos` and installed by `scripts/setup-helper.mjs`.
+
+## Release signing
+
+TCC keys permission grants to the app's code-signing *designated
+requirement*. An ad-hoc signature pins that to the exact binary hash
+(cdhash), so an ad-hoc release orphans every user's grants on update. Any
+real certificate — Developer ID **or a stable self-signed cert** — anchors
+the requirement on `identifier + certificate leaf`, so grants survive all
+releases as long as you sign every release with the same cert. (Verified:
+two different binaries signed with one cert produce an identical designated
+requirement.)
+
+You do NOT need an Apple Developer Program membership for grant stability.
+Apple enrollment (Developer ID + notarization) is only required to clear
+Gatekeeper on **browser-downloaded** apps; npm-delivered installs carry no
+quarantine attribute, so a self-signed cert is sufficient.
+
+Setup:
+
+1. Run `./scripts/make-signing-cert.sh` once to generate a 10-year
+   self-signed cert (`id.p12`). Back up `key.pem`/`cert.pem` permanently —
+   losing them forces a one-time re-grant on the next release.
+2. Add repository secrets `APPLICATION_CERT_BASE64` (base64 of `id.p12`),
+   `CERT_PASSWORD`, and `SIGN_IDENTITY` (`pi-computer-use Self Signed`).
+   For a Developer ID cert instead, set `SIGN_IDENTITY` to its full name,
+   add the `NOTARIZE=true` repository variable, and the `TEAM_ID` /
+   `APPLE_ID` / `APP_SPECIFIC_PASSWORD` secrets.
+3. `.github/workflows/release-helper.yml` builds the universal
+   `pi-computer-use.app` on tag push, signs it (hardened runtime), asserts
+   the designated requirement anchors on the cert leaf (fails the release
+   if it regressed to ad-hoc), notarizes+staples when `NOTARIZE=true`, and
+   attaches the zip to the release.
+4. Before `npm publish`, unzip that release asset into
+   `prebuilt/macos/universal/modern/pi-computer-use.app`. The installer
+   prefers it over per-arch bundles and loose binaries, verifies its
+   signature, installs it verbatim with `ditto`, and never re-signs it.
+
+Local dev builds stay ad-hoc; the installer's guard
+(`PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1`) covers that path.
