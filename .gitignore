@@ -8,3 +8,6 @@ main.js
 benchmarks/results/*.local.*
 benchmarks/results/*local*
 tmp/
+
+# Manual run outputs
+results/

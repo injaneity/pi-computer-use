@@ -1,8 +1,8 @@
 # Configuration
 
-`pi-computer-use` has a small configuration surface: browser control and strict AX execution.
+Configuration controls browser access and strict AX execution.
 
-## Config Files
+## Files
 
 Global config:
 
@@ -10,11 +10,13 @@ Global config:
 ~/.pi/agent/extensions/pi-computer-use.json
 ```
 
-Project-local override:
+Project config:
 
 ```text
 .pi/computer-use.json
 ```
+
+Project config overrides global config. Environment variables override both.
 
 Example:
 
@@ -25,9 +27,7 @@ Example:
 }
 ```
 
-Project-local config overrides global config. Environment variables override both files.
-
-Run `/computer-use` in Pi to show the effective config and source status.
+Run `/computer-use` in Pi to show the active config and its source.
 
 ## Options
 
@@ -35,19 +35,19 @@ Run `/computer-use` in Pi to show the effective config and source status.
 
 Default: `true`
 
-When `false`, screenshots and actions against known browser apps are refused. This is useful when a project should avoid controlling browser windows.
+When `false`, the extension refuses known browser windows. This is useful for projects that should not control browsers.
 
-Known browser families include Safari, Chrome/Chromium-family browsers, Firefox, Arc, Brave, Edge, Vivaldi, and Helium.
+Known browser families include Safari, Chrome and Chromium-family browsers, Firefox, Arc, Brave, Edge, Vivaldi, and Helium.
 
 ### `stealth_mode`
 
 Default: `false`
 
-When `true`, the extension requires background-safe AX execution and blocks foreground focus, raw keyboard input, raw pointer input, and cursor takeover.
+When `true`, actions must use background-safe AX paths. Raw pointer events, raw keyboard events, foreground focus fallback, and cursor takeover are blocked.
 
-This mode is also referred to as strict AX mode.
+This is also called strict AX mode.
 
-## Environment Overrides
+## Environment variables
 
 ```bash
 PI_COMPUTER_USE_BROWSER_USE=0
@@ -62,35 +62,18 @@ PI_COMPUTER_USE_HELPER_VARIANT=legacy
 PI_COMPUTER_USE_CDP_PORT=9222
 ```
 
-`PI_COMPUTER_USE_STEALTH=1` and `PI_COMPUTER_USE_STRICT_AX=1` force `stealth_mode` on. `PI_COMPUTER_USE_HELPER_VARIANT` is normally `auto`: macOS 14+ uses the modern ScreenCaptureKit helper, while macOS 12/13 uses the legacy CGWindow/screencapture helper. Override it only for testing or troubleshooting.
+`PI_COMPUTER_USE_STEALTH=1` and `PI_COMPUTER_USE_STRICT_AX=1` force strict AX mode.
 
-## Optional CDP Acceleration
+`PI_COMPUTER_USE_HELPER_VARIANT` defaults to `auto`. macOS 14 and newer use the modern ScreenCaptureKit helper. macOS 12 and 13 use the legacy CGWindow and `screencapture` helper. Override this only for testing.
 
-`PI_COMPUTER_USE_CDP_PORT` opts in to a Chrome DevTools Protocol backend for Chromium-family browsers. Launch the browser with `--remote-debugging-port=<port>` and set the env var to the same port. When active:
+## CDP browser support
 
-- `navigate_browser` uses `Page.navigate` with an event-driven page-load wait instead of AppleScript and fixed settle delays, and does not change window focus.
-- Recent browser console messages and uncaught exceptions are appended to tool results for the controlled browser window (`details.console`), which helps web debugging tasks.
+`PI_COMPUTER_USE_CDP_PORT` enables Chrome DevTools Protocol support for Chromium-family browsers. Launch the browser with `--remote-debugging-port=<port>` and set this variable to the same port.
 
-The agent-facing tools are unchanged. With the env var unset (the default), the CDP backend is fully inert and all actions use the AX/CGEvent path. Tab matching uses the window title, the window's screen frame, and tab visibility; non-Chromium browsers always use the AX path.
+When CDP is active:
 
-## Recommended Defaults
+- `navigate_browser` uses CDP navigation when possible.
+- Browser console messages are attached to relevant tool results.
+- The desktop scene tools still work for browser windows.
 
-For normal interactive use:
-
-```json
-{
-  "browser_use": true,
-  "stealth_mode": false
-}
-```
-
-For background-safe operation:
-
-```json
-{
-  "browser_use": true,
-  "stealth_mode": true
-}
-```
-
-In strict AX mode, open any dedicated browser window yourself before asking Pi to control it.
+With the variable unset, CDP is inactive.

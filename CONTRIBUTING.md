@@ -2,25 +2,14 @@
 
 Thanks for helping improve `pi-computer-use`.
 
-## Start with an issue
+## Before you start
 
-Please open an issue before starting work.
-
-- Every pull request needs an associated issue.
-- The issue should be approved before a PR is opened.
-- Use the issue to agree on scope, validation, and any user-facing behavior changes.
+Open an issue before starting work. Use it to agree on scope, validation, and any user-facing behavior changes.
 
 ## Setup
 
-Install dependencies:
-
 ```bash
 npm install
-```
-
-Run checks:
-
-```bash
 npm test
 ```
 
@@ -30,24 +19,32 @@ Run this checkout in Pi:
 pi --no-extensions -e .
 ```
 
-If you change the native helper, rebuild it and make sure macOS grants Accessibility and Screen Recording permissions to:
+If you change native code, rebuild the helper:
 
-```text
-~/.pi/agent/helpers/pi-computer-use/bridge
+```bash
+npm run build:native
 ```
 
-For more detail, see [docs/development.md](./docs/development.md) and [docs/troubleshooting.md](./docs/troubleshooting.md).
+macOS permissions should be granted to:
+
+```text
+/Applications/pi-computer-use.app
+```
 
 ## Validation
 
-- Documentation-only changes: proofread the changed files and check any links or commands you touched.
-- TypeScript/tooling changes: run `npm test`.
-- GUI, browser, AX, fallback, or native-helper changes: run `npm run benchmark:qa` and include the result in the PR.
-- Broader behavior changes may also need `npm run benchmark:qa:full`.
+Use the smallest check that proves the change:
+
+- Documentation changes: proofread changed files and check touched links or commands.
+- TypeScript or schema changes: run `npm test`.
+- Native helper changes: run `npm run build:native` and `npm test`.
+- Behavior changes: run `cubench` against the registered extension tools.
+
+The in-repo legacy benchmark harness was removed because it targeted old direct action tools. Use `cubench` for behavioral validation.
 
 ## Commit messages
 
-Use this format:
+Use:
 
 ```text
 feat|chore|refactor|fix(<scope>): <summary>
@@ -56,10 +53,9 @@ feat|chore|refactor|fix(<scope>): <summary>
 Examples:
 
 ```text
-feat(browser): add direct navigation tool
-fix(readme): correct install tag syntax
-refactor(bridge): prefer native window refs
-chore(release): prepare release notes
+feat(scene): add label association
+fix(config): document strict AX env vars
+refactor(extension): simplify public tool surface
 ```
 
 Check a range locally with:
@@ -68,18 +64,21 @@ Check a range locally with:
 npm run test:commits -- <base>..<head>
 ```
 
-## Pull request checklist
+## Pull requests
 
-- Link the approved issue.
-- Explain the user-facing change briefly.
-- Note any permission, browser, or strict AX impact.
-- Include benchmark results for behavior changes.
-- Keep unrelated formatting and generated output out of the PR.
+A PR should include:
 
-## If you used AI
+- the linked issue
+- a short description of the user-facing change
+- permission, browser, or strict AX impact if relevant
+- validation results
 
-If AI tools helped produce the PR, include the thread or transcript so reviewers can see the context behind the change.
+Keep unrelated formatting and generated output out of the PR.
+
+## AI-assisted work
+
+If AI tools helped produce the PR, include the thread or transcript so reviewers can see the context.
 
 ## Releases
 
-Release notes use [`notes/release-template.md`](./notes/release-template.md). Releases are handled by maintainers.
+Release notes use [`notes/release-template.md`](./notes/release-template.md). Maintainers handle releases.

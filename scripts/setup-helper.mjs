@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { spawn, execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+const execFile = promisify(execFileCallback);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const legacyHelperRoot = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use");
-const legacyHelperPath = path.join(legacyHelperRoot, "bridge");
-const legacyHelperAppPath = path.join(legacyHelperRoot, "PiComputerUseBridge.app");
-const legacyUserHelperAppPath = path.join(os.homedir(), "Applications", "PiComputerUseBridge.app");
-const legacySystemHelperAppPath = "/Applications/PiComputerUseBridge.app";
 const helperAppPath = "/Applications/pi-computer-use.app";
 const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
+const helperSourceHashPath = path.join(helperAppPath, "Contents", "Resources", "source.sha256");
 const helperBundleId = "com.injaneity.pi-computer-use";
 const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 
 const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
 const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
+const allowAdhocUpdate = args.has("--allow-adhoc-update") || process.env.PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE === "1";
 const archTriples = {
 	arm64: "arm64-apple-macosx",
 	x64: "x86_64-apple-macosx",
@@ -64,6 +64,10 @@ function prebuiltPathForArch(arch, variant) {
 	return path.join(rootDir, "prebuilt", "macos", arch, variant, "bridge");
 }
 
+function prebuiltAppPathForArch(arch, variant) {
+	return path.join(rootDir, "prebuilt", "macos", arch, variant, "pi-computer-use.app");
+}
+
 async function exists(filePath) {
 	try {
 		await fs.access(filePath, fsConstants.F_OK);
@@ -91,14 +95,41 @@ function moduleCachePath(arch, variant) {
 	return path.join(os.tmpdir(), `pi-computer-use-swift-module-cache-${arch}-${variant}`);
 }
 
+async function commandOutput(command, commandArgs) {
+	const { stdout } = await execFile(command, commandArgs, { encoding: "utf8" });
+	return stdout;
+}
+
+async function findDeveloperIdIdentity() {
+	const output = await commandOutput("security", ["find-identity", "-p", "codesigning", "-v"]).catch(() => "");
+	const line = output.split("\n").find((item) => item.includes("Developer ID Application"));
+	return line?.trim().split(/\s+/)[1];
+}
+
+async function resolveCodeSignIdentity() {
+	if (process.env.PI_COMPUTER_USE_CODESIGN_IDENTITY) return process.env.PI_COMPUTER_USE_CODESIGN_IDENTITY;
+	return (await findDeveloperIdIdentity()) ?? "-";
+}
+
 async function signHelper(outputPath, identifier = defaultCodeSignIdentifier) {
 	if (process.env.PI_COMPUTER_USE_NO_SIGN === "1") {
 		return;
 	}
 
-	const identity = process.env.PI_COMPUTER_USE_CODESIGN_IDENTITY ?? "-";
-	const commandArgs = ["--force", "-i", identifier, "--timestamp=none", "--sign", identity, outputPath];
+	const identity = await resolveCodeSignIdentity();
+	const commandArgs = ["--force", "--deep", "-i", identifier, "--timestamp=none", "--sign", identity, outputPath];
 	await run("codesign", commandArgs);
+	if (identity === "-") {
+		console.warn("[pi-computer-use] warning: signed helper ad-hoc; dev permission grants may need review after native helper changes. Release installs should use a pre-signed helper app.");
+	}
+}
+
+async function helperHasAdhocSignature() {
+	const output = await execFile("codesign", ["-dv", "--verbose=4", helperAppPath], { encoding: "utf8" }).then(
+		(result) => `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+		(error) => `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
+	);
+	return /Signature=adhoc/i.test(output);
 }
 
 async function registerHelperApp() {
@@ -107,12 +138,28 @@ async function registerHelperApp() {
 	await run(lsregister, ["-f", helperAppPath]).catch(() => {});
 }
 
+async function installPrebuiltHelperApp(sourceAppPath) {
+	await fs.access(path.dirname(helperAppPath), fsConstants.W_OK);
+	const sourceExecutablePath = path.join(sourceAppPath, "Contents", "MacOS", "bridge");
+	const sourceInfoPath = path.join(sourceAppPath, "Contents", "Info.plist");
+	const existingExecutable = await fs.readFile(helperAppExecutablePath).catch(() => undefined);
+	const sourceExecutable = await fs.readFile(sourceExecutablePath);
+	const existingInfo = await fs.readFile(path.join(helperAppPath, "Contents", "Info.plist"), "utf8").catch(() => undefined);
+	const sourceInfo = await fs.readFile(sourceInfoPath, "utf8");
+	if (existingExecutable?.equals(sourceExecutable) && existingInfo === sourceInfo) {
+		await registerHelperApp();
+		return false;
+	}
+	await fs.rm(helperAppPath, { force: true, recursive: true });
+	await fs.cp(sourceAppPath, helperAppPath, { recursive: true });
+	await registerHelperApp();
+	return true;
+}
+
 async function installHelperApp(sourcePath) {
 	await fs.access(path.dirname(helperAppPath), fsConstants.W_OK);
-	await fs.mkdir(path.dirname(helperAppExecutablePath), { recursive: true });
-	await fs.copyFile(sourcePath, helperAppExecutablePath);
-	await fs.chmod(helperAppExecutablePath, 0o755);
-	await fs.writeFile(path.join(helperAppPath, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+	const infoPlistPath = path.join(helperAppPath, "Contents", "Info.plist");
+	const infoPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>${helperBundleId}</string>
@@ -123,19 +170,39 @@ async function installHelperApp(sourcePath) {
 <key>CFBundleShortVersionString</key><string>0.3.3</string>
 <key>CFBundleVersion</key><string>0.3.3</string>
 <key>LSUIElement</key><true/>
-</dict></plist>\n`);
+</dict></plist>\n`;
+
+	const sourceExecutable = await fs.readFile(sourcePath);
+	const sourceHash = createHash("sha256").update(sourceExecutable).digest("hex");
+	const existingSourceHash = await fs.readFile(helperSourceHashPath, "utf8").catch(() => undefined);
+	const existingInfoPlist = await fs.readFile(infoPlistPath, "utf8").catch(() => undefined);
+	if (existingSourceHash?.trim() === sourceHash && existingInfoPlist === infoPlist) {
+		// If a real signing identity is available, upgrade older ad-hoc installs
+		// in place so TCC grants survive future native rebuilds.
+		const signingIdentity = process.env.PI_COMPUTER_USE_NO_SIGN === "1" ? "-" : await resolveCodeSignIdentity();
+		if (signingIdentity !== "-" && await helperHasAdhocSignature()) {
+			await signHelper(helperAppPath, helperBundleId);
+			await registerHelperApp();
+			return true;
+		}
+		await registerHelperApp();
+		return false;
+	}
+
+	const signingIdentity = process.env.PI_COMPUTER_USE_NO_SIGN === "1" ? "-" : await resolveCodeSignIdentity();
+	if (signingIdentity === "-" && existingSourceHash !== undefined && !allowAdhocUpdate) {
+		throw new Error("Refusing to replace an installed helper with an ad-hoc signed rebuild because macOS may reset Accessibility/Screen Recording grants. Use a pre-signed helper app, install a Developer ID identity, or set PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1 for local development.");
+	}
+
+	await fs.mkdir(path.dirname(helperAppExecutablePath), { recursive: true });
+	await fs.mkdir(path.dirname(helperSourceHashPath), { recursive: true });
+	await fs.copyFile(sourcePath, helperAppExecutablePath);
+	await fs.chmod(helperAppExecutablePath, 0o755);
+	await fs.writeFile(infoPlistPath, infoPlist);
+	await fs.writeFile(helperSourceHashPath, `${sourceHash}\n`);
 	await signHelper(helperAppPath, helperBundleId);
 	await registerHelperApp();
-}
-
-async function removeLegacyHelpers() {
-	const removed = [];
-	for (const legacyPath of [legacyHelperPath, legacyHelperAppPath, legacyUserHelperAppPath, legacySystemHelperAppPath]) {
-		if (!(await exists(legacyPath))) continue;
-		await fs.rm(legacyPath, { force: true, recursive: true });
-		removed.push(legacyPath);
-	}
-	return removed;
+	return true;
 }
 
 async function buildHelper(arch, variant, outputPath) {
@@ -173,14 +240,28 @@ async function setup() {
 
 	const arch = normalizeArch(process.arch);
 	const variant = selectedHelperVariant();
+	const prebuiltAppPath = prebuiltAppPathForArch(arch, variant);
 	const prebuiltPath = prebuiltPathForArch(arch, variant);
+	const prebuiltAppExists = await exists(prebuiltAppPath);
 	const prebuiltExists = await exists(prebuiltPath);
 
+	if (prebuiltAppExists) {
+		const installed = await installPrebuiltHelperApp(prebuiltAppPath);
+		console.log(
+			installed
+				? `[pi-computer-use] installed pre-signed ${variant} helper app (${arch}) at ${helperAppPath}`
+				: `[pi-computer-use] pre-signed helper app (${variant}, ${arch}) already current at ${helperAppPath}`,
+		);
+		return;
+	}
+
 	if (prebuiltExists) {
-		await installHelperApp(prebuiltPath);
-		const removedLegacy = await removeLegacyHelpers();
-		console.log(`[pi-computer-use] installed ${variant} helper app (${arch}) at ${helperAppPath}`);
-		for (const removedPath of removedLegacy) console.log(`[pi-computer-use] removed legacy helper at ${removedPath}`);
+		const installed = await installHelperApp(prebuiltPath);
+		console.log(
+			installed
+				? `[pi-computer-use] installed ${variant} helper app (${arch}) at ${helperAppPath}`
+				: `[pi-computer-use] helper app (${variant}, ${arch}) already current at ${helperAppPath}`,
+		);
 		return;
 	}
 
@@ -189,10 +270,12 @@ async function setup() {
 		try {
 			console.log(`[pi-computer-use] ${variant} prebuilt helper missing; attempting source build with xcrun swiftc...`);
 			await buildHelper(arch, variant, tempPath);
-			await installHelperApp(tempPath);
-			const removedLegacy = await removeLegacyHelpers();
-			console.log(`[pi-computer-use] built ${variant} helper app at ${helperAppPath}`);
-			for (const removedPath of removedLegacy) console.log(`[pi-computer-use] removed legacy helper at ${removedPath}`);
+			const installed = await installHelperApp(tempPath);
+			console.log(
+				installed
+					? `[pi-computer-use] built ${variant} helper app at ${helperAppPath}`
+					: `[pi-computer-use] built ${variant} helper app; installed app already current at ${helperAppPath}`,
+			);
 		} finally {
 			await fs.rm(tempPath, { force: true }).catch(() => {});
 		}

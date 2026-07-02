@@ -3,6 +3,7 @@ import AppKit
 import ApplicationServices
 import Darwin
 import Vision
+import ImageIO
 #if PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
 import ScreenCaptureKit
 #endif
@@ -47,10 +48,16 @@ private struct CGWindowCandidate {
 	let isOnscreen: Bool
 }
 
+private struct CGWindowOwnerSummary {
+	let pid: Int32
+	let name: String
+}
+
 private struct AXDescendant {
 	let element: AXUIElement
 	let depth: Int
 	let insideWebArea: Bool
+	let axVisible: Bool
 }
 
 final class Box<T> {
@@ -406,8 +413,6 @@ final class Bridge {
 			return try axFindTextInput(request)
 		case "axFocusTextInput":
 			return try axFocusTextInput(request)
-		case "axListTargets":
-			return try axListTargets(request)
 		case "axSnapshotTree":
 			return try axSnapshotTree(request)
 		case "axWaitFor":
@@ -506,6 +511,10 @@ final class Bridge {
 		return length > 0 ? String(cString: buffer) : nil
 	}
 
+	private func processName(pid: pid_t) -> String? {
+		processPath(pid: pid).map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
+	}
+
 	private func diagnostics() -> [String: Any] {
 		let permissions = checkPermissions()
 		#if arch(arm64)
@@ -588,11 +597,18 @@ final class Bridge {
 	private func listApps() -> [[String: Any]] {
 		let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
 		let apps = NSWorkspace.shared.runningApplications.filter { app in
-			app.activationPolicy == .regular && pidIsAlive(app.processIdentifier)
+			// Computer-use targets are windows, not Dock-visible applications. Some
+			// benchmark/test apps and utility-style apps expose perfectly valid AX
+			// windows while using an accessory/prohibited activation policy, so do not
+			// gate discovery on `.regular` here. `listWindows` and the higher-level
+			// window collector filter to actual controllable windows.
+			pidIsAlive(app.processIdentifier)
 		}
-		return apps.map { app in
+		var seen = Set<Int32>()
+		var output = apps.map { app in
+			seen.insert(app.processIdentifier)
 			var data: [String: Any] = [
-				"appName": app.localizedName ?? "Unknown App",
+				"appName": app.localizedName ?? processName(pid: app.processIdentifier) ?? "Unknown App",
 				"pid": Int(app.processIdentifier),
 				"isFrontmost": app.processIdentifier == frontmostPid,
 			]
@@ -601,6 +617,20 @@ final class Bridge {
 			}
 			return data
 		}
+
+		// NSWorkspace can miss apps launched from ad-hoc bundles or test harnesses
+		// even when their windows are visible and AX-controllable. Add CGWindow
+		// owners as acquisition candidates so callers can still resolve by pid/title
+		// and then build the normal AX scene through listWindows(pid:).
+		for owner in cgWindowOwners() where !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
+			seen.insert(owner.pid)
+			output.append([
+				"appName": owner.name,
+				"pid": Int(owner.pid),
+				"isFrontmost": owner.pid == frontmostPid,
+			])
+		}
+		return output
 	}
 
 	private func getFrontmost() throws -> [String: Any] {
@@ -1062,184 +1092,6 @@ final class Bridge {
 		return payload
 	}
 
-	private func axListTargets(_ request: [String: Any]) throws -> [String: Any] {
-		let pid = Int32(try intArg(request, "pid"))
-		ensureEnhancedAccessibility(pid: pid)
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		let windowRef = optionalStringArg(request, "windowRef")
-		let limit = max(1, min(50, optionalIntArg(request, "limit") ?? 12))
-		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
-			return ["targets": [], "reason": "window_not_found"]
-		}
-		let textRoles: Set<String> = [
-			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
-		]
-		let structuralRoles: Set<String> = [
-			"AXApplication", "AXWindow", "AXToolbar", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXTabGroup", "AXWebArea",
-		]
-		let windowFrame = frameForWindow(window)
-		let windowArea = max(1.0, windowFrame.width * windowFrame.height)
-		let isBrowser = isBrowser(pid: pid)
-		let maxNodes = 5000
-		var maxDepth = isBrowser ? 14 : 8
-		var descendants = collectDescendantsWithContext(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
-		var elements = descendants.map(\.element)
-		var insideWebAreaByElement = insideWebAreaMap(descendants)
-		let containsWebArea = descendants.contains { descendant in
-			self.stringAttribute(descendant.element, attribute: kAXRoleAttribute as CFString) == "AXWebArea"
-		}
-		let isHybrid = isBrowser || containsWebArea
-		if isHybrid && maxDepth < 14 {
-			maxDepth = 14
-			descendants = collectDescendantsWithContext(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
-			elements = descendants.map(\.element)
-			insideWebAreaByElement = insideWebAreaMap(descendants)
-		}
-		func sourceForElement(_ element: AXUIElement) -> String {
-			let role = self.stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
-			return self.axSource(role: role, insideWebArea: insideWebAreaByElement[ObjectIdentifier(element)] ?? false, isBrowser: isBrowser, containsWebArea: containsWebArea)
-		}
-
-		var roleCounts: [String: Int] = [:]
-		var sourceCounts: [String: Int] = [:]
-		var rejectedByReason: [String: Int] = [:]
-		var eligibleCount = 0
-		var visibleFrameCount = 0
-		func reject(_ reason: String) {
-			rejectedByReason[reason, default: 0] += 1
-		}
-		var bestByKey: [String: (AXUIElement, Double)] = [:]
-		for candidate in elements {
-			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
-			let source = sourceForElement(candidate)
-			roleCounts[role.isEmpty ? "(unknown)" : role, default: 0] += 1
-			sourceCounts[source, default: 0] += 1
-			let subrole = self.stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
-			let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
-			let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
-			let value = self.displayValue(candidate, role: role, subrole: subrole)
-			let actions = self.actionNames(candidate)
-			var focusedSettable = DarwinBoolean(false)
-			let focusStatus = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &focusedSettable)
-			let canFocus = focusStatus == .success && focusedSettable.boolValue
-			var valueSettable = DarwinBoolean(false)
-			let valueStatus = AXUIElementIsAttributeSettable(candidate, kAXValueAttribute as CFString, &valueSettable)
-			let canSetValue = valueStatus == .success && valueSettable.boolValue
-			let isText = textRoles.contains(role)
-			let canPress = actions.contains(kAXPressAction as String)
-			let canScroll = self.supportsAnyScrollAction(candidate)
-			let canAdjust = actions.contains(kAXIncrementAction as String) || actions.contains(kAXDecrementAction as String)
-			if !(isText || canPress || canFocus || canScroll || canAdjust) { reject("not_interactive"); continue }
-			guard let frame = self.frameForElement(candidate), frame.width > 10, frame.height > 10 else { reject("no_visible_frame"); continue }
-			visibleFrameCount += 1
-			let area = frame.width * frame.height
-			let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
-			let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-			if structuralRoles.contains(role) {
-				if normalizedLabel.isEmpty && !canScroll { reject("unlabeled_structural"); continue }
-				if role == "AXWebArea" && !isHybrid { reject("non_hybrid_web_area"); continue }
-			}
-			if role == "AXTextArea" || role == "AXTextView" {
-				if area > windowArea * 0.55 && !canSetValue { reject("large_unsettable_text_area"); continue }
-			}
-			if role == "AXButton" && normalizedLabel.isEmpty && !isHybrid { reject("unlabeled_button"); continue }
-			if isHybrid && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { reject("unlabeled_hybrid_control"); continue }
-			if actions == [kAXShowMenuAction as String] && !isText { reject("show_menu_only"); continue }
-			eligibleCount += 1
-			var score = 0.0
-			if isText {
-				score += self.scoreTextInputElement(candidate, role: role)
-				if canSetValue {
-					score += 160
-				} else {
-					score -= 80
-				}
-			}
-			if canFocus || canPress {
-				score += self.scoreFocusableElement(candidate, role: role, canFocus: canFocus, canPress: canPress, preferredRoles: Set<String>())
-			}
-			if canScroll { score += 130 }
-			if canAdjust { score += 120 }
-			if !actions.isEmpty {
-				score += self.scoreActionableElement(candidate, role: role, actions: actions, preferredRoles: Set<String>())
-			}
-			if !normalizedLabel.isEmpty { score += 55 } else if canScroll || canAdjust || role == "AXScrollBar" { score -= 20 } else { score -= 120 }
-			if !description.isEmpty { score += 18 }
-			if structuralRoles.contains(role) { score -= canScroll ? 40 : 180 }
-			if canScroll && role == "AXScrollArea" { score += 180 }
-			if canAdjust && role == "AXScrollBar" { score += 180 }
-			if area > windowArea * 0.7 && role != "AXTextField" && role != "AXSearchField" && role != "AXComboBox" { score -= 180 }
-			if isHybrid && (role == "AXTextField" || role == "AXSearchField" || role == "AXComboBox") { score += 100 }
-			if isHybrid && role == "AXLink" { score += 35 }
-			if subrole == "AXCloseButton" { score -= 140 }
-			if normalizedLabel == "close tab" { score -= 180 }
-			if normalizedLabel.count > 160 { score -= 80 }
-			if score < 120 { reject("low_score"); continue }
-			let key = "\(role)|\(normalizedLabel)|\(Int(frame.midX / 24))|\(Int(frame.midY / 24))"
-			if let existing = bestByKey[key], existing.1 >= score { continue }
-			bestByKey[key] = (candidate, score)
-		}
-		var ranked = bestByKey.values.sorted { $0.1 > $1.1 }
-		var usedFallbackElements = Set<String>()
-		if isHybrid && ranked.count < min(3, limit) {
-			let fallbackCandidates = elements.compactMap { candidate -> (AXUIElement, Double)? in
-				guard let frame = self.frameForElement(candidate), frame.width > 20, frame.height > 20 else { return nil }
-				let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
-				let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
-				let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
-				let subrole = self.stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
-				let value = self.displayValue(candidate, role: role, subrole: subrole)
-				let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
-				let actions = self.actionNames(candidate)
-				if role == "AXWebArea" { return (candidate, label.isEmpty ? 200 : 260) }
-				if role == "AXWindow" && !label.isEmpty { return (candidate, 220) }
-				if role == "AXButton" && actions.contains(kAXPressAction as String) && frame.width >= 12 && frame.height >= 12 { return (candidate, label.isEmpty ? 150 : 190) }
-				if role == "AXGroup" && actions.contains(kAXPressAction as String) && frame.width >= 20 && frame.height >= 20 { return (candidate, label.isEmpty ? 140 : 170) }
-				return nil
-			}.sorted { $0.1 > $1.1 }
-			for candidate in fallbackCandidates {
-				if ranked.count >= limit { break }
-				let frame = self.frameForElement(candidate.0) ?? .zero
-				let role = self.stringAttribute(candidate.0, attribute: kAXRoleAttribute as CFString) ?? ""
-				let key = "fallback|\(role)|\(Int(frame.midX / 24))|\(Int(frame.midY / 24))|\(Int(frame.width / 24))|\(Int(frame.height / 24))"
-				if usedFallbackElements.contains(key) { continue }
-				usedFallbackElements.insert(key)
-				ranked.append(candidate)
-			}
-			ranked.sort { $0.1 > $1.1 }
-		}
-		let topRoles = roleCounts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(16)
-		let webContentTargetCount = ranked.filter { candidate, _ in sourceForElement(candidate) == "web_content_ax" }.count
-		let browserChromeTargetCount = ranked.filter { candidate, _ in sourceForElement(candidate) == "browser_chrome_ax" }.count
-		let browserChromeOnly = isHybrid && browserChromeTargetCount > 0 && webContentTargetCount == 0
-		let diagnostics: [String: Any] = [
-			"axTreeNodeCount": elements.count,
-			"visibleInteractiveNodeCount": visibleFrameCount,
-			"eligibleNodeCount": eligibleCount,
-			"rankedNodeCount": ranked.count,
-			"returnedTargetCount": min(limit, ranked.count),
-			"hybridFallbackUsed": isHybrid && !usedFallbackElements.isEmpty,
-			"roleCounts": Dictionary(uniqueKeysWithValues: topRoles.map { ($0.key, $0.value) }),
-			"sourceCounts": sourceCounts,
-			"webContentTargetCount": webContentTargetCount,
-			"browserChromeTargetCount": browserChromeTargetCount,
-			"browserChromeOnly": browserChromeOnly,
-			"rejectedByReason": rejectedByReason,
-			"isBrowser": isBrowser,
-			"containsWebArea": containsWebArea,
-			"isHybrid": isHybrid,
-			"maxDepth": maxDepth,
-			"maxNodes": maxNodes,
-			"hitMaxNodes": elements.count >= maxNodes,
-		]
-		return [
-			"targets": Array(ranked.prefix(limit)).map { candidate, score in
-				self.elementPayload(element: candidate, key: "target", score: score, source: sourceForElement(candidate))
-			},
-			"diagnostics": diagnostics,
-		]
-	}
-
 	private func axSnapshotTree(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
 		ensureEnhancedAccessibility(pid: pid)
@@ -1269,7 +1121,8 @@ final class Bridge {
 			var payload = self.elementPayload(
 				element: descendant.element,
 				key: "target",
-				source: self.axSource(role: role, insideWebArea: descendant.insideWebArea, isBrowser: isBrowser, containsWebArea: containsWebArea)
+				source: self.axSource(role: role, insideWebArea: descendant.insideWebArea, isBrowser: isBrowser, containsWebArea: containsWebArea),
+				axVisible: descendant.axVisible
 			)
 			payload["depth"] = descendant.depth
 			return payload
@@ -1614,23 +1467,40 @@ final class Bridge {
 
 	private func collectDescendantsWithContext(startingAt root: AXUIElement, maxDepth: Int, maxNodes: Int = 5000) -> [AXDescendant] {
 		let nodeLimit = max(1, maxNodes)
-		var queue: [(AXUIElement, Int, Bool)] = [(root, 0, false)]
+		var queue: [(AXUIElement, Int, Bool, Bool)] = [(root, 0, false, true)]
+		var seen = Set<ObjectIdentifier>()
 		var index = 0
 		var output: [AXDescendant] = []
 		while index < queue.count && output.count < nodeLimit {
-			let (element, depth, parentInsideWebArea) = queue[index]
+			let (element, depth, parentInsideWebArea, inheritedVisible) = queue[index]
 			index += 1
+			let identity = ObjectIdentifier(element)
+			if seen.contains(identity) { continue }
+			seen.insert(identity)
 			let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
 			let insideWebArea = parentInsideWebArea || role == "AXWebArea"
-			output.append(AXDescendant(element: element, depth: depth, insideWebArea: insideWebArea))
+			output.append(AXDescendant(element: element, depth: depth, insideWebArea: insideWebArea, axVisible: inheritedVisible))
 			if depth >= maxDepth { continue }
 			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
+			let visibleChildren = visibleAXChildren(element)
 			for child in children {
 				if queue.count >= nodeLimit { break }
-				queue.append((child, depth + 1, insideWebArea))
+				let childVisible = inheritedVisible && (visibleChildren.map { set in set.contains { self.sameElement($0, child) } } ?? true)
+				queue.append((child, depth + 1, insideWebArea, childVisible))
 			}
 		}
 		return output
+	}
+
+	private func visibleAXChildren(_ element: AXUIElement) -> [AXUIElement]? {
+		let attributes: [CFString] = [
+			kAXVisibleChildrenAttribute as CFString,
+			kAXVisibleRowsAttribute as CFString,
+			kAXVisibleColumnsAttribute as CFString,
+			kAXVisibleCellsAttribute as CFString,
+		]
+		let visible = attributes.flatMap { axElementArray(element, attribute: $0) }
+		return visible.isEmpty ? nil : visible
 	}
 
 	private func insideWebAreaMap(_ descendants: [AXDescendant]) -> [ObjectIdentifier: Bool] {
@@ -1666,66 +1536,6 @@ final class Bridge {
 		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
 		if !title.isEmpty { score += 10 }
 		if !value.isEmpty { score += 5 }
-		return score
-	}
-
-	private func scoreFocusableElement(
-		_ element: AXUIElement,
-		role: String,
-		canFocus: Bool,
-		canPress: Bool,
-		preferredRoles: Set<String>
-	) -> Double {
-		var score = 0.0
-		if canPress { score += 80 }
-		if canFocus { score += 70 }
-		if !preferredRoles.isEmpty && preferredRoles.contains(role) { score += 40 }
-		switch role {
-		case "AXButton": score += 60
-		case "AXTextField", "AXSearchField", "AXTextArea", "AXTextView": score += 50
-		case "AXList", "AXOutline", "AXRow", "AXCell", "AXLink": score += 35
-		case "AXGroup", "AXToolbar", "AXWindow", "AXApplication": score -= 60
-		default: break
-		}
-		if let frame = frameForElement(element) {
-			score += min(100, Double(frame.width * frame.height) / 6000.0)
-			if frame.width > 24 && frame.height > 14 { score += 10 }
-		} else {
-			score -= 100
-		}
-		if !actionNames(element).isEmpty { score += 10 }
-		return score
-	}
-
-	private func scoreActionableElement(
-		_ element: AXUIElement,
-		role: String,
-		actions: [String],
-		preferredRoles: Set<String>
-	) -> Double {
-		var score = 0.0
-		if !preferredRoles.isEmpty && preferredRoles.contains(role) { score += 40 }
-		if actions.contains(kAXPressAction as String) { score += 100 }
-		if actions.contains(kAXShowMenuAction as String) { score += 50 }
-		if actions.contains(kAXPickAction as String) { score += 45 }
-		if actions.contains(kAXConfirmAction as String) { score += 35 }
-		if actions.contains(kAXIncrementAction as String) { score += 55 }
-		if actions.contains(kAXDecrementAction as String) { score += 55 }
-		switch role {
-		case "AXButton": score += 70
-		case "AXLink": score += 60
-		case "AXScrollBar": score += 80
-		case "AXRow", "AXCell", "AXList", "AXOutline": score += 40
-		case "AXGroup", "AXToolbar", "AXWindow", "AXApplication": score -= 60
-		default: break
-		}
-		if let frame = frameForElement(element) {
-			score += min(100, Double(frame.width * frame.height) / 6000.0)
-			if frame.width > 20 && frame.height > 14 { score += 10 }
-		} else {
-			score -= 100
-		}
-		if !actions.isEmpty { score += Double(min(actions.count, 5) * 4) }
 		return score
 	}
 
@@ -1775,7 +1585,7 @@ final class Bridge {
 		return summary
 	}
 
-	private func elementPayload(element: AXUIElement, key: String, score: Double? = nil, source: String? = nil) -> [String: Any] {
+	private func elementPayload(element: AXUIElement, key: String, score: Double? = nil, source: String? = nil, axVisible: Bool = true) -> [String: Any] {
 		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
 		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
@@ -1812,6 +1622,7 @@ final class Bridge {
 			"canScroll": supportsAnyScrollAction(element),
 			"canIncrement": actions.contains(kAXIncrementAction as String),
 			"canDecrement": actions.contains(kAXDecrementAction as String),
+			"axVisible": axVisible,
 			"x": centerX,
 			"y": centerY,
 		]
@@ -1935,7 +1746,7 @@ final class Bridge {
 		if status != .success {
 			throw BridgeFailure(message: "Failed to set value (AX error \(status.rawValue))", code: "set_value_failed")
 		}
-		return ["set": true]
+		return ["set": true, "value": stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""]
 	}
 
 	private func selectText(_ request: [String: Any]) throws -> [String: Any] {
@@ -2076,6 +1887,30 @@ final class Bridge {
 		let origin = pointAttribute(window, attribute: kAXPositionAttribute as CFString) ?? .zero
 		let size = sizeAttribute(window, attribute: kAXSizeAttribute as CFString) ?? .zero
 		return CGRect(origin: origin, size: size)
+	}
+
+	private func cgWindowOwners() -> [CGWindowOwnerSummary] {
+		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+			return []
+		}
+		var seen = Set<Int32>()
+		var owners: [CGWindowOwnerSummary] = []
+		for entry in entries {
+			guard let ownerPid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value else { continue }
+			let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+			if layer != 0 || seen.contains(ownerPid) { continue }
+			guard let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
+				let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+				bounds.width >= 100,
+				bounds.height >= 80
+			else {
+				continue
+			}
+			let ownerName = (entry[kCGWindowOwnerName as String] as? String) ?? processName(pid: ownerPid) ?? "Unknown App"
+			seen.insert(ownerPid)
+			owners.append(CGWindowOwnerSummary(pid: ownerPid, name: ownerName))
+		}
+		return owners
 	}
 
 	private func cgWindowCandidates(pid: Int32) -> [CGWindowCandidate] {
@@ -2219,14 +2054,14 @@ final class Bridge {
 
 			if semaphore.wait(timeout: .now() + .seconds(8)) == .timedOut {
 				task.cancel()
-				if let payload = try legacyWindowScreenshot(windowId: windowId, maxDimension: maxDimension) {
+				if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
 					return payload
 				}
 				throw BridgeFailure(message: "Screenshot timed out while capturing window \(windowId)", code: "screenshot_timeout")
 			}
 
 			if let error = capturedError.value {
-				if let payload = try legacyWindowScreenshot(windowId: windowId, maxDimension: maxDimension) {
+				if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
 					return payload
 				}
 				if let failure = error as? BridgeFailure {
@@ -2236,7 +2071,7 @@ final class Bridge {
 			}
 
 			guard let image = capturedImage.value else {
-				if let payload = try legacyWindowScreenshot(windowId: windowId, maxDimension: maxDimension) {
+				if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
 					return payload
 				}
 				throw BridgeFailure(message: "Screenshot failed", code: "screenshot_failed")
@@ -2245,7 +2080,7 @@ final class Bridge {
 			return try screenshotPayload(image: image, windowId: windowId, maxDimension: maxDimension)
 		}
 #endif
-		if let payload = try legacyWindowScreenshot(windowId: windowId, maxDimension: maxDimension) {
+		if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
 			return payload
 		}
 		throw BridgeFailure(message: "Screenshot failed", code: "screenshot_failed")
@@ -2260,12 +2095,24 @@ final class Bridge {
 		let bounds = currentWindowBounds(windowId: windowId)
 		let scale = bounds.map { $0.width > 0 ? Double(outputImage.width) / $0.width : displayScaleFactor(for: $0) } ?? 1.0
 
-		return [
+		var payload: [String: Any] = [
 			"pngBase64": pngData.base64EncodedString(),
 			"width": outputImage.width,
 			"height": outputImage.height,
 			"scaleFactor": scale,
 		]
+		if let jpegData = jpegData(image: outputImage, quality: 0.68) {
+			payload["jpegBase64"] = jpegData.base64EncodedString()
+		}
+		return payload
+	}
+
+	private func jpegData(image: CGImage, quality: Double) -> Data? {
+		let data = NSMutableData()
+		guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
+		CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+		guard CGImageDestinationFinalize(destination) else { return nil }
+		return data as Data
 	}
 
 	private func downscaledImage(_ image: CGImage, maxDimension: Int?) -> CGImage? {
@@ -2287,7 +2134,7 @@ final class Bridge {
 		return context.makeImage()
 	}
 
-	private func legacyWindowScreenshot(windowId: UInt32, maxDimension: Int? = nil) throws -> [String: Any]? {
+	private func cgWindowScreenshotFallback(windowId: UInt32, maxDimension: Int? = nil) throws -> [String: Any]? {
 #if !PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
 		if let payload = try cgWindowScreenshot(windowId: windowId, maxDimension: maxDimension) {
 			return payload
