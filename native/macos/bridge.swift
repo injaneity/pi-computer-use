@@ -208,7 +208,7 @@ final class InputSuppressionGuard {
 }
 
 final class Bridge {
-	private let protocolVersion = 1
+	private let protocolVersion = 2
 	private let refStore = AXRefStore()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let browserBundleIds: Set<String> = [
@@ -373,8 +373,19 @@ final class Bridge {
 			return diagnostics()
 		case "checkPermissions":
 			return checkPermissions()
+		case "registerPermissions":
+			return try registerPermissions()
 		case "openPermissionPane":
 			return try openPermissionPane(request)
+		case "shutdown":
+			// Reply first, then exit: the caller relaunches the helper to get a
+			// process with a fresh TCC client (grant answers are cached per
+			// process, so a helper that saw "denied" keeps answering "denied"
+			// after the user grants — only a new process re-queries tccd).
+			// Background queue: the serve loop occupies the main thread, so a
+			// main-queue timer would never fire.
+			DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { exit(0) }
+			return ["shuttingDown": true]
 		case "listApps":
 			return listApps()
 		case "listWindows":
@@ -516,7 +527,17 @@ final class Bridge {
 	}
 
 	private func diagnostics() -> [String: Any] {
-		let permissions = checkPermissions()
+		// Cheap booleans only — diagnostics doubles as the daemon liveness
+		// probe (1s client timeout), so it must not run the ScreenCaptureKit
+		// capturable check (up to 3s when ungranted). Permission truth comes
+		// from checkPermissions.
+		let permissions: [String: Any] = [
+			"accessibility": AXIsProcessTrusted(),
+			"screenRecording": {
+				if #available(macOS 10.15, *) { return CGPreflightScreenCaptureAccess() }
+				return true
+			}(),
+		]
 		#if arch(arm64)
 		let arch = "arm64"
 		#elseif arch(x86_64)
@@ -549,35 +570,117 @@ final class Bridge {
 		return output
 	}
 
+	/// Live Screen Recording probe. `CGPreflightScreenCaptureAccess()`
+	/// answers from a per-process cache that goes stale after `tccutil
+	/// reset` or a Settings toggle; a ScreenCaptureKit content fetch only
+	/// succeeds when THIS process can genuinely capture right now. When the
+	/// two disagree, the preflight boolean is the one lying.
+	private func screenRecordingCapturable() -> Bool {
+#if PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
+		if #available(macOS 14.0, *) {
+			let semaphore = DispatchSemaphore(value: 0)
+			let capturable = Box<Bool>(false)
+			Task {
+				defer { semaphore.signal() }
+				if let shareable = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) {
+					capturable.value = !shareable.displays.isEmpty
+				}
+			}
+			if semaphore.wait(timeout: .now() + .seconds(3)) == .timedOut {
+				return false
+			}
+			return capturable.value
+		}
+#endif
+		if #available(macOS 10.15, *) {
+			return CGPreflightScreenCaptureAccess()
+		}
+		return true
+	}
+
+	/// Which TCC identity the permission booleans reflect. macOS attributes
+	/// grants to the *responsible process* (the LaunchServices launching
+	/// app), so:
+	///   - "helper-app": running from the installed bundle, launched via
+	///     LaunchServices — grants belong to the canonical helper identity.
+	///   - "caller": anything else (dev binary under a terminal, etc.) —
+	///     the booleans reflect whatever app spawned us, NOT the canonical
+	///     helper. The extension surfaces this instead of guessing.
+	private func permissionSource() -> [String: Any] {
+		let parentPid = Int32(getppid())
+		let executable = CommandLine.arguments.first ?? ""
+		var source: [String: Any] = [
+			"pid": Int(getpid()),
+			"parentPid": Int(parentPid),
+			"executablePath": executable,
+			"macOS": ProcessInfo.processInfo.operatingSystemVersionString,
+		]
+		if let parentPath = processPath(pid: parentPid) {
+			source["parentPath"] = parentPath
+		}
+		if let parentBundleId = NSRunningApplication(processIdentifier: parentPid)?.bundleIdentifier {
+			source["parentBundleId"] = parentBundleId
+		}
+		let attribution: String
+		if executable.contains("/pi-computer-use.app/Contents/MacOS/"), parentPid == 1 {
+			// Non-spoofable signals only: installed-bundle executable path +
+			// launchd parent (`open` handed us to LaunchServices). A dev
+			// binary or a directly-spawned copy fails closed to "caller".
+			attribution = "helper-app"
+		} else {
+			attribution = "caller"
+		}
+		source["attribution"] = attribution
+		return source
+	}
+
 	private func checkPermissions() -> [String: Any] {
 		let accessibility = AXIsProcessTrusted()
-		let screenRecording: Bool
+		let screenRecordingPreflight: Bool
 		if #available(macOS 10.15, *) {
-			screenRecording = CGPreflightScreenCaptureAccess()
+			screenRecordingPreflight = CGPreflightScreenCaptureAccess()
 		} else {
-			screenRecording = true
+			screenRecordingPreflight = true
 		}
+		let capturable = screenRecordingCapturable()
 		return [
 			"accessibility": accessibility,
-			"screenRecording": screenRecording,
+			// The live probe is authoritative; the preflight boolean is kept
+			// for diagnostics (a true/false split identifies a stale cache or
+			// a grant belonging to a different responsible process).
+			"screenRecording": capturable,
+			"screenRecordingPreflight": screenRecordingPreflight,
+			"screenRecordingCapturable": capturable,
+			"source": permissionSource(),
+		]
+	}
+
+	/// Register this process's identity with TCC for both grants so the app
+	/// appears in the Settings panes BEFORE the user is sent there. The AX
+	/// request registers (and prompts for) Accessibility; on recent macOS an
+	/// app only appears under Screen Recording after a real ScreenCaptureKit
+	/// attempt, which the capturable probe performs.
+	private func registerPermissions() throws -> [String: Any] {
+		let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+		let accessibility = AXIsProcessTrustedWithOptions(options)
+		if #available(macOS 10.15, *) {
+			_ = CGRequestScreenCaptureAccess()
+		}
+		let capturable = screenRecordingCapturable()
+		return [
+			"accessibility": accessibility,
+			"screenRecording": capturable,
+			"screenRecordingCapturable": capturable,
 		]
 	}
 
 	private func openPermissionPane(_ request: [String: Any]) throws -> [String: Any] {
 		let kind = try stringArg(request, "kind")
 		let urlString: String
-		var requested = false
 		switch kind {
 		case "accessibility":
-			let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-			_ = AXIsProcessTrustedWithOptions(options)
-			requested = true
 			urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 		case "screenRecording", "screenrecording":
-			if #available(macOS 10.15, *) {
-				_ = CGRequestScreenCaptureAccess()
-				requested = true
-			}
 			urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
 		default:
 			throw BridgeFailure(message: "Unknown permission pane '\(kind)'", code: "invalid_args")
@@ -587,7 +690,7 @@ final class Bridge {
 			throw BridgeFailure(message: "Invalid permission pane URL", code: "internal_error")
 		}
 		let opened = NSWorkspace.shared.open(url)
-		return ["opened": opened, "requested": requested]
+		return ["opened": opened]
 	}
 
 	private func pidIsAlive(_ pid: pid_t) -> Bool {

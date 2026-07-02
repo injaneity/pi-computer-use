@@ -716,7 +716,8 @@ const CURRENT_TARGET_GONE_ERROR =
 const NON_MACOS_ERROR = "pi-computer-use currently supports macOS 12+ only.";
 
 const COMMAND_TIMEOUT_MS = 15_000;
-const HELPER_PROTOCOL_VERSION = 1;
+const HELPER_PROTOCOL_VERSION = 2;
+
 const SCREENSHOT_TIMEOUT_MS = 25_000;
 const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const ACTION_SETTLE_MS = 280;
@@ -1685,10 +1686,42 @@ async function bridgeCommand<T>(
 
 async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus> {
 	const result = await bridgeCommand<any>("checkPermissions", {}, { signal });
+	const rawSource = result?.source;
 	return {
 		accessibility: toBoolean(result?.accessibility),
-		screenRecording: toBoolean(result?.screenRecording),
+		// Authoritative: the helper's live ScreenCaptureKit probe (falls back
+		// to the plain boolean when talking to a protocol-1 helper).
+		screenRecording: toBoolean(result?.screenRecordingCapturable ?? result?.screenRecording),
+		screenRecordingPreflight: toBoolean(result?.screenRecordingPreflight ?? result?.screenRecording),
+		source: rawSource && typeof rawSource === "object"
+			? {
+				attribution: rawSource.attribution === "helper-app" ? "helper-app" : "caller",
+				pid: Math.trunc(toFiniteNumber(rawSource.pid, 0)) || undefined,
+				parentPid: Math.trunc(toFiniteNumber(rawSource.parentPid, 0)) || undefined,
+				executablePath: toOptionalString(rawSource.executablePath),
+				parentPath: toOptionalString(rawSource.parentPath),
+				parentBundleId: toOptionalString(rawSource.parentBundleId),
+				macOS: toOptionalString(rawSource.macOS),
+			}
+			: undefined,
 	};
+}
+
+async function registerPermissions(signal?: AbortSignal): Promise<void> {
+	await bridgeCommand("registerPermissions", {}, { signal, timeoutMs: 15_000 });
+}
+
+/**
+ * Stop the helper and bring up a fresh process. TCC answers are cached per
+ * process; only a new helper re-queries tccd after the user grants.
+ */
+async function restartHelper(signal?: AbortSignal): Promise<void> {
+	await bridgeCommand("shutdown", {}, { signal, timeoutMs: 2_000 }).catch(() => undefined);
+	runtimeState.daemonAvailable = false;
+	await sleep(400, signal);
+	if (!(await ensureDaemon(signal))) {
+		throw new Error(`pi-computer-use helper did not come back after restart. Helper app: ${HELPER_APP_PATH}`);
+	}
 }
 
 async function helperDiagnostics(signal?: AbortSignal): Promise<HelperDiagnostics> {
@@ -1746,23 +1779,25 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 	runtimeState.lastPermissionCheckAt = now;
 
 	if (!status.accessibility || !status.screenRecording) {
-		const permissionPath = HELPER_APP_PATH;
-		const parentHint = runtimeState.helperDiagnostics?.parentAppName
-			? `Launcher: ${runtimeState.helperDiagnostics.parentAppName}${runtimeState.helperDiagnostics.parentBundleId ? ` (${runtimeState.helperDiagnostics.parentBundleId})` : ""}. On some macOS versions Screen Recording may also need to remain enabled for this launcher.`
+		// Attribution "caller" means the helper is not running as the
+		// canonical installed app — grants would attach to the wrong
+		// identity. Surface it instead of walking the user through granting
+		// the wrong thing.
+		const attributionHint = status.source?.attribution === "caller"
+			? `Warning: the helper is not running as the installed pi-computer-use.app (executable: ${status.source?.executablePath ?? "unknown"}). Grants made now would attach to the launching app instead. Restart Pi so the canonical helper is used.`
 			: undefined;
 		status = await ensurePermissions(
 			ctx,
 			{
 				checkPermissions: (permissionSignal) => checkPermissions(permissionSignal ?? signal),
+				registerPermissions: (permissionSignal) => registerPermissions(permissionSignal ?? signal),
 				openPermissionPane: async (kind, permissionSignal) => {
 					await bridgeCommand("openPermissionPane", { kind }, { signal: permissionSignal ?? signal });
 				},
-				copyHelperPathToClipboard: async (permissionSignal) => {
-					await runProcess("osascript", ["-e", `set the clipboard to "${escapeAppleScriptString(permissionPath)}"`], COMMAND_TIMEOUT_MS, permissionSignal ?? signal);
-				},
-				permissionHint: parentHint,
+				restartHelper: (permissionSignal) => restartHelper(permissionSignal ?? signal),
+				permissionHint: attributionHint,
 			},
-			permissionPath,
+			HELPER_APP_PATH,
 			signal,
 		);
 	}

@@ -33,6 +33,11 @@ Required macOS permissions:
 - Accessibility
 - Screen Recording, shown as Screen and System Audio Recording on newer macOS versions
 
+The setup flow registers the helper with TCC first, so it is already listed
+in both Settings panes — enable the toggles and choose Recheck. See
+[docs/troubleshooting.md](./docs/troubleshooting.md) for permission
+diagnostics (`source.attribution`, live capture probe).
+
 Use `/computer-use` inside Pi to show the active configuration and where it came from.
 
 ## Basic flow
