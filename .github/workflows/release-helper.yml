@@ -1,0 +1,156 @@
+name: Release helper app (signed)
+
+# Builds the universal pi-computer-use.app once at release, signs it with a
+# stable code-signing certificate, and attaches the zip to the GitHub
+# release. Notarizes and staples too when the cert is an Apple Developer ID
+# (see NOTARIZE below).
+#
+# Why this exists: TCC keys Accessibility / Screen Recording grant rows to
+# the app's code-signing *designated requirement*. An ad-hoc signature pins
+# that requirement to the exact binary hash (cdhash), so every update
+# orphans the user's grants. A real certificate — Developer ID OR a stable
+# self-signed cert you reuse for every release — anchors the requirement on
+# `identifier + certificate leaf` instead, so grants survive all future
+# releases (verified: two different binaries signed with one cert produce an
+# identical designated requirement). Users receive this sealed bundle
+# verbatim — the installer never re-signs it (see scripts/setup-helper.mjs).
+#
+# Required secrets (both cert types):
+#   APPLICATION_CERT_BASE64  base64 of the signing .p12
+#   CERT_PASSWORD            password for the .p12
+#   SIGN_IDENTITY            the identity's common name, e.g.
+#                            "Developer ID Application: Jane (TEAMID)" or
+#                            "pi-computer-use Self Signed"
+#
+# Developer ID only — set repository variable NOTARIZE=true and add:
+#   TEAM_ID, APPLE_ID, APP_SPECIFIC_PASSWORD
+# A self-signed cert cannot be notarized; leave NOTARIZE unset. That is fine
+# for npm-delivered installs (no quarantine xattr, so Gatekeeper does not
+# gate them); only browser-downloaded zips would need notarization.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 0.4.0)"
+        required: true
+
+env:
+  KEYCHAIN_PASSWORD: ci-keychain-password
+
+jobs:
+  release-helper:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Import code-signing certificate
+        env:
+          APPLICATION_CERT_BASE64: ${{ secrets.APPLICATION_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+        run: |
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -l build.keychain
+
+          echo "$APPLICATION_CERT_BASE64" | base64 --decode > application.p12
+          security import application.p12 -k build.keychain -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign > /dev/null 2>&1
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain > /dev/null 2>&1
+          rm application.p12
+
+          # A self-signed cert lists under all identities but not under
+          # "valid" (no trust chain); codesign accepts it by name regardless.
+          # Fail only if the named identity is absent entirely.
+          if ! security find-identity -p codesigning build.keychain | grep -qF "${{ secrets.SIGN_IDENTITY }}"; then
+            echo "Error: signing identity '${{ secrets.SIGN_IDENTITY }}' not found in imported cert" >&2
+            security find-identity -p codesigning build.keychain
+            exit 1
+          fi
+
+      - name: Build universal helper binary (unsigned)
+        run: node scripts/build-native.mjs --arch universal --variant modern --no-sign
+
+      - name: Assemble pi-computer-use.app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          APP=release/pi-computer-use.app
+          mkdir -p "$APP/Contents/MacOS"
+          cp prebuilt/macos/universal/modern/bridge "$APP/Contents/MacOS/bridge"
+          chmod 755 "$APP/Contents/MacOS/bridge"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>com.injaneity.pi-computer-use</string>
+          <key>CFBundleName</key><string>pi-computer-use</string>
+          <key>CFBundleDisplayName</key><string>pi-computer-use</string>
+          <key>CFBundleExecutable</key><string>bridge</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+          <key>CFBundleVersion</key><string>${VERSION}</string>
+          <key>LSMinimumSystemVersion</key><string>14.0</string>
+          <key>LSUIElement</key><true/>
+          </dict></plist>
+          PLIST
+
+      - name: Sign (hardened runtime)
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+        run: |
+          codesign --force --deep --timestamp --options runtime \
+            --entitlements scripts/pi-computer-use.entitlements \
+            --identifier com.injaneity.pi-computer-use \
+            --sign "$SIGN_IDENTITY" release/pi-computer-use.app
+          codesign --verify --strict --verbose=2 release/pi-computer-use.app
+          # The designated requirement MUST anchor on identifier + certificate
+          # leaf, never on a cdhash — that is what lets TCC grants survive
+          # updates. Fail the release if it regressed to ad-hoc.
+          DR=$(codesign -dr - release/pi-computer-use.app 2>&1)
+          echo "$DR"
+          echo "$DR" | grep -q 'identifier "com.injaneity.pi-computer-use"'
+          echo "$DR" | grep -q 'certificate leaf'
+
+      - name: Notarize + staple (Developer ID only)
+        if: vars.NOTARIZE == 'true'
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+        run: |
+          /usr/bin/ditto -c -k --keepParent release/pi-computer-use.app \
+            release/notarize.zip
+          xcrun notarytool submit release/notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APP_SPECIFIC_PASSWORD" \
+            --wait --timeout 20m
+          xcrun stapler staple release/pi-computer-use.app
+          rm release/notarize.zip
+
+      - name: Package release zip
+        run: |
+          /usr/bin/ditto -c -k --keepParent release/pi-computer-use.app \
+            release/pi-computer-use.app.zip
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release/pi-computer-use.app.zip

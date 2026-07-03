@@ -1,6 +1,6 @@
 {
 	"name": "@injaneity/pi-computer-use",
-	"version": "0.3.2",
+	"version": "0.3.3",
 	"description": "Pi extension that brings token-efficient desktop & browser automation on macOS.",
 	"type": "module",
 	"keywords": [
@@ -47,14 +47,7 @@
 		"test:schema": "node scripts/check-tool-schemas.mjs",
 		"test:commits": "node scripts/check-commit-messages.mjs",
 		"test": "npm run typecheck && npm run test:schema",
-		"build:native": "node scripts/build-native.mjs",
-		"benchmark:cdp": "npx -y tsx benchmarks/cdp-qa.ts",
-		"benchmark:qa": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa",
-		"benchmark:qa:full": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-screen-takeover",
-		"benchmark:model-matrix": "node scripts/run-model-evals.mjs --evals benchmarks/model-evals.json --output benchmarks/results/model-matrix.json --summary benchmarks/results/model-matrix.md",
-		"benchmark:model-matrix:sample": "node scripts/run-model-evals.mjs --evals benchmarks/model-evals.sample.json --output benchmarks/results/model-matrix.sample.json --summary benchmarks/results/model-matrix.sample.md",
-		"benchmark:unified": "node scripts/run-unified-benchmark.mjs",
-		"benchmark:models": "node scripts/run-model-evals.mjs --evals benchmarks/model-evals.json --output benchmarks/results/model-evals.json --summary benchmarks/results/model-evals.md"
+		"build:native": "node scripts/build-native.mjs"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",

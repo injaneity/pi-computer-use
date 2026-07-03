@@ -1,163 +1,113 @@
 # Development
 
-This guide covers local setup, helper builds, validation, and release notes for contributors.
+## Repository layout
 
-## Requirements
-
-- macOS for native helper development and computer-use QA.
-- Node.js `>=20.6.0`.
-- Xcode command line tools for native helper builds.
-- Pi for extension testing.
-
-## Local Setup
-
-Install dependencies:
-
-```bash
-npm install
+```text
+extensions/computer-use.ts       Public Pi tool registration
+src/bridge.ts                    TypeScript runtime and scene model
+native/macos/bridge.swift        macOS helper for AX, capture, and input
+scripts/build-native.mjs         Native helper build script
+scripts/setup-helper.mjs         Helper install script
 ```
 
-Run checks:
+The public tool surface lives in `extensions/computer-use.ts`. Keep it small. Internal complexity belongs in `src/bridge.ts` and the native helper.
+
+## Checks
+
+Run TypeScript and tool-schema checks:
 
 ```bash
 npm test
 ```
 
-Run this checkout in Pi without loading another installed copy:
-
-```bash
-pi --no-extensions -e .
-```
-
-## Helper Install Path
-
-The runtime helper lives at:
-
-```text
-~/.pi/agent/helpers/pi-computer-use/bridge
-```
-
-The helper needs:
-
-- Accessibility
-- Screen Recording
-
-If permissions are missing, start Pi interactively and let the extension guide setup.
-
-## Helper Builds
-
-Build for the current architecture into the repo prebuilt path:
+Rebuild the native helper after Swift changes:
 
 ```bash
 npm run build:native
 ```
 
-Build directly to the installed helper path. Use `modern` for macOS 14+ ScreenCaptureKit support, or `legacy` for the macOS 12+ CGWindow/screencapture helper:
+## Architecture notes
 
-```bash
-node scripts/build-native.mjs --variant modern --output ~/.pi/agent/helpers/pi-computer-use/bridge
-node scripts/build-native.mjs --variant legacy --output ~/.pi/agent/helpers/pi-computer-use/bridge
-```
+The runtime is scene-first:
 
-Build both release prebuilts for both helper variants:
+- macOS AX provides the semantic tree backbone
+- native visible-child attributes help filter visibility
+- capture metadata maps AX screen points into screenshot pixels
+- visual text becomes evidence, not the source of truth
+- `@t` scene refs are preferred for actions
+- `@u` refs represent visible regions not explained by AX
 
-```bash
-node scripts/build-native.mjs --arch all --variant all
-```
-
-Release prebuilt helpers live at:
+The extension registers a small public API:
 
 ```text
-prebuilt/macos/arm64/modern/bridge
-prebuilt/macos/arm64/legacy/bridge
-prebuilt/macos/x64/modern/bridge
-prebuilt/macos/x64/legacy/bridge
+observe
+search_ui
+expand_ui
+inspect_ui
+act
 ```
 
-`setup-helper.mjs` selects `modern` on macOS 14+ and `legacy` on macOS 12/13, then copies the selected binary to `~/.pi/agent/helpers/pi-computer-use/bridge`.
-
-Local helper builds are ad-hoc codesigned by default. For release builds, use a Developer ID Application certificate:
-
-```bash
-node scripts/build-native.mjs --arch all --variant all \
-  --sign-identity "Developer ID Application: Your Team (TEAMID)" \
-  --hardened-runtime \
-  --timestamp
-```
-
-The default signing identifier is:
-
-```text
-com.injaneity.pi-computer-use.bridge
-```
-
-Keep that identifier stable for release builds so macOS permissions remain tied to the same helper identity across updates.
-
-## Validation
-
-For TypeScript and schema checks:
-
-```bash
-npm test
-```
-
-For documentation-only changes, proofreading markdown and checking touched links is usually enough.
+Discovery, browser, text, and wait utilities are also registered. Do not add direct public action tools unless the architecture changes.
 
 ## Benchmarks
 
-Use benchmark output when changing semantic target ranking, fallback policy, AX execution, browser handling, native helper behavior, permission/setup behavior, or payload efficiency.
+Use `cubench` for behavior validation. It should exercise the registered extension tools rather than importing bridge internals.
 
-The QA benchmark is a local Pi-extension harness, not a clone of CUAbench.ai/OSWorld/WebArena. It borrows their principles—task diversity, reset/cleanup, action efficiency, and regression checks—while measuring package-specific behavior: compact semantic AX results, selective image fallback, AX execution, latency, payload size, and optional CDP behavior.
-
-Default benchmark, non-intrusive aside from inspecting already-running visible apps:
+Recommended flow:
 
 ```bash
-npm run benchmark:qa
+cubench
+cubench --output results/cubench-baseline.local.json
+cubench --baseline results/cubench-baseline.local.json --output results/cubench-current.local.json
 ```
 
-Wider coverage that may open apps. TextEdit/Finder artifacts created by the harness are cleaned up by default:
+Run cubench for changes to AX traversal, scene association, visual grounding, browser handling, permissions, setup, or payload size.
 
-```bash
-npm run benchmark:qa:full
+## Native helper
+
+The helper installed for permissions is:
+
+```text
+/Applications/pi-computer-use.app
 ```
 
-Browser tab/address-bar navigation is skipped by default. Run it only when you are okay with the active browser tab/window changing:
+The built helper binary is stored under `prebuilt/macos` and installed by `scripts/setup-helper.mjs`.
 
-```bash
-npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-browser-navigation
-```
+## Release signing
 
-Keep temporary benchmark windows/documents for debugging:
+TCC keys permission grants to the app's code-signing *designated
+requirement*. An ad-hoc signature pins that to the exact binary hash
+(cdhash), so an ad-hoc release orphans every user's grants on update. Any
+real certificate — Developer ID **or a stable self-signed cert** — anchors
+the requirement on `identifier + certificate leaf`, so grants survive all
+releases as long as you sign every release with the same cert. (Verified:
+two different binaries signed with one cert produce an identical designated
+requirement.)
 
-```bash
-npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-screen-takeover --leave-artifacts
-```
+You do NOT need an Apple Developer Program membership for grant stability.
+Apple enrollment (Developer ID + notarization) is only required to clear
+Gatekeeper on **browser-downloaded** apps; npm-delivered installs carry no
+quarantine attribute, so a self-signed cert is sufficient.
 
-Save and compare local results:
+Setup:
 
-```bash
-npx -y tsx benchmarks/qa.ts --allow-foreground-qa --output benchmarks/results/baseline.local.json
-npx -y tsx benchmarks/qa.ts --allow-foreground-qa --baseline benchmarks/results/baseline.local.json --output benchmarks/results/current.local.json
-```
+1. Run `./scripts/make-signing-cert.sh` once to generate a 10-year
+   self-signed cert (`id.p12`). Back up `key.pem`/`cert.pem` permanently —
+   losing them forces a one-time re-grant on the next release.
+2. Add repository secrets `APPLICATION_CERT_BASE64` (base64 of `id.p12`),
+   `CERT_PASSWORD`, and `SIGN_IDENTITY` (`pi-computer-use Self Signed`).
+   For a Developer ID cert instead, set `SIGN_IDENTITY` to its full name,
+   add the `NOTARIZE=true` repository variable, and the `TEAM_ID` /
+   `APPLE_ID` / `APP_SPECIFIC_PASSWORD` secrets.
+3. `.github/workflows/release-helper.yml` builds the universal
+   `pi-computer-use.app` on tag push, signs it (hardened runtime), asserts
+   the designated requirement anchors on the cert leaf (fails the release
+   if it regressed to ad-hoc), notarizes+staples when `NOTARIZE=true`, and
+   attaches the zip to the release.
+4. Before `npm publish`, unzip that release asset into
+   `prebuilt/macos/universal/modern/pi-computer-use.app`. The installer
+   prefers it over per-arch bundles and loose binaries, verifies its
+   signature, installs it verbatim with `ditto`, and never re-signs it.
 
-For the CDP backend only (self-contained; launches a headless Chrome, needs no macOS permissions, and is also included in `benchmark:qa` runs under a separate `cdp` category):
-
-```bash
-npm run benchmark:cdp
-```
-
-Important metrics include AX-only ratio, vision fallback ratio, semantic coverage, AX execution ratio, latency, executed app/category/tool counts, and payload proxies (`avgTextChars`, `avgImageBytes`, `avgContentJsonBytes`, `avgDetailsJsonBytes`, `avgPayloadBytes`). In `benchmarkSchemaVersion: 2`, payload bytes are serialized `content` JSON plus serialized `details` JSON, not just text length.
-
-Current goals and regression tolerances live in `benchmarks/config.json`.
-
-## Pull Requests
-
-Before opening a PR:
-
-1. Open an issue.
-2. Get approval or alignment in the issue.
-3. Keep the change scoped.
-4. Include validation results.
-5. Attach the AI transcript if AI tools helped produce the PR.
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for the project contribution policy.
+Local dev builds stay ad-hoc; the installer's guard
+(`PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1`) covers that path.
