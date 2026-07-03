@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LookResponse } from "../outline.ts";
+import type { PermissionStatus } from "../permissions.ts";
 
 export type PlatformName = "macos" | "windows" | "linux";
 export type NativeInputDelivery = "hid" | "pid";
@@ -20,17 +21,13 @@ export interface PlatformDiagnostics {
 }
 
 export interface PlatformReadyState {
-	permissionStatus?: unknown;
+	permissionStatus?: PermissionStatus;
 	lastPermissionCheckAt: number;
 	helperDiagnostics?: PlatformDiagnostics;
 }
 
 export interface PlatformWindowQuery {
-	app?: string;
-	bundleId?: string;
-	pid?: number;
-	windowRef?: string;
-	windowTitle?: string;
+	pid: number;
 }
 
 export interface PlatformApp {
@@ -97,20 +94,68 @@ export interface PlatformTarget {
 	windowRef?: string;
 }
 
+export interface PlatformObserveTarget {
+	pid: number;
+	windowId: number;
+	windowRef?: string;
+}
+
 export interface PlatformObserveRequest {
-	target: PlatformTarget;
+	target: PlatformObserveTarget;
 	readText: "auto" | "always" | "never";
 	scopeRef?: string;
 	maxDimension?: number;
 }
 
+export type PlatformActAction = "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse";
+export type PlatformActTarget = { ref: string } | { x: number; y: number };
+export type PlatformDeliveryPolicy = "ax_only" | "background" | "default";
+export type PlatformSetTextMethod = "ax" | "keyboard";
+
+export type PlatformActParams =
+	| { button?: "left" | "right" | "middle"; clickCount?: number }
+	| { text: string; method?: PlatformSetTextMethod }
+	| { text: string }
+	| { keys: string[] }
+	| { scrollX: number; scrollY: number }
+	| { path: Array<{ x: number; y: number }> }
+	| Record<string, never>;
+
 export interface PlatformActRequest {
 	lookId: string;
 	pid?: number;
-	target: unknown;
-	action: string;
-	policy: string;
-	params: Record<string, unknown>;
+	target: PlatformActTarget;
+	action: PlatformActAction;
+	policy: PlatformDeliveryPolicy;
+	params: PlatformActParams & { delivery?: NativeInputDelivery };
+}
+
+export interface PlatformReadTextRequest {
+	elementRef: string;
+	offset: number;
+	limit: number;
+}
+
+export interface PlatformReadTextResponse {
+	text: string;
+	offset: number;
+	limit: number;
+	totalChars: number;
+	hasMore: boolean;
+}
+
+export interface PlatformWaitForRequest extends PlatformTarget {
+	text?: string;
+	role?: string;
+	gone: boolean;
+	timeoutMs: number;
+}
+
+export interface PlatformWaitForResponse {
+	found: boolean;
+	gone?: boolean;
+	timedOut?: boolean;
+	nodeCount?: number;
 }
 
 export interface ComputerUsePlatformBackend {
@@ -120,10 +165,10 @@ export interface ComputerUsePlatformBackend {
 	listWindows(query: PlatformWindowQuery, signal?: AbortSignal): Promise<PlatformWindow[]>;
 	getFrontmost(signal?: AbortSignal): Promise<PlatformFrontmostResult>;
 	focusWindow(target: PlatformTarget, signal?: AbortSignal): Promise<PlatformFocusWindowResult>;
-	observe(request: PlatformObserveRequest, signal?: AbortSignal): Promise<LookResponse>;
+	observe(request: PlatformObserveRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<LookResponse>;
 	act(request: PlatformActRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult>;
-	readText(args: Record<string, unknown>, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<unknown>;
-	waitFor(args: Record<string, unknown>, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<unknown>;
+	readText(args: PlatformReadTextRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<PlatformReadTextResponse>;
+	waitFor(args: PlatformWaitForRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<PlatformWaitForResponse>;
 	isBrowserApp(appName: string, bundleId?: string): boolean;
 	isChromeFamilyApp(appName: string, bundleId?: string): boolean;
 	openBrowserLocation(target: { appName: string; bundleId?: string }, url: string, signal?: AbortSignal): Promise<boolean>;

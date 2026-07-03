@@ -1,23 +1,7 @@
 import { parseLookResponse, type LookResponse } from "../../outline.ts";
-import type { FramePoints, HelperActResult, PlatformActRequest, PlatformApp, PlatformFocusWindowResult, PlatformFrontmostResult, PlatformObserveRequest, PlatformTarget, PlatformWindow, PlatformWindowQuery } from "../types.ts";
+import { toBoolean, finiteNumber, toOptionalString } from "../coerce.ts";
+import type { ComputerUsePlatformBackend, FramePoints, HelperActResult, PlatformActRequest, PlatformApp, PlatformFocusWindowResult, PlatformFrontmostResult, PlatformObserveRequest, PlatformReadTextRequest, PlatformReadTextResponse, PlatformTarget, PlatformWaitForRequest, PlatformWaitForResponse, PlatformWindow, PlatformWindowQuery } from "../types.ts";
 import { macosHelper } from "./helper.ts";
-
-function toBoolean(value: unknown): boolean {
-	return value === true || value === "true" || value === 1;
-}
-
-function toFiniteNumber(value: unknown, fallback: number): number {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string") {
-		const parsed = Number(value);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return fallback;
-}
-
-function toOptionalString(value: unknown): string | undefined {
-	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
 
 function parseApps(result: unknown): PlatformApp[] {
 	const array = Array.isArray(result) ? result : (result as any)?.apps;
@@ -25,7 +9,7 @@ function parseApps(result: unknown): PlatformApp[] {
 
 	return array
 		.map((raw) => {
-			const pid = Math.trunc(toFiniteNumber((raw as any)?.pid, NaN));
+			const pid = Math.trunc(finiteNumber((raw as any)?.pid, NaN));
 			if (!Number.isFinite(pid) || pid <= 0) return undefined;
 			const appName = toOptionalString((raw as any)?.appName) ?? "Unknown App";
 			return {
@@ -41,10 +25,10 @@ function parseApps(result: unknown): PlatformApp[] {
 function parseFramePoints(raw: unknown): FramePoints {
 	const frame = (raw as any)?.framePoints ?? {};
 	return {
-		x: toFiniteNumber(frame.x, 0),
-		y: toFiniteNumber(frame.y, 0),
-		w: Math.max(1, toFiniteNumber(frame.w, 1)),
-		h: Math.max(1, toFiniteNumber(frame.h, 1)),
+		x: finiteNumber(frame.x, 0),
+		y: finiteNumber(frame.y, 0),
+		w: Math.max(1, finiteNumber(frame.w, 1)),
+		h: Math.max(1, finiteNumber(frame.h, 1)),
 	};
 }
 
@@ -61,32 +45,31 @@ function parseWindows(result: unknown): PlatformWindow[] {
 			title: toOptionalString((raw as any)?.title) ?? "",
 			role: toOptionalString((raw as any)?.role),
 			subrole: toOptionalString((raw as any)?.subrole),
-			pairing: { confidence, score: toFiniteNumber(pairing?.score, Number.NEGATIVE_INFINITY) },
+			pairing: { confidence, score: finiteNumber(pairing?.score, Number.NEGATIVE_INFINITY) },
 			framePoints: parseFramePoints(raw),
-			scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
+			scaleFactor: Math.max(1, finiteNumber((raw as any)?.scaleFactor, 1)),
 			isMinimized: toBoolean((raw as any)?.isMinimized),
 			isOnscreen: toBoolean((raw as any)?.isOnscreen),
 			isMain: toBoolean((raw as any)?.isMain),
 			isFocused: toBoolean((raw as any)?.isFocused),
 			isModal: toBoolean((raw as any)?.isModal),
-			sheetCount: Math.max(0, Math.trunc(toFiniteNumber((raw as any)?.sheetCount, 0))),
+			sheetCount: Math.max(0, Math.trunc(finiteNumber((raw as any)?.sheetCount, 0))),
 		};
 	});
 }
 
-export const macosBackend = {
+export const macosBackend: Pick<ComputerUsePlatformBackend, "listApps" | "listWindows" | "getFrontmost" | "focusWindow" | "observe" | "act" | "readText" | "waitFor"> = {
 	async listApps(signal?: AbortSignal): Promise<PlatformApp[]> {
 		return parseApps(await macosHelper.command<unknown>("listApps", {}, { signal }));
 	},
 
 	async listWindows(query: PlatformWindowQuery, signal?: AbortSignal): Promise<PlatformWindow[]> {
-		if (!Number.isFinite(query.pid)) throw new Error("macOS listWindows requires pid.");
-		return parseWindows(await macosHelper.command<unknown>("listWindows", { pid: Math.trunc(query.pid!) }, { signal }));
+		return parseWindows(await macosHelper.command<unknown>("listWindows", { pid: Math.trunc(query.pid) }, { signal }));
 	},
 
 	async getFrontmost(signal?: AbortSignal): Promise<PlatformFrontmostResult> {
 		const result = await macosHelper.command<any>("getFrontmost", {}, { signal });
-		const pid = Math.trunc(toFiniteNumber(result?.pid, NaN));
+		const pid = Math.trunc(finiteNumber(result?.pid, NaN));
 		if (!Number.isFinite(pid) || pid <= 0) {
 			throw new Error("No frontmost app was available for screenshot targeting.");
 		}
@@ -103,24 +86,24 @@ export const macosBackend = {
 		return await macosHelper.command<PlatformFocusWindowResult>("focusWindow", { ...target }, { signal });
 	},
 
-	async observe(request: PlatformObserveRequest, signal?: AbortSignal): Promise<LookResponse> {
+	async observe(request: PlatformObserveRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<LookResponse> {
 		return parseLookResponse(await macosHelper.command("look", {
 			windowId: request.target.windowId,
 			maxDimension: request.maxDimension,
 			readText: request.readText,
 			scopeRef: request.scopeRef,
-		}, { timeoutMs: 33_000, signal }));
+		}, options));
 	},
 
 	async act(request: PlatformActRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult> {
 		return await macosHelper.command<HelperActResult>("act", { ...request }, options);
 	},
 
-	async readText(args: Record<string, unknown>, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<unknown> {
-		return await macosHelper.command("axReadText", args, options);
+	async readText(args: PlatformReadTextRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<PlatformReadTextResponse> {
+		return await macosHelper.command("axReadText", { ...args }, options);
 	},
 
-	async waitFor(args: Record<string, unknown>, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<unknown> {
-		return await macosHelper.command("axWaitFor", args, options);
+	async waitFor(args: PlatformWaitForRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<PlatformWaitForResponse> {
+		return await macosHelper.command("axWaitFor", { ...args }, options);
 	},
 };

@@ -28,7 +28,7 @@ const responseMode = Type.Optional(Type.Union([Type.Literal("state"), Type.Liter
 const listAppsTool = defineTool({
 	name: "list_apps",
 	label: "List Apps",
-	description: "List running macOS apps that can be inspected for computer-use windows.",
+	description: "List running apps that can be inspected for computer-use windows.",
 	promptSnippet: "Discover running apps before choosing a window.",
 	executionMode: "sequential",
 	parameters: Type.Object({}),
@@ -66,7 +66,7 @@ const observeTool = defineTool({
 	promptSnippet: "Primary UI observation tool. Follow with search_ui, expand_ui, inspect_ui, or act.",
 	promptGuidelines: [
 		"Use mode=semantic to skip OCR text, visual to force OCR text, and fused for auto OCR.",
-		"Use @e outline refs from observe/search_ui for act; pictureOnly refs are coordinate-only and blocked by AX-only policy.",
+		"Use @e outline refs from observe/search_ui for act; pictureOnly refs are coordinate-only and blocked by UI-tree-only policy.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
@@ -87,8 +87,8 @@ const searchUiTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({
 		text: Type.Optional(Type.String({ description: "Text/label query" })),
-		role: Type.Optional(Type.String({ description: "AX role, e.g. AXButton" })),
-		action: Type.Optional(Type.String({ description: "Action/capability, e.g. press or AXPress" })),
+		role: Type.Optional(Type.String({ description: "Accessibility role, e.g. button" })),
+		action: Type.Optional(Type.String({ description: "Action/capability, e.g. press" })),
 		source: Type.Optional(Type.String({ description: "Ignored compatibility field; outline search has one source" })),
 		limit: Type.Optional(Type.Number({ description: "Maximum results, default 12" })),
 		window,
@@ -131,7 +131,7 @@ const actTool = defineTool({
 	name: "act",
 	label: "Act",
 	description: "Perform one helper act transaction by outline @e ref or look image coordinates and return the helper outcome.",
-	promptSnippet: "Use @e outline refs when available; helper act chooses AX or coordinate grounding and reports worked/didnt/unknown.",
+	promptSnippet: "Use @e outline refs when available; helper act chooses semantic or coordinate grounding and reports worked/didnt/unknown.",
 	executionMode: "sequential",
 	parameters: Type.Object({
 		action: Type.Union([Type.Literal("press"), Type.Literal("click"), Type.Literal("doubleClick"), Type.Literal("setText"), Type.Literal("typeText"), Type.Literal("keypress"), Type.Literal("scroll"), Type.Literal("drag"), Type.Literal("moveMouse"), Type.Literal("wait")]),
@@ -159,7 +159,7 @@ const actTool = defineTool({
 const readTextTool = defineTool({
 	name: "read_text",
 	label: "Read Text",
-	description: "Read text from a text-bearing desktop AX ref or browser context, with pagination.",
+	description: "Read text from a text-bearing desktop UI ref or browser context, with pagination.",
 	promptSnippet: "Fetch full text when observe/inspect shows a truncated text-bearing ref.",
 	executionMode: "sequential",
 	parameters: Type.Object({ ref: Type.Optional(Type.String()), contextId, offset: Type.Optional(Type.Number()), limit: Type.Optional(Type.Number()), window, stateId }),
@@ -169,7 +169,7 @@ const readTextTool = defineTool({
 const waitForTool = defineTool({
 	name: "wait_for",
 	label: "Wait For",
-	description: "Wait until desktop AX or browser context text/role appears or disappears.",
+	description: "Wait until desktop UI or browser context text/role appears or disappears.",
 	promptSnippet: "Use after async UI changes instead of polling observe.",
 	executionMode: "sequential",
 	parameters: Type.Object({ text: Type.Optional(Type.String()), role: Type.Optional(Type.String()), gone: Type.Optional(Type.Boolean()), timeoutMs: Type.Optional(Type.Number()), contextId, window, stateId }),

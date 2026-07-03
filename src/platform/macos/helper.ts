@@ -5,6 +5,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { toBoolean, finiteNumber, toOptionalString } from "../coerce.ts";
+import type { PlatformDiagnostics } from "../types.ts";
 
 const COMMAND_TIMEOUT_MS = 15_000;
 const HELPER_PROTOCOL_VERSION = 3;
@@ -17,20 +19,6 @@ export const HELPER_SOCKET_PATH = path.join(os.homedir(), "Library", "Caches", "
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const SETUP_HELPER_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "setup-helper.mjs");
-
-export interface HelperDiagnostics {
-	protocolVersion: number;
-	pid: number;
-	parentPid?: number;
-	parentAppName?: string;
-	parentBundleId?: string;
-	parentPath?: string;
-	executablePath?: string;
-	macOS?: string;
-	arch?: string;
-	accessibility?: boolean;
-	screenRecording?: boolean;
-}
 
 export class HelperTransportError extends Error {
 	constructor(message: string) {
@@ -51,23 +39,6 @@ export class HelperCommandError extends Error {
 
 function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) throw new Error("Operation aborted.");
-}
-
-function toBoolean(value: unknown): boolean {
-	return value === true || value === "true" || value === 1;
-}
-
-function toFiniteNumber(value: unknown, fallback: number): number {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string") {
-		const parsed = Number(value);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return fallback;
-}
-
-function toOptionalString(value: unknown): string | undefined {
-	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -157,15 +128,16 @@ export class MacosHelperClient {
 	private helperInstallChecked = false;
 	private daemonAvailable = false;
 	private requestSequence = 0;
-	private diagnosticsCache?: HelperDiagnostics;
+	private diagnosticsCache?: PlatformDiagnostics;
 
-	get diagnostics(): HelperDiagnostics | undefined {
+	get diagnostics(): PlatformDiagnostics | undefined {
 		return this.diagnosticsCache;
 	}
 
 	async ensureInstalled(signal?: AbortSignal): Promise<void> {
 		if ((await isExecutable(HELPER_APP_EXECUTABLE_PATH)) && this.helperInstallChecked) return;
 
+		// setup-helper syncs the installed helper version/signature once per session.
 		await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal, {
 			...process.env,
 			ELECTRON_RUN_AS_NODE: "1",
@@ -253,17 +225,17 @@ export class MacosHelperClient {
 		}
 	}
 
-	async diagnosticsCommand(signal?: AbortSignal): Promise<HelperDiagnostics> {
+	async diagnosticsCommand(signal?: AbortSignal): Promise<PlatformDiagnostics> {
 		const result = await this.command<any>("diagnostics", {}, { signal });
 		const diagnostics = {
-			protocolVersion: Math.trunc(toFiniteNumber(result?.protocolVersion, 0)),
-			pid: Math.trunc(toFiniteNumber(result?.pid, 0)),
-			parentPid: Math.trunc(toFiniteNumber(result?.parentPid, 0)) || undefined,
+			protocolVersion: Math.trunc(finiteNumber(result?.protocolVersion, 0)),
+			pid: Math.trunc(finiteNumber(result?.pid, 0)),
+			parentPid: Math.trunc(finiteNumber(result?.parentPid, 0)) || undefined,
 			parentAppName: toOptionalString(result?.parentAppName),
 			parentBundleId: toOptionalString(result?.parentBundleId),
 			parentPath: toOptionalString(result?.parentPath),
 			executablePath: toOptionalString(result?.executablePath),
-			macOS: toOptionalString(result?.macOS),
+			os: toOptionalString(result?.macOS),
 			arch: toOptionalString(result?.arch),
 			accessibility: toBoolean(result?.accessibility),
 			screenRecording: toBoolean(result?.screenRecording),
@@ -272,7 +244,7 @@ export class MacosHelperClient {
 		return diagnostics;
 	}
 
-	async ensureProtocol(signal?: AbortSignal): Promise<HelperDiagnostics> {
+	async ensureProtocol(signal?: AbortSignal): Promise<PlatformDiagnostics> {
 		const diagnostics = await this.diagnosticsCommand(signal);
 		if (diagnostics.protocolVersion !== HELPER_PROTOCOL_VERSION) {
 			this.daemonAvailable = false;

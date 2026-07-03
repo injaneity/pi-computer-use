@@ -39,8 +39,8 @@ class UnsupportedPlatformBackend implements ComputerUsePlatformBackend {
 	async act(): Promise<never> { this.unsupported(); }
 	async readText(): Promise<never> { this.unsupported(); }
 	async waitFor(): Promise<never> { this.unsupported(); }
-	isBrowserApp(): boolean { return false; }
-	isChromeFamilyApp(): boolean { return false; }
+	isBrowserApp(): never { this.unsupported(); }
+	isChromeFamilyApp(): never { this.unsupported(); }
 	async openBrowserLocation(): Promise<boolean> { this.unsupported(); }
 }
 

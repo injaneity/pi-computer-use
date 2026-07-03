@@ -1,24 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ensurePermissions, type PermissionStatus } from "../../permissions.ts";
-import type { PlatformDiagnostics, PlatformReadyState } from "../types.ts";
+import { toBoolean, finiteNumber, toOptionalString } from "../coerce.ts";
+import type { PlatformReadyState } from "../types.ts";
 import { HELPER_APP_PATH, macosHelper } from "./helper.ts";
-
-function toBoolean(value: unknown): boolean {
-	return value === true || value === "true" || value === 1;
-}
-
-function toFiniteNumber(value: unknown, fallback: number): number {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string") {
-		const parsed = Number(value);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return fallback;
-}
-
-function toOptionalString(value: unknown): string | undefined {
-	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
 
 async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus> {
 	const result = await macosHelper.command<any>("checkPermissions", {}, { signal });
@@ -32,8 +16,8 @@ async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus>
 		source: rawSource && typeof rawSource === "object"
 			? {
 				attribution: rawSource.attribution === "helper-app" ? "helper-app" : "caller",
-				pid: Math.trunc(toFiniteNumber(rawSource.pid, 0)) || undefined,
-				parentPid: Math.trunc(toFiniteNumber(rawSource.parentPid, 0)) || undefined,
+				pid: Math.trunc(finiteNumber(rawSource.pid, 0)) || undefined,
+				parentPid: Math.trunc(finiteNumber(rawSource.parentPid, 0)) || undefined,
 				executablePath: toOptionalString(rawSource.executablePath),
 				parentPath: toOptionalString(rawSource.parentPath),
 				parentBundleId: toOptionalString(rawSource.parentBundleId),
@@ -56,11 +40,10 @@ export async function ensureMacosReady(
 	if (!(await macosHelper.ensureDaemon(signal))) {
 		throw new Error(`pi-computer-use helper app daemon did not start. Helper app: ${HELPER_APP_PATH}`);
 	}
-	const rawDiagnostics = await macosHelper.ensureProtocol(signal);
-	const helperDiagnostics: PlatformDiagnostics = { ...rawDiagnostics, os: rawDiagnostics.macOS };
+	const helperDiagnostics = await macosHelper.ensureProtocol(signal);
 
 	const now = Date.now();
-	const cachedStatus = state.permissionStatus as PermissionStatus | undefined;
+	const cachedStatus = state.permissionStatus;
 	const canUseCachedPermissions =
 		cachedStatus?.accessibility &&
 		cachedStatus.screenRecording &&

@@ -11,8 +11,10 @@ import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputer
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
 import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, restoreOutline, searchOutline, serializeOutline, serializeOutlineNode, type LookResponse, type Outline, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode } from "./outline.ts";
 import { AGENT_TOOL_NAMES, type ActParams, type DragParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type KeypressParams, type LaunchBrowserContextParams, type ListWindowsParams, type MouseButtonName, type MoveMouseParams, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type ScrollParams, type SearchUiParams, type SetTextParams, type SnapshotParams, type TypeTextParams, type WaitForParams, type WaitParams, type WindowSelector, type WindowTargetParams } from "./contract.ts";
+import { finiteNumber } from "./platform/coerce.ts";
 import { currentPlatformBackend } from "./platform/index.ts";
-import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformWindow as HelperWindow } from "./platform/types.ts";
+import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformActParams, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformWindow as HelperWindow } from "./platform/types.ts";
+import type { PermissionStatus } from "./permissions.ts";
 export type { ActParams, DragParams, EvaluateBrowserParams, ExpandUiParams, ImageMode, InspectUiParams, KeypressParams, LaunchBrowserContextParams, ListWindowsParams, MouseButtonName, MoveMouseParams, NavigateBrowserParams, ObserveParams, ObserveTargetParams, ReadTextParams, ScrollParams, SearchUiParams, SetTextParams, SnapshotParams, TypeTextParams, WaitForParams, WaitParams, WindowSelector, WindowTargetParams } from "./contract.ts";
 
 interface StateTargetSnapshot {
@@ -299,7 +301,7 @@ interface RuntimeState {
 	pendingBrowserAddress?: PendingBrowserAddress;
 	managedBrowser?: ChildProcess;
 	queueTail: Promise<void>;
-	permissionStatus?: unknown;
+	permissionStatus?: PermissionStatus;
 	helperDiagnostics?: PlatformDiagnostics;
 	lastPermissionCheckAt: number;
 }
@@ -310,6 +312,7 @@ const CURRENT_TARGET_GONE_ERROR =
 	"The current controlled window is no longer available. Call observe to choose a new target window.";
 
 const COMMAND_TIMEOUT_MS = 15_000;
+const LOOK_TIMEOUT_MS = 33_000;
 
 const SCREENSHOT_TIMEOUT_MS = 25_000;
 const ACTION_SETTLE_MS = 280;
@@ -466,15 +469,6 @@ function normalizeText(value: string | undefined): string {
 	return (value ?? "").trim().toLowerCase();
 }
 
-function toFiniteNumber(value: unknown, fallback = 0): number {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string") {
-		const parsed = Number(value);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return fallback;
-}
-
 function toOptionalString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
@@ -491,12 +485,12 @@ function normalizeMouseButton(value: unknown): MouseButtonName {
 }
 
 function normalizeClickCount(value: unknown, fallback = 1): number {
-	const count = Math.trunc(toFiniteNumber(value, fallback));
+	const count = Math.trunc(finiteNumber(value, fallback));
 	return Math.max(1, Math.min(3, count));
 }
 
 function normalizeScrollDelta(value: unknown): number {
-	const delta = Math.round(toFiniteNumber(value, 0));
+	const delta = Math.round(finiteNumber(value, 0));
 	return Math.max(-10_000, Math.min(10_000, delta));
 }
 
@@ -1191,12 +1185,13 @@ function captureForLook(look: LookResponse): CurrentCapture {
 }
 
 async function performLook(target: ResolvedTarget, options: { readText: "auto" | "always" | "never"; scopeRef?: string; maxDimension?: number }, signal?: AbortSignal): Promise<LookResponse> {
+	if (!Number.isFinite(target.windowId) || target.windowId <= 0) throw new Error(`Current platform requires a stable windowId to observe '${target.windowTitle}'. Call list_windows and select a window with a stable id.`);
 	return await currentPlatformBackend.observe({
 		target: nativeWindowRequest(target),
 		readText: options.readText,
 		scopeRef: options.scopeRef,
 		maxDimension: options.maxDimension,
-	}, signal);
+	}, { signal, timeoutMs: LOOK_TIMEOUT_MS });
 }
 
 function noteWindowForTarget(target: ResolvedTarget | CurrentTarget, look?: LookResponse) {
@@ -1350,8 +1345,8 @@ function normalizeActPath(path: DragParams["path"], look: LookResponse): Array<{
 		throw new Error("drag.path must contain at least two points.");
 	}
 	return path.map((point, index) => {
-		const x = Array.isArray(point) ? toFiniteNumber(point[0], NaN) : toFiniteNumber(point?.x, NaN);
-		const y = Array.isArray(point) ? toFiniteNumber(point[1], NaN) : toFiniteNumber(point?.y, NaN);
+		const x = Array.isArray(point) ? finiteNumber(point[0], NaN) : finiteNumber(point?.x, NaN);
+		const y = Array.isArray(point) ? finiteNumber(point[1], NaN) : finiteNumber(point?.y, NaN);
 		ensurePointIsInLookImage(x, y, look, `Drag point ${index + 1}`);
 		return { x, y };
 	});
@@ -1366,8 +1361,8 @@ function actTargetFromParams(params: { ref?: string; x?: number; y?: number }, l
 		ensurePointIsInLookImage(point.x, point.y, look);
 		return point;
 	}
-	const x = toFiniteNumber(params.x, NaN);
-	const y = toFiniteNumber(params.y, NaN);
+	const x = finiteNumber(params.x, NaN);
+	const y = finiteNumber(params.y, NaN);
 	if (Number.isFinite(x) && Number.isFinite(y)) {
 		ensurePointIsInLookImage(x, y, look);
 		return { x, y };
@@ -1393,7 +1388,7 @@ async function helperAct(
 	target: ResolvedTarget,
 	action: HelperActAction,
 	actTarget: HelperActTarget,
-	params: Record<string, unknown>,
+	params: PlatformActParams,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
 	const look = currentLookOrThrow();
@@ -1404,7 +1399,7 @@ async function helperAct(
 		action,
 		policy: currentDeliveryPolicy(),
 		params: { ...params, delivery: nativeInputDelivery() },
-	}, { signal, timeoutMs: Math.max(COMMAND_TIMEOUT_MS, typeof params.text === "string" ? params.text.length * 25 + 4_000 : COMMAND_TIMEOUT_MS) });
+	}, { signal, timeoutMs: Math.max(COMMAND_TIMEOUT_MS, typeof (params as { text?: unknown }).text === "string" ? (params as { text: string }).text.length * 25 + 4_000 : COMMAND_TIMEOUT_MS) });
 	if (!result || !["worked", "didnt", "unknown"].includes(result.outcome)) {
 		throw new Error("Helper act returned an invalid result without an outcome.");
 	}
@@ -1634,7 +1629,7 @@ async function performBrowserScroll(params: ScrollParams, signal?: AbortSignal):
 	if (!isBrowserContextId(contextId)) return undefined;
 	const target = browserSnapshotTarget(params.stateId, trimOrUndefined(params.ref));
 	if (params.ref && (!target || target.contextId !== contextId)) throw new Error("Browser scroll ref must come from the supplied snapshot stateId.");
-	const ok = await cdpScrollForContext(contextId, toFiniteNumber(params.scrollX, 0), toFiniteNumber(params.scrollY, 0), target?.backendNodeId);
+	const ok = await cdpScrollForContext(contextId, finiteNumber(params.scrollX, 0), finiteNumber(params.scrollY, 0), target?.backendNodeId);
 	if (!ok) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
 	return await refreshBrowserSnapshot(contextId, params.image, signal);
 }
@@ -1644,8 +1639,8 @@ function textPreview(value: string, maxChars: number): string {
 }
 
 function sliceText(value: string, offsetValue: unknown, limitValue: unknown): Pick<ReadTextDetails, "offset" | "limit" | "totalChars" | "hasMore" | "text"> {
-	const offset = Math.max(0, Math.trunc(toFiniteNumber(offsetValue, 0)));
-	const limit = Math.max(1, Math.min(100_000, Math.trunc(toFiniteNumber(limitValue, 4_000))));
+	const offset = Math.max(0, Math.trunc(finiteNumber(offsetValue, 0)));
+	const limit = Math.max(1, Math.min(100_000, Math.trunc(finiteNumber(limitValue, 4_000))));
 	const characters = Array.from(value);
 	const end = Math.min(characters.length, offset + limit);
 	return {
@@ -1676,26 +1671,25 @@ async function performReadText(params: ReadTextParams, signal?: AbortSignal): Pr
 	const node = outlineNodeByRef(ref);
 	const raw = await currentPlatformBackend.readText({
 		elementRef: wireRefForNode(node),
-		offset: Math.max(0, Math.trunc(toFiniteNumber(params.offset, 0))),
-		limit: Math.max(1, Math.min(100_000, Math.trunc(toFiniteNumber(params.limit, 4_000)))),
+		offset: Math.max(0, Math.trunc(finiteNumber(params.offset, 0))),
+		limit: Math.max(1, Math.min(100_000, Math.trunc(finiteNumber(params.limit, 4_000)))),
 	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
-	const record = isRecord(raw) ? raw : {};
-	const text = toOptionalString(record.text) ?? "";
+	const text = raw.text;
 	const details: ReadTextDetails = {
 		tool: "read_text",
 		contextId,
 		ref,
-		offset: Math.max(0, Math.trunc(toFiniteNumber(record.offset, 0))),
-		limit: Math.max(1, Math.trunc(toFiniteNumber(record.limit, 4_000))),
-		totalChars: Math.max(0, Math.trunc(toFiniteNumber(record.totalChars, text.length))),
-		hasMore: toBoolean(record.hasMore),
+		offset: raw.offset,
+		limit: raw.limit,
+		totalChars: raw.totalChars,
+		hasMore: raw.hasMore,
 		text,
 	};
 	return { content: [{ type: "text", text: text || "(empty text slice)" }], details };
 }
 
 function normalizeWaitTimeoutMs(value: unknown): number {
-	return Math.max(100, Math.min(60_000, Math.trunc(toFiniteNumber(value, 10_000))));
+	return Math.max(100, Math.min(60_000, Math.trunc(finiteNumber(value, 10_000))));
 }
 
 async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Promise<AgentToolResult<WaitForDetails>> {
@@ -1735,18 +1729,17 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		gone: params.gone === true,
 		timeoutMs,
 	}, { signal, timeoutMs: timeoutMs + 2_000 });
-	const record = isRecord(raw) ? raw : {};
 	const refreshed = await captureCurrentTarget(signal, "auto");
 	const matches = searchOutline(refreshed.outline, text, role, undefined, 1);
 	const foundTarget = matches[0];
 	const details: WaitForDetails = {
 		tool: "wait_for",
 		contextId,
-		found: toBoolean(record.found),
-		gone: toBoolean(record.gone) || undefined,
-		timedOut: toBoolean(record.timedOut) || undefined,
+		found: raw.found,
+		gone: raw.gone || undefined,
+		timedOut: raw.timedOut || undefined,
 		target: foundTarget,
-		nodeCount: Number.isFinite(record.nodeCount) ? Number(record.nodeCount) : refreshed.outline.nodes.length,
+		nodeCount: Number.isFinite(raw.nodeCount) ? Number(raw.nodeCount) : refreshed.outline.nodes.length,
 		text,
 		role,
 	};
@@ -1782,7 +1775,7 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 	await selectWindowIfProvided(windowRef, signal);
 	const scopeRef = trimOrUndefined(params.scopeRef);
 	const result = await captureCurrentTarget(signal, "never", AUTO_IMAGE_MAX_DIMENSION);
-	const folded = foldToBudget(result.outline, { maxDepth: Math.max(1, Math.trunc(toFiniteNumber(params.maxDepth, 2))), maxNodes: Math.max(1, Math.min(2_000, Math.trunc(toFiniteNumber(params.maxNodes, 150)))) }, scopeRef ? [scopeRef] : []);
+	const folded = foldToBudget(result.outline, { maxDepth: Math.max(1, Math.trunc(finiteNumber(params.maxDepth, 2))), maxNodes: Math.max(1, Math.min(2_000, Math.trunc(finiteNumber(params.maxNodes, 150)))) }, scopeRef ? [scopeRef] : []);
 	const desktop: ComputerUseDetails = {
 		tool: "snapshot",
 		target: {
@@ -1853,7 +1846,7 @@ async function performSearchUi(params: SearchUiParams, signal?: AbortSignal): Pr
 	const text = trimOrUndefined(params.text);
 	const role = trimOrUndefined(params.role);
 	const action = trimOrUndefined(params.action);
-	const limit = Math.max(1, Math.min(50, Math.trunc(toFiniteNumber(params.limit, 12))));
+	const limit = Math.max(1, Math.min(50, Math.trunc(finiteNumber(params.limit, 12))));
 	const matches = searchOutline(outline, text, role, action, limit);
 	const detailMatches = matches.map((match) => ({ ...match, node: serializeOutlineNode(match.node) }));
 	const details: OutlineToolDetails = { tool: "search_ui", stateId: runtimeState.currentCapture?.stateId, lookId: outline.lookId, outline: serializeOutline(outline), matches: detailMatches, note: runtimeState.currentNote };
@@ -1871,7 +1864,7 @@ async function performExpandUi(params: ExpandUiParams, signal?: AbortSignal): Pr
 	if (!ref) throw new Error("expand_ui.ref is required.");
 	let target = nodeByRef(outline, ref);
 	if (!target) throw new Error(`Outline ref '${ref}' is not available in the current outline.`);
-	const depth = Math.max(1, Math.min(8, Math.trunc(toFiniteNumber(params.depth, 3))));
+	const depth = Math.max(1, Math.min(8, Math.trunc(finiteNumber(params.depth, 3))));
 	const regionKey = noteRegionKeyForRef(outline, ref);
 	const regionChanged = Boolean(regionKey && runtimeState.currentNote?.regions.some((region) => region.key === regionKey && region.status === "changed"));
 	if (target.truncated || regionChanged) {
@@ -1927,7 +1920,7 @@ async function performAct(params: ActParams, signal?: AbortSignal): Promise<Agen
 		case "keypress": return await performKeypress({ ...params, keys: params.keys ?? [] }, signal);
 		case "scroll": return await performScroll(params, signal);
 		case "drag": return await performDrag(params, signal);
-		case "moveMouse": return await performMoveMouse({ ...params, x: toFiniteNumber(params.x, NaN), y: toFiniteNumber(params.y, NaN) }, signal);
+		case "moveMouse": return await performMoveMouse({ ...params, x: finiteNumber(params.x, NaN), y: finiteNumber(params.y, NaN) }, signal);
 		case "wait": return await performWait(params, signal);
 	}
 }
@@ -2291,12 +2284,12 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 					windowId: Number.isFinite(window.windowId) ? Math.trunc(window.windowId) : undefined,
 					nativeWindowRef: typeof window.nativeWindowRef === "string" ? window.nativeWindowRef : undefined,
 					framePoints: {
-						x: toFiniteNumber(window.framePoints?.x, 0),
-						y: toFiniteNumber(window.framePoints?.y, 0),
-						w: Math.max(1, toFiniteNumber(window.framePoints?.w, 1)),
-						h: Math.max(1, toFiniteNumber(window.framePoints?.h, 1)),
+						x: finiteNumber(window.framePoints?.x, 0),
+						y: finiteNumber(window.framePoints?.y, 0),
+						w: Math.max(1, finiteNumber(window.framePoints?.w, 1)),
+						h: Math.max(1, finiteNumber(window.framePoints?.h, 1)),
 					},
-					scaleFactor: Math.max(1, toFiniteNumber(window.scaleFactor, 1)),
+					scaleFactor: Math.max(1, finiteNumber(window.scaleFactor, 1)),
 					isMinimized: toBoolean(window.isMinimized),
 					isOnscreen: toBoolean(window.isOnscreen),
 					isMain: toBoolean(window.isMain),
@@ -2338,9 +2331,9 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 
 		runtimeState.currentCapture = {
 			stateId: details.capture.stateId,
-			width: Math.max(1, Math.trunc(toFiniteNumber(details.capture.width, 1))),
-			height: Math.max(1, Math.trunc(toFiniteNumber(details.capture.height, 1))),
-			scaleFactor: Math.max(1, toFiniteNumber(details.capture.scaleFactor, 1)),
+			width: Math.max(1, Math.trunc(finiteNumber(details.capture.width, 1))),
+			height: Math.max(1, Math.trunc(finiteNumber(details.capture.height, 1))),
+			scaleFactor: Math.max(1, finiteNumber(details.capture.scaleFactor, 1)),
 			timestamp: Number.isFinite(details.capture.timestamp) ? details.capture.timestamp : Date.now(),
 		};
 		if (details.outline?.root && typeof details.outline.lookId === "string") {
