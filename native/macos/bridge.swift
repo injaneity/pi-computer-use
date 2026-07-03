@@ -14,9 +14,17 @@ struct BridgeFailure: Error {
 }
 
 final class AXRefStore {
+	struct Snapshot {
+		let role: String
+		let identifier: String
+		let label: String
+		let rect: CGRect
+	}
+
 	private var nextId: UInt64 = 0
 	private var windows: [String: AXUIElement] = [:]
 	private var elements: [String: AXUIElement] = [:]
+	private var snapshots: [String: Snapshot] = [:]
 
 	func storeWindow(_ window: AXUIElement) -> String {
 		nextId += 1
@@ -25,10 +33,11 @@ final class AXRefStore {
 		return ref
 	}
 
-	func storeElement(_ element: AXUIElement) -> String {
+	func storeElement(_ element: AXUIElement, snapshot: Snapshot? = nil) -> String {
 		nextId += 1
 		let ref = "e\(nextId)"
 		elements[ref] = element
+		snapshots[ref] = snapshot
 		return ref
 	}
 
@@ -38,6 +47,10 @@ final class AXRefStore {
 
 	func element(for ref: String) -> AXUIElement? {
 		elements[ref]
+	}
+
+	func snapshot(for ref: String) -> Snapshot? {
+		snapshots[ref]
 	}
 }
 
@@ -58,6 +71,115 @@ private struct AXDescendant {
 	let depth: Int
 	let insideWebArea: Bool
 	let axVisible: Bool
+}
+
+private struct WindowPairing {
+	let candidate: CGWindowCandidate?
+	let score: Double
+	let confidence: String
+}
+
+private struct CapturedWindowImage {
+	let image: CGImage
+	let windowId: UInt32
+	let frame: CGRect
+}
+
+private struct LookRecord {
+	let lookId: String
+	let windowId: UInt32
+	let windowFrame: CGRect
+	let imageWidth: Int
+	let imageHeight: Int
+}
+
+private struct OCRBox {
+	let string: String
+	let confidence: Double
+	let rect: CGRect
+}
+
+final class LookNode {
+	let element: AXUIElement?
+	let ref: String
+	let role: String
+	let subrole: String
+	let identifier: String
+	let title: String
+	let description: String
+	let value: String
+	let actions: [String]
+	let canPress: Bool
+	let canFocus: Bool
+	let canSetValue: Bool
+	let canScroll: Bool
+	let canIncrement: Bool
+	let canDecrement: Bool
+	let isTextInput: Bool
+	let rect: CGRect
+	let focused: Bool
+	var offscreen: Bool
+	var pictureOnly: Bool
+	var truncated: Bool
+	var scrollExtent: [String: Int]?
+	var text: [[String: Any]]
+	var children: [LookNode]
+
+	init(element: AXUIElement?, ref: String, role: String, subrole: String, identifier: String, title: String, description: String, value: String, actions: [String], canPress: Bool, canFocus: Bool, canSetValue: Bool, canScroll: Bool, canIncrement: Bool, canDecrement: Bool, isTextInput: Bool, rect: CGRect, focused: Bool = false, offscreen: Bool = false, pictureOnly: Bool = false) {
+		self.element = element
+		self.ref = ref
+		self.role = role
+		self.subrole = subrole
+		self.identifier = identifier
+		self.title = title
+		self.description = description
+		self.value = value
+		self.actions = actions
+		self.canPress = canPress
+		self.canFocus = canFocus
+		self.canSetValue = canSetValue
+		self.canScroll = canScroll
+		self.canIncrement = canIncrement
+		self.canDecrement = canDecrement
+		self.isTextInput = isTextInput
+		self.rect = rect
+		self.focused = focused
+		self.offscreen = offscreen
+		self.pictureOnly = pictureOnly
+		self.truncated = false
+		self.text = []
+		self.children = []
+	}
+
+	func payload() -> [String: Any] {
+		var output: [String: Any] = [
+			"ref": ref,
+			"role": role,
+			"subrole": subrole,
+			"identifier": identifier,
+			"title": title,
+			"description": description,
+			"value": value,
+			"actions": actions,
+			"canPress": canPress,
+			"canFocus": canFocus,
+			"canSetValue": canSetValue,
+			"canScroll": canScroll,
+			"canIncrement": canIncrement,
+			"canDecrement": canDecrement,
+			"isTextInput": isTextInput,
+			"rect": ["x": rect.origin.x, "y": rect.origin.y, "w": rect.width, "h": rect.height],
+			"children": children.map { $0.payload() },
+		]
+		if focused { output["focused"] = true }
+		if offscreen { output["offscreen"] = true }
+		if pictureOnly { output["pictureOnly"] = true }
+		if truncated { output["truncated"] = true }
+		if let scrollExtent { output["scrollExtent"] = scrollExtent }
+		if !text.isEmpty { output["text"] = text }
+		return output
+	}
+
 }
 
 final class Box<T> {
@@ -208,7 +330,7 @@ final class InputSuppressionGuard {
 }
 
 final class Bridge {
-	private let protocolVersion = 2
+	private let protocolVersion = 3
 	private let refStore = AXRefStore()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let browserBundleIds: Set<String> = [
@@ -217,6 +339,9 @@ final class Bridge {
 	private var enhancedAccessibilityPids = Set<Int32>()
 	private var stdinBuffer = Data()
 	private var output = FileHandle.standardOutput
+	private var nextLookId: UInt64 = 0
+	private var lookRecords: [String: LookRecord] = [:]
+	private var lookRecordOrder: [String] = []
 
 	func run() {
 		if CommandLine.arguments.contains("serve") {
@@ -404,52 +529,18 @@ final class Bridge {
 			return try focusWindow(request)
 		case "setWindowFrame":
 			return try setWindowFrame(request)
-		case "screenshot":
-			return try screenshot(request)
-		case "visionTargets":
-			return try visionTargets(request)
-		case "mouseClick":
-			return try mouseClick(request)
-		case "mouseMove":
-			return try mouseMove(request)
-		case "mouseDrag":
-			return try mouseDrag(request)
-		case "scrollWheel":
-			return try scrollWheel(request)
-		case "keyPress":
-			return try keyPress(request)
-		case "axPressAtPoint":
-			return try axPressAtPoint(request)
-		case "axFindTextInput":
-			return try axFindTextInput(request)
-		case "axFocusTextInput":
-			return try axFocusTextInput(request)
-		case "axSnapshotTree":
-			return try axSnapshotTree(request)
+		case "look":
+			return try look(request)
+		case "act":
+			return try act(request)
+		case "hitTest":
+			return try hitTest(request)
 		case "axWaitFor":
 			return try axWaitFor(request)
-		case "axPressElement":
-			return try axPressElement(request)
-		case "axPerformActionElement":
-			return try axPerformActionElement(request)
-		case "axFocusElement":
-			return try axFocusElement(request)
-		case "axFocusAtPoint":
-			return try axFocusAtPoint(request)
-		case "axScrollElement":
-			return try axScrollElement(request)
-		case "axScrollAtPoint":
-			return try axScrollAtPoint(request)
 		case "focusedElement":
 			return try focusedElement(request)
-		case "setValue":
-			return try setValue(request)
-		case "selectText":
-			return try selectText(request)
 		case "axReadText":
 			return try axReadText(request)
-		case "typeText":
-			return try typeText(request)
 		case "getMousePosition":
 			return getMousePosition()
 		default:
@@ -921,7 +1012,7 @@ final class Bridge {
 		AXUIElementSetMessagingTimeout(appElement, 1.0)
 		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
 		let candidates = cgWindowCandidates(pid: pid)
-		var usedIds = Set<UInt32>()
+		let pairings = windowPairings(windows: windows, candidates: candidates)
 
 		var output: [[String: Any]] = []
 		for window in windows {
@@ -929,10 +1020,8 @@ final class Bridge {
 			let axRole = stringAttribute(window, attribute: kAXRoleAttribute as CFString) ?? ""
 			let axSubrole = stringAttribute(window, attribute: kAXSubroleAttribute as CFString) ?? ""
 			let axFrame = frameForWindow(window)
-			let candidate = bestCandidate(frame: axFrame, title: axTitle, candidates: candidates, usedIds: usedIds)
-			if let candidate {
-				usedIds.insert(candidate.windowId)
-			}
+			let pairing = pairings[ObjectIdentifier(window)] ?? WindowPairing(candidate: nil, score: -Double.greatestFiniteMagnitude, confidence: "low")
+			let candidate = pairing.candidate
 
 			let effectiveFrame = axFrame.width > 1 && axFrame.height > 1 ? axFrame : (candidate?.bounds ?? axFrame)
 			if effectiveFrame.width < 100 || effectiveFrame.height < 80 { continue }
@@ -964,6 +1053,7 @@ final class Bridge {
 				"isOnscreen": candidate?.isOnscreen ?? !isMinimized,
 				"isMain": isMain,
 				"isFocused": isFocused,
+				"pairing": ["confidence": pairing.confidence, "score": pairing.score],
 			]
 			if let candidate {
 				item["windowId"] = Int(candidate.windowId)
@@ -973,26 +1063,233 @@ final class Bridge {
 		return output
 	}
 
-	private func screenshot(_ request: [String: Any]) throws -> [String: Any] {
+	private func look(_ request: [String: Any]) throws -> [String: Any] {
 		let windowId = UInt32(try intArg(request, "windowId"))
 		let maxDimension = optionalIntArg(request, "maxDimension").map { max(1, $0) }
-		return try captureWindow(windowId: windowId, maxDimension: maxDimension)
+		let readText = optionalStringArg(request, "readText") ?? "auto"
+		guard readText == "auto" || readText == "always" || readText == "never" else {
+			throw BridgeFailure(message: "readText must be auto, always, or never", code: "invalid_args")
+		}
+
+		let captureStart = Date()
+		let capture = try captureWindow(windowId: windowId)
+		let captureMs = elapsedMs(captureStart)
+
+		guard let pid = pidForWindowId(windowId) else {
+			throw BridgeFailure(message: "Window \(windowId) is not owned by a running app", code: "window_not_found")
+		}
+		ensureEnhancedAccessibility(pid: pid)
+		guard let window = windowElement(pid: pid, windowId: windowId) else {
+			throw BridgeFailure(message: "Window \(windowId) is not available through Accessibility", code: "window_not_found")
+		}
+		let rootElement: AXUIElement
+		if let scopeRef = optionalStringArg(request, "scopeRef") {
+			guard let scoped = refStore.element(for: scopeRef), isElement(scoped, descendantOf: window) else {
+				throw BridgeFailure(message: "Scope ref is stale or outside the target window", code: "element_ref_invalid")
+			}
+			rootElement = scoped
+		} else {
+			rootElement = window
+		}
+
+		let outputImage = downscaledImage(capture.image, maxDimension: maxDimension) ?? capture.image
+		let transform = rectTransform(windowFrame: capture.frame, imageWidth: outputImage.width, imageHeight: outputImage.height)
+		let describeStart = Date()
+		let outline = buildLookOutline(root: rootElement, transform: transform)
+		let describeMs = elapsedMs(describeStart)
+
+		var readTextMs = 0
+		if readText == "always" || (readText == "auto" && sparseDescription(outline, imageWidth: outputImage.width, imageHeight: outputImage.height)) {
+			let textStart = Date()
+			let boxes = try recognizeText(in: capture.image, outputWidth: outputImage.width, outputHeight: outputImage.height)
+			attachOCR(boxes, to: outline)
+			readTextMs = elapsedMs(textStart)
+		}
+
+		guard let jpeg = jpegData(image: outputImage, quality: 0.8) else {
+			throw BridgeFailure(message: "Failed to encode look image as JPEG", code: "encoding_failed")
+		}
+		nextLookId += 1
+		let lookId = "look_\(nextLookId)"
+		storeLookRecord(LookRecord(lookId: lookId, windowId: windowId, windowFrame: capture.frame, imageWidth: outputImage.width, imageHeight: outputImage.height))
+		let scale = capture.frame.width > 0 ? Double(outputImage.width) / capture.frame.width : displayScaleFactor(for: capture.frame)
+		let pairing = pairingForWindow(window, pid: pid)
+		let role = stringAttribute(window, attribute: kAXRoleAttribute as CFString) ?? ""
+		let subrole = stringAttribute(window, attribute: kAXSubroleAttribute as CFString) ?? ""
+		return [
+			"lookId": lookId,
+			"capturedAt": captureStart.timeIntervalSince1970,
+			"window": [
+				"windowId": Int(windowId),
+				"framePoints": ["x": capture.frame.origin.x, "y": capture.frame.origin.y, "w": capture.frame.width, "h": capture.frame.height],
+				"scaleFactor": scale,
+				"pairing": ["confidence": pairing.confidence, "score": pairing.score],
+				"isModal": boolAttribute(window, attribute: "AXModal" as CFString) ?? false,
+				"sheetCount": axElementArray(window, attribute: "AXSheets" as CFString).count,
+				"role": role,
+				"subrole": subrole,
+			],
+			"image": ["jpegBase64": jpeg.base64EncodedString(), "width": outputImage.width, "height": outputImage.height],
+			"outline": outline.payload(),
+			"timings": ["captureMs": captureMs, "describeMs": describeMs, "readTextMs": readTextMs],
+		]
 	}
 
-	private func visionTargets(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let maxDimension = optionalIntArg(request, "maxDimension").map { max(1, $0) }
-		let payload = try captureWindow(windowId: windowId, maxDimension: maxDimension)
-		guard let base64 = payload["pngBase64"] as? String,
-			let data = Data(base64Encoded: base64),
-			let imageRep = NSBitmapImageRep(data: data),
-			let image = imageRep.cgImage
-		else {
-			throw BridgeFailure(message: "Failed to capture image for vision grounding", code: "vision_capture_failed")
+	private func elapsedMs(_ start: Date) -> Int {
+		max(0, Int(Date().timeIntervalSince(start) * 1000.0))
+	}
+
+	private func storeLookRecord(_ record: LookRecord) {
+		lookRecords[record.lookId] = record
+		lookRecordOrder.append(record.lookId)
+		while lookRecordOrder.count > 8 {
+			let oldest = lookRecordOrder.removeFirst()
+			lookRecords.removeValue(forKey: oldest)
 		}
-		let minConfidence = max(0, min(1, (request["minConfidence"] as? NSNumber)?.doubleValue ?? 0.35))
+	}
+
+	private func rectTransform(windowFrame: CGRect, imageWidth: Int, imageHeight: Int) -> (CGRect) -> CGRect {
+		let sx = windowFrame.width > 0 ? Double(imageWidth) / windowFrame.width : 1.0
+		let sy = windowFrame.height > 0 ? Double(imageHeight) / windowFrame.height : 1.0
+		return { frame in
+			let x = (frame.origin.x - windowFrame.origin.x) * sx
+			let y = (frame.origin.y - windowFrame.origin.y) * sy
+			let w = frame.width * sx
+			let h = frame.height * sy
+			return self.clampRect(CGRect(x: x, y: y, width: w, height: h), width: imageWidth, height: imageHeight)
+		}
+	}
+
+	private func clampRect(_ rect: CGRect, width: Int, height: Int) -> CGRect {
+		let maxX = Double(width)
+		let maxY = Double(height)
+		let x1 = min(max(rect.minX, 0), maxX)
+		let y1 = min(max(rect.minY, 0), maxY)
+		let x2 = min(max(rect.maxX, 0), maxX)
+		let y2 = min(max(rect.maxY, 0), maxY)
+		return CGRect(x: x1, y: y1, width: max(0, x2 - x1), height: max(0, y2 - y1))
+	}
+
+	private func buildLookOutline(root: AXUIElement, transform: @escaping (CGRect) -> CGRect) -> LookNode {
+		let rootNode = lookNode(element: root, transform: transform, offscreen: false)
+		let nodeLimit = 2000
+		var walked = 1
+		var seen = Set<ObjectIdentifier>([ObjectIdentifier(root)])
+		var queue: [(AXUIElement, LookNode)] = [(root, rootNode)]
+		var index = 0
+		while index < queue.count {
+			let (element, node) = queue[index]
+			index += 1
+			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
+			if children.isEmpty { continue }
+			if walked >= nodeLimit {
+				node.truncated = true
+				continue
+			}
+			let visibleByKind = visibleChildrenByKind(element)
+			for child in children {
+				if walked >= nodeLimit {
+					node.truncated = true
+					break
+				}
+				let identity = ObjectIdentifier(child)
+				if seen.contains(identity) { continue }
+				seen.insert(identity)
+				let role = stringAttribute(child, attribute: kAXRoleAttribute as CFString) ?? ""
+				let offscreen = childOffscreen(child, role: role, visibleByKind: visibleByKind)
+				let childNode = lookNode(element: child, transform: transform, offscreen: offscreen)
+				node.children.append(childNode)
+				queue.append((child, childNode))
+				walked += 1
+			}
+		}
+		return rootNode
+	}
+
+	private func lookNode(element: AXUIElement, transform: (CGRect) -> CGRect, offscreen: Bool) -> LookNode {
+		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
+		let actions = actionNames(element)
+		var valueSettable = DarwinBoolean(false)
+		let valueStatus = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &valueSettable)
+		var focusedSettable = DarwinBoolean(false)
+		let focusedStatus = AXUIElementIsAttributeSettable(element, kAXFocusedAttribute as CFString, &focusedSettable)
+		let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField"]
+		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
+		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
+		let value = displayValue(element, role: role, subrole: subrole)
+		let screenRect = frameForElement(element) ?? .zero
+		let node = LookNode(
+			element: element,
+			ref: refStore.storeElement(element, snapshot: AXRefStore.Snapshot(
+				role: role,
+				identifier: stringAttribute(element, attribute: "AXIdentifier" as CFString) ?? "",
+				label: normalizedLabel([title, description, value].joined(separator: " ")),
+				rect: screenRect
+			)),
+			role: role,
+			subrole: subrole,
+			identifier: stringAttribute(element, attribute: "AXIdentifier" as CFString) ?? "",
+			title: title,
+			description: description,
+			value: value,
+			actions: actions,
+			canPress: actions.contains(kAXPressAction as String),
+			canFocus: focusedStatus == .success && focusedSettable.boolValue,
+			canSetValue: valueStatus == .success && valueSettable.boolValue,
+			canScroll: supportsAnyScrollAction(element),
+			canIncrement: actions.contains(kAXIncrementAction as String),
+			canDecrement: actions.contains(kAXDecrementAction as String),
+			isTextInput: textRoles.contains(role),
+			rect: transform(screenRect),
+			focused: boolAttribute(element, attribute: kAXFocusedAttribute as CFString) == true,
+			offscreen: offscreen
+		)
+		if node.canScroll {
+			let rows = axElementArray(element, attribute: kAXRowsAttribute as CFString)
+			let visibleRows = axElementArrayIfPresent(element, attribute: kAXVisibleRowsAttribute as CFString)
+			if !rows.isEmpty, let visibleRows {
+				node.scrollExtent = ["seen": visibleRows.count, "total": rows.count]
+			}
+		}
+		return node
+	}
+
+	private func visibleChildrenByKind(_ element: AXUIElement) -> [String: [AXUIElement]?] {
+		[
+			"AXRow": axElementArrayIfPresent(element, attribute: kAXVisibleRowsAttribute as CFString),
+			"AXColumn": axElementArrayIfPresent(element, attribute: kAXVisibleColumnsAttribute as CFString),
+			"AXCell": axElementArrayIfPresent(element, attribute: kAXVisibleCellsAttribute as CFString),
+			"*": axElementArrayIfPresent(element, attribute: kAXVisibleChildrenAttribute as CFString),
+		]
+	}
+
+	private func childOffscreen(_ child: AXUIElement, role: String, visibleByKind: [String: [AXUIElement]?]) -> Bool {
+		let key = role == "AXRow" || role == "AXColumn" || role == "AXCell" ? role : "*"
+		guard let visible = visibleByKind[key] ?? nil else { return false }
+		return !visible.contains { sameElement($0, child) }
+	}
+
+	private func sparseDescription(_ root: LookNode, imageWidth: Int, imageHeight: Int) -> Bool {
+		let imageRect = CGRect(x: 0, y: 0, width: imageWidth, height: imageHeight)
+		var count = 0
+		var queue = [root]
+		var index = 0
+		while index < queue.count {
+			let node = queue[index]
+			index += 1
+			if (!node.title.isEmpty || !node.description.isEmpty || !node.value.isEmpty) && node.rect.intersects(imageRect) {
+				count += 1
+				if count >= 3 { return false }
+			}
+			queue.append(contentsOf: node.children)
+		}
+		return true
+	}
+
+	private func recognizeText(in image: CGImage, outputWidth: Int, outputHeight: Int) throws -> [OCRBox] {
 		let semaphore = DispatchSemaphore(value: 0)
-		let recognized = Box<[[String: Any]]>([])
+		let recognized = Box<[OCRBox]>([])
 		let recognizedError = Box<Error?>(nil)
 		let request = VNRecognizeTextRequest { request, error in
 			defer { semaphore.signal() }
@@ -1002,245 +1299,279 @@ final class Bridge {
 			}
 			let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
 			recognized.value = observations.compactMap { observation in
-				guard let candidate = observation.topCandidates(1).first, Double(candidate.confidence) >= minConfidence else { return nil }
+				guard let candidate = observation.topCandidates(1).first else { return nil }
 				let box = observation.boundingBox
-				let x = box.origin.x * Double(image.width)
-				let y = (1.0 - box.origin.y - box.height) * Double(image.height)
-				let w = box.width * Double(image.width)
-				let h = box.height * Double(image.height)
-				return [
-					"text": candidate.string,
-					"confidence": Double(candidate.confidence),
-					"x": x + w / 2,
-					"y": y + h / 2,
-					"frame": ["x": x, "y": y, "w": w, "h": h],
-				]
+				let x = box.origin.x * Double(outputWidth)
+				let y = (1.0 - box.origin.y - box.height) * Double(outputHeight)
+				let w = box.width * Double(outputWidth)
+				let h = box.height * Double(outputHeight)
+				return OCRBox(string: candidate.string, confidence: Double(candidate.confidence), rect: CGRect(x: x, y: y, width: w, height: h))
 			}
 		}
 		request.recognitionLevel = .accurate
 		request.usesLanguageCorrection = false
 		try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
 		if semaphore.wait(timeout: .now() + .seconds(8)) == .timedOut {
-			throw BridgeFailure(message: "Vision grounding timed out", code: "vision_timeout")
+			throw BridgeFailure(message: "Text recognition timed out", code: "text_recognition_timeout")
 		}
 		if let error = recognizedError.value {
-			throw BridgeFailure(message: "Vision grounding failed: \(error.localizedDescription)", code: "vision_failed")
+			throw BridgeFailure(message: "Text recognition failed: \(error.localizedDescription)", code: "text_recognition_failed")
 		}
-		return ["targets": recognized.value, "width": image.width, "height": image.height]
+		return recognized.value
 	}
 
-	private func mouseClick(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "mouseClick requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-		let button = mouseButton(optionalStringArg(request, "button") ?? "left")
-		let clickCount = max(1, min(3, optionalIntArg(request, "clickCount") ?? 1))
-		let delivery = eventDelivery(request)
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseClick(at: point, pid: targetPid, button: button, clickCount: clickCount, delivery: delivery)
-		return ["clicked": true]
-	}
-
-	private func mouseMove(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "mouseMove requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-		let delivery = eventDelivery(request)
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postMouseMove(to: point, pid: targetPid, delivery: delivery)
-		return ["moved": true]
-	}
-
-	private func mouseDrag(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "mouseDrag requires pid in non-intrusive mode", code: "pid_required")
-		}
-		guard let rawPath = request["path"] as? [[String: Any]], rawPath.count >= 2 else {
-			throw BridgeFailure(message: "mouseDrag requires a path with at least two points", code: "invalid_args")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-		let points = try rawPath.map { rawPoint -> CGPoint in
-			guard let x = (rawPoint["x"] as? NSNumber)?.doubleValue,
-				let y = (rawPoint["y"] as? NSNumber)?.doubleValue
-			else {
-				throw BridgeFailure(message: "mouseDrag path entries must include numeric x and y", code: "invalid_args")
+	private func attachOCR(_ boxes: [OCRBox], to root: LookNode) {
+		var pictureOnlyIndex = 0
+		for box in boxes {
+			let center = CGPoint(x: box.rect.midX, y: box.rect.midY)
+			if let node = deepestNode(containing: center, in: root) {
+				node.text.append(["string": box.string, "confidence": box.confidence, "rect": ["x": box.rect.origin.x, "y": box.rect.origin.y, "w": box.rect.width, "h": box.rect.height]])
+			} else {
+				pictureOnlyIndex += 1
+				let parent = deepestContainer(containing: center, in: root) ?? root
+				parent.children.append(LookNode(element: nil, ref: "pic_\(pictureOnlyIndex)", role: "AXImage", subrole: "", identifier: "", title: box.string, description: "", value: "", actions: [], canPress: false, canFocus: false, canSetValue: false, canScroll: false, canIncrement: false, canDecrement: false, isTextInput: false, rect: box.rect, pictureOnly: true))
 			}
-			return try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
 		}
-		try postMouseDrag(points: points, pid: targetPid, delivery: eventDelivery(request))
-		return ["dragged": true]
 	}
 
-	private func scrollWheel(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "scrollWheel requires pid in non-intrusive mode", code: "pid_required")
+	private func deepestNode(containing point: CGPoint, in root: LookNode) -> LookNode? {
+		guard root.rect.contains(point), !root.pictureOnly else { return nil }
+		for child in root.children.reversed() {
+			if let match = deepestNode(containing: point, in: child) { return match }
 		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-		let scrollX = optionalIntArg(request, "scrollX") ?? 0
-		let scrollY = optionalIntArg(request, "scrollY") ?? 0
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		try postScrollWheel(at: point, deltaX: scrollX, deltaY: scrollY, pid: targetPid, delivery: eventDelivery(request))
-		return ["scrolled": true]
+		return root
 	}
 
-	private func keyPress(_ request: [String: Any]) throws -> [String: Any] {
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "keyPress requires pid in non-intrusive mode", code: "pid_required")
+	private func deepestContainer(containing point: CGPoint, in root: LookNode) -> LookNode? {
+		guard root.rect.contains(point) else { return nil }
+		for child in root.children.reversed() {
+			if let match = deepestContainer(containing: point, in: child) { return match }
 		}
-		guard let keys = request["keys"] as? [String], !keys.isEmpty else {
-			throw BridgeFailure(message: "keyPress requires at least one key", code: "invalid_args")
-		}
-		try postKeyPress(keys: keys, pid: targetPid, delivery: eventDelivery(request))
-		return ["pressed": true]
+		return root
 	}
 
-	private func axPressAtPoint(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axPressAtPoint requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		guard let hitElement = hitTestElement(at: point) else {
-			return ["pressed": false, "reason": "hit_test_failed"]
-		}
-
-		let result = performActionOrAncestor(startingAt: hitElement, action: kAXPressAction as CFString, targetPid: targetPid)
-		var output: [String: Any] = [
-			"pressed": result["performed"] as? Bool ?? false,
-		]
-		if let reason = result["reason"] as? String {
-			output["reason"] = reason
-		}
-		if let ownerPid = result["ownerPid"] {
-			output["ownerPid"] = ownerPid
-		}
-		return output
+	private func lookPoint(record: LookRecord, x: Double, y: Double) -> CGPoint {
+		let relX = min(max(x / max(1.0, Double(record.imageWidth)), 0), 1)
+		let relY = min(max(y / max(1.0, Double(record.imageHeight)), 0), 1)
+		return CGPoint(x: record.windowFrame.origin.x + record.windowFrame.width * relX, y: record.windowFrame.origin.y + record.windowFrame.height * relY)
 	}
 
-	private func axFindTextInput(_ request: [String: Any]) throws -> [String: Any] {
-		let pid = Int32(try intArg(request, "pid"))
-		ensureEnhancedAccessibility(pid: pid)
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		let windowRef = optionalStringArg(request, "windowRef")
-		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
-			return ["found": false, "reason": "window_not_found"]
-		}
-		let textRoles: Set<String> = [
-			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
-		]
-		let isBrowser = isBrowser(pid: pid)
-		var elements = collectDescendants(startingAt: window, maxDepth: isBrowser ? 14 : 8)
-		let containsWebArea = elements.contains { self.stringAttribute($0, attribute: kAXRoleAttribute as CFString) == "AXWebArea" }
-		let isHybrid = isBrowser || containsWebArea
-		if isHybrid && !isBrowser {
-			elements = collectDescendants(startingAt: window, maxDepth: 14)
-		}
-		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
-			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
-			var valueSettable = DarwinBoolean(false)
-			let valueStatus = AXUIElementIsAttributeSettable(candidate, kAXValueAttribute as CFString, &valueSettable)
-			let canSetValue = valueStatus == .success && valueSettable.boolValue
-			guard textRoles.contains(role) || canSetValue else { return nil }
-			return (candidate, self.scoreTextInputElement(candidate, role: role))
-		}.sorted { $0.1 > $1.1 }
-		guard let best = ranked.first else {
-			return ["found": false, "reason": "no_text_input"]
-		}
-		return rankedElementPayload(best: best, ranked: ranked, key: "found")
-	}
-
-	private func axFocusTextInput(_ request: [String: Any]) throws -> [String: Any] {
-		let found = try axFindTextInput(request)
-		guard (found["found"] as? Bool) == true, let elementRef = found["elementRef"] as? String else {
-			return found
-		}
-		guard let element = refStore.element(for: elementRef) else {
-			return ["focused": false, "reason": "element_ref_invalid"]
-		}
-		var settable = DarwinBoolean(false)
-		let status = AXUIElementIsAttributeSettable(element, kAXFocusedAttribute as CFString, &settable)
-		guard status == .success && settable.boolValue else {
-			var payload = found
-			payload["focused"] = false
-			payload["reason"] = "not_focusable"
-			return payload
-		}
-		let setStatus = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-		var payload = found
-		payload["focused"] = (setStatus == .success)
-		if setStatus != .success {
-			payload["reason"] = "focus_failed"
-		}
+	private func payloadNode(element: AXUIElement) -> [String: Any] {
+		let node = lookNode(element: element, transform: { $0 }, offscreen: false)
+		var payload = node.payload()
+		payload["children"] = []
 		return payload
 	}
 
-	private func axSnapshotTree(_ request: [String: Any]) throws -> [String: Any] {
+	private func normalizedLabel(_ value: String) -> String {
+		value.lowercased().components(separatedBy: CharacterSet.whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+	}
+
+	private func refindElement(ref: String, pid: Int32, windowId: UInt32) -> AXUIElement? {
+		guard let snapshot = refStore.snapshot(for: ref),
+			let window = windowElement(pid: pid, windowId: windowId)
+		else { return nil }
+		let targetCenter = CGPoint(x: snapshot.rect.midX, y: snapshot.rect.midY)
+		let candidates = collectDescendants(startingAt: window, maxDepth: 8).filter { candidate in
+			let role = stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			guard role == snapshot.role else { return false }
+			let identifier = stringAttribute(candidate, attribute: "AXIdentifier" as CFString) ?? ""
+			if !snapshot.identifier.isEmpty { return identifier == snapshot.identifier }
+			let subrole = stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
+			let title = stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
+			let description = stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
+			let value = displayValue(candidate, role: role, subrole: subrole)
+			return normalizedLabel([title, description, value].joined(separator: " ")) == snapshot.label
+		}
+		return candidates.min { left, right in
+			let leftFrame = frameForElement(left) ?? .zero
+			let rightFrame = frameForElement(right) ?? .zero
+			let leftDistance = hypot(leftFrame.midX - targetCenter.x, leftFrame.midY - targetCenter.y)
+			let rightDistance = hypot(rightFrame.midX - targetCenter.x, rightFrame.midY - targetCenter.y)
+			return leftDistance < rightDistance
+		}
+	}
+
+	private func hitTest(_ request: [String: Any]) throws -> [String: Any] {
+		let lookId = try stringArg(request, "lookId")
+		guard let record = lookRecords[lookId] else {
+			throw BridgeFailure(message: "Look id '\(lookId)' is no longer available", code: "stale_look")
+		}
+		let point = lookPoint(record: record, x: try doubleArg(request, "x"), y: try doubleArg(request, "y"))
+		guard let element = hitTestElement(at: point) else {
+			throw BridgeFailure(message: "No element at point", code: "hit_test_failed")
+		}
+		return payloadNode(element: element)
+	}
+
+	private func act(_ request: [String: Any]) throws -> [String: Any] {
+		let lookId = try stringArg(request, "lookId")
+		guard let record = lookRecords[lookId] else {
+			throw BridgeFailure(message: "Look id '\(lookId)' is no longer available", code: "stale_look")
+		}
 		let pid = Int32(try intArg(request, "pid"))
-		ensureEnhancedAccessibility(pid: pid)
-		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
-		let windowRef = optionalStringArg(request, "windowRef")
-		let maxDepth = max(1, min(20, optionalIntArg(request, "maxDepth") ?? 4))
-		let maxNodes = max(1, min(500, optionalIntArg(request, "maxNodes") ?? 120))
-		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
-			return ["targets": [], "diagnostics": ["reason": "window_not_found"]]
-		}
-		let root: AXUIElement
-		if let elementRef = optionalStringArg(request, "elementRef") {
-			guard let scoped = refStore.element(for: elementRef), isElement(scoped, descendantOf: window) else {
-				throw BridgeFailure(message: "Scope ref is stale or outside the target window. Call snapshot/screenshot again and use a current ref.", code: "element_ref_invalid")
+		let action = try stringArg(request, "action")
+		let target = request["target"] as? [String: Any] ?? [:]
+		let params = request["params"] as? [String: Any] ?? [:]
+		let policy = optionalStringArg(request, "policy") ?? "default"
+		let delivery = policy == "background" ? "pid" : ((params["delivery"] as? String) == "pid" ? "pid" : "hid")
+		var performed: [String: Any] = ["delivery": delivery]
+		var element: AXUIElement?
+		var rawPoint: CGPoint?
+		var preflightCapsUnknown = false
+		let beforeSheetCount = windowElement(pid: pid, windowId: record.windowId).map { axElementArray($0, attribute: "AXSheets" as CFString).count } ?? 0
+		let beforeFocusedWindow = focusedWindowSummary(pid: pid)
+		let beforeValue: String?
+		let beforeSelected: String?
+
+		if let ref = target["ref"] as? String {
+			var refound = false
+			let resolved = refStore.element(for: ref) ?? {
+				refound = true
+				return refindElement(ref: ref, pid: pid, windowId: record.windowId)
+			}()
+			guard let stored = resolved else {
+				throw BridgeFailure(message: "Element reference is stale", code: "stale_ref")
 			}
-			root = scoped
+			if refound { performed["refound"] = true }
+			element = stored
+			beforeValue = stringAttribute(stored, attribute: kAXValueAttribute as CFString)
+			beforeSelected = stringAttribute(stored, attribute: kAXSelectedTextAttribute as CFString)
+		} else if let xNumber = target["x"] as? NSNumber, let yNumber = target["y"] as? NSNumber {
+			rawPoint = lookPoint(record: record, x: xNumber.doubleValue, y: yNumber.doubleValue)
+			beforeValue = nil
+			beforeSelected = nil
 		} else {
-			root = window
+			throw BridgeFailure(message: "act target must include ref or x/y", code: "invalid_args")
 		}
-		let descendants = collectDescendantsWithContext(startingAt: root, maxDepth: maxDepth, maxNodes: maxNodes)
-		let isBrowser = isBrowser(pid: pid)
-		let containsWebArea = descendants.contains { descendant in
-			self.stringAttribute(descendant.element, attribute: kAXRoleAttribute as CFString) == "AXWebArea"
+
+		func coordinatePoint() throws -> CGPoint {
+			if let element, let frame = frameForElement(element) {
+				return CGPoint(x: frame.midX, y: frame.midY)
+			}
+			if let rawPoint { return rawPoint }
+			throw BridgeFailure(message: "No coordinate grounding is available", code: "coordinate_unavailable")
 		}
-		let targets = descendants.map { descendant -> [String: Any] in
-			let role = self.stringAttribute(descendant.element, attribute: kAXRoleAttribute as CFString) ?? ""
-			var payload = self.elementPayload(
-				element: descendant.element,
-				key: "target",
-				source: self.axSource(role: role, insideWebArea: descendant.insideWebArea, isBrowser: isBrowser, containsWebArea: containsWebArea),
-				axVisible: descendant.axVisible
-			)
-			payload["depth"] = descendant.depth
-			return payload
+
+		func preflight(_ point: CGPoint) throws {
+			guard let element else { preflightCapsUnknown = true; return }
+			guard let hit = hitTestElement(at: point) else { preflightCapsUnknown = true; return }
+			if sameElement(hit, element) || isElement(hit, descendantOf: element) || isElement(element, descendantOf: hit) { return }
+			let role = stringAttribute(hit, attribute: kAXRoleAttribute as CFString) ?? ""
+			if role == "AXWindow" || role == "AXApplication" { preflightCapsUnknown = true; return }
+			throw BridgeFailure(message: "Target is occluded by \(payloadNode(element: hit))", code: "occluded_target")
 		}
-		return [
-			"targets": targets,
-			"diagnostics": [
-				"axTreeNodeCount": descendants.count,
-				"maxDepth": maxDepth,
-				"maxNodes": maxNodes,
-				"hitMaxNodes": descendants.count >= maxNodes,
-				"containsWebArea": containsWebArea,
-				"isBrowser": isBrowser,
-			],
-		]
+
+		func executeCoordinates(_ point: CGPoint) throws {
+			if policy == "ax_only" {
+				throw BridgeFailure(message: "AX-only policy blocks coordinate grounding", code: "coordinate_blocked")
+			}
+			performed["grounding"] = "coordinates"
+			try preflight(point)
+			switch action {
+			case "press", "click":
+				try postMouseClick(at: point, pid: pid, button: mouseButton(params["button"] as? String ?? "left"), clickCount: max(1, min(3, (params["clickCount"] as? NSNumber)?.intValue ?? 1)), delivery: delivery)
+			case "moveMouse":
+				try postMouseMove(to: point, pid: pid, delivery: delivery)
+			case "scroll":
+				try postScrollWheel(at: point, deltaX: (params["scrollX"] as? NSNumber)?.intValue ?? 0, deltaY: (params["scrollY"] as? NSNumber)?.intValue ?? 0, pid: pid, delivery: delivery)
+			case "drag":
+				guard let rawPath = params["path"] as? [[String: Any]], rawPath.count >= 2 else {
+					throw BridgeFailure(message: "drag requires path", code: "invalid_args")
+				}
+				let points = try rawPath.map { raw -> CGPoint in
+					guard let x = (raw["x"] as? NSNumber)?.doubleValue, let y = (raw["y"] as? NSNumber)?.doubleValue else {
+						throw BridgeFailure(message: "drag path entries require x and y", code: "invalid_args")
+					}
+					return lookPoint(record: record, x: x, y: y)
+				}
+				try postMouseDrag(points: points, pid: pid, delivery: delivery)
+			default:
+				throw BridgeFailure(message: "Action \(action) cannot use coordinate grounding", code: "invalid_args")
+			}
+		}
+
+		if let element, action == "press" || action == "click" {
+			if supportsAction(element, action: kAXPressAction as CFString) {
+				let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
+				if status == .success {
+					performed["grounding"] = "description"
+					performed["delivery"] = "ax"
+				} else {
+					try executeCoordinates(coordinatePoint())
+				}
+			} else {
+				try executeCoordinates(coordinatePoint())
+			}
+		} else if let element, action == "setText" {
+			let text = params["text"] as? String ?? ""
+			let status = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFTypeRef)
+			if status == .success {
+				performed["grounding"] = "description"
+				performed["delivery"] = "ax"
+				let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+				return ["outcome": value == text ? "worked" : "didnt", "performed": performed, "evidence": ["value": value]]
+			}
+			try executeCoordinates(coordinatePoint())
+		} else if action == "typeText" {
+			if policy == "ax_only" {
+				throw BridgeFailure(message: "AX-only policy blocks raw text input", code: "coordinate_blocked")
+			}
+			try postUnicodeText(params["text"] as? String ?? "", pid: pid, delivery: delivery)
+			performed["grounding"] = "coordinates"
+		} else if action == "keypress" {
+			if policy == "ax_only" {
+				throw BridgeFailure(message: "AX-only policy blocks raw key input", code: "coordinate_blocked")
+			}
+			guard let keys = params["keys"] as? [String], !keys.isEmpty else {
+				throw BridgeFailure(message: "keypress requires keys", code: "invalid_args")
+			}
+			try postKeyPress(keys: keys, pid: pid, delivery: delivery)
+			performed["grounding"] = "coordinates"
+		} else if let element, action == "scroll" {
+			let before = scrollPositionSignature(element)
+			let result = performScrollActionOrAncestor(startingAt: element, targetPid: pid, scrollX: (params["scrollX"] as? NSNumber)?.intValue ?? 0, scrollY: (params["scrollY"] as? NSNumber)?.intValue ?? 0, steps: 1)
+			if (result["scrolled"] as? Bool) == true {
+				performed["grounding"] = "description"
+				performed["delivery"] = "ax"
+				let after = scrollPositionSignature(element)
+				return ["outcome": before != after ? "worked" : "unknown", "performed": performed]
+			}
+			try executeCoordinates(coordinatePoint())
+		} else {
+			try executeCoordinates(coordinatePoint())
+		}
+
+		let afterSheetCount = windowElement(pid: pid, windowId: record.windowId).map { axElementArray($0, attribute: "AXSheets" as CFString).count } ?? beforeSheetCount
+		let windowChanged = beforeFocusedWindow != focusedWindowSummary(pid: pid) || beforeSheetCount != afterSheetCount
+		var outcome = preflightCapsUnknown ? "unknown" : "unknown"
+		var evidence: [String: Any] = [:]
+		if let element, action == "press" || action == "click" {
+			let afterValue = stringAttribute(element, attribute: kAXValueAttribute as CFString)
+			let afterSelected = stringAttribute(element, attribute: kAXSelectedTextAttribute as CFString)
+			if beforeValue != afterValue || beforeSelected != afterSelected || windowChanged {
+				outcome = "worked"
+			}
+		} else if windowChanged {
+			outcome = "worked"
+		}
+		if windowChanged { evidence["windowChanged"] = true }
+		var response: [String: Any] = ["outcome": outcome, "performed": performed]
+		if !evidence.isEmpty { response["evidence"] = evidence }
+		return response
+	}
+
+	private func focusedWindowSummary(pid: Int32) -> String {
+		let app = AXUIElementCreateApplication(pid)
+		guard let element = copyAttribute(app, attribute: kAXFocusedWindowAttribute as CFString).flatMap(asAXElement) else { return "none" }
+		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
+		return "\(role):\(title)"
+	}
+
+	private func scrollPositionSignature(_ element: AXUIElement) -> String {
+		let names: [CFString] = ["AXVerticalScrollBar" as CFString, "AXHorizontalScrollBar" as CFString, kAXValueAttribute as CFString]
+		return names.map { String(describing: copyAttribute(element, attribute: $0) ?? "" as CFTypeRef) }.joined(separator: "|")
 	}
 
 	private func axWaitFor(_ request: [String: Any]) throws -> [String: Any] {
@@ -1306,120 +1637,12 @@ final class Bridge {
 		return ["found": false, "timedOut": true, "nodeCount": lastCount]
 	}
 
-	private func axPressElement(_ request: [String: Any]) throws -> [String: Any] {
-		let elementRef = try stringArg(request, "elementRef")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axPressElement requires pid in non-intrusive mode", code: "pid_required")
-		}
-		guard let element = refStore.element(for: elementRef) else {
-			return ["pressed": false, "reason": "element_ref_invalid"]
-		}
-		let result = performActionOrAncestor(startingAt: element, action: kAXPressAction as CFString, targetPid: targetPid)
-		var output: [String: Any] = ["pressed": result["performed"] as? Bool ?? false]
-		if let reason = result["reason"] as? String {
-			output["reason"] = reason
-		}
-		if let ownerPid = result["ownerPid"] {
-			output["ownerPid"] = ownerPid
-		}
-		return output
-	}
-
-	private func axPerformActionElement(_ request: [String: Any]) throws -> [String: Any] {
-		let elementRef = try stringArg(request, "elementRef")
-		let action = try axActionName(try stringArg(request, "action"))
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axPerformActionElement requires pid in non-intrusive mode", code: "pid_required")
-		}
-		guard let element = refStore.element(for: elementRef) else {
-			return ["performed": false, "reason": "element_ref_invalid"]
-		}
-		return performActionOrAncestor(startingAt: element, action: action, targetPid: targetPid)
-	}
-
-	private func axFocusElement(_ request: [String: Any]) throws -> [String: Any] {
-		let elementRef = try stringArg(request, "elementRef")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axFocusElement requires pid in non-intrusive mode", code: "pid_required")
-		}
-		guard let element = refStore.element(for: elementRef) else {
-			return ["focused": false, "reason": "element_ref_invalid"]
-		}
-		return focusElementOrAncestor(startingAt: element, targetPid: targetPid)
-	}
-
-	private func axFocusAtPoint(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axFocusAtPoint requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		guard let hitElement = hitTestElement(at: point) else {
-			return ["focused": false, "reason": "hit_test_failed"]
-		}
-
-		return focusElementOrAncestor(startingAt: hitElement, targetPid: targetPid)
-	}
-
-	private func axScrollElement(_ request: [String: Any]) throws -> [String: Any] {
-		let elementRef = try stringArg(request, "elementRef")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axScrollElement requires pid in non-intrusive mode", code: "pid_required")
-		}
-		guard let element = refStore.element(for: elementRef) else {
-			return ["scrolled": false, "reason": "element_ref_invalid"]
-		}
-		return performScrollActionOrAncestor(startingAt: element, targetPid: targetPid, scrollX: optionalIntArg(request, "scrollX") ?? 0, scrollY: optionalIntArg(request, "scrollY") ?? 0, steps: max(1, min(8, optionalIntArg(request, "steps") ?? 1)))
-	}
-
-	private func axScrollAtPoint(_ request: [String: Any]) throws -> [String: Any] {
-		let windowId = UInt32(try intArg(request, "windowId"))
-		let x = try doubleArg(request, "x")
-		let y = try doubleArg(request, "y")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "axScrollAtPoint requires pid in non-intrusive mode", code: "pid_required")
-		}
-		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
-		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
-		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
-		guard let hitElement = hitTestElement(at: point) else {
-			return ["scrolled": false, "reason": "hit_test_failed"]
-		}
-		return performScrollActionOrAncestor(startingAt: hitElement, targetPid: targetPid, scrollX: optionalIntArg(request, "scrollX") ?? 0, scrollY: optionalIntArg(request, "scrollY") ?? 0, steps: max(1, min(8, optionalIntArg(request, "steps") ?? 1)))
-	}
-
 	private func hitTestElement(at point: CGPoint) -> AXUIElement? {
 		let systemWide = AXUIElementCreateSystemWide()
 		var hitElement: AXUIElement?
 		let status = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hitElement)
 		guard status == .success, let hitElement else { return nil }
 		return hitElement
-	}
-
-	private func axActionName(_ actionName: String) throws -> CFString {
-		switch actionName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-		case "press":
-			return kAXPressAction as CFString
-		case "increment":
-			return kAXIncrementAction as CFString
-		case "decrement":
-			return kAXDecrementAction as CFString
-		case "confirm":
-			return kAXConfirmAction as CFString
-		case "cancel":
-			return kAXCancelAction as CFString
-		case "showmenu", "show_menu", "menu":
-			return kAXShowMenuAction as CFString
-		case "pick":
-			return kAXPickAction as CFString
-		default:
-			throw BridgeFailure(message: "Unsupported AX action '\(actionName)'", code: "invalid_args")
-		}
 	}
 
 	private let axScrollDownAction = "AXScrollDown" as CFString
@@ -1489,31 +1712,6 @@ final class Bridge {
 		return ["performed": false, "reason": "no_matching_action"]
 	}
 
-	private func focusElementOrAncestor(startingAt element: AXUIElement, targetPid: Int32) -> [String: Any] {
-		var current: AXUIElement? = element
-		var depth = 0
-
-		while let candidate = current, depth < 10 {
-			if let pid = pidForElement(candidate), pid != targetPid {
-				return ["focused": false, "reason": "pid_mismatch", "ownerPid": Int(pid)]
-			}
-
-			var settable = DarwinBoolean(false)
-			let status = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &settable)
-			if status == .success && settable.boolValue {
-				let setStatus = AXUIElementSetAttributeValue(candidate, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-				if setStatus == .success {
-					return ["focused": true]
-				}
-			}
-
-			current = parentElement(candidate)
-			depth += 1
-		}
-
-		return ["focused": false, "reason": "no_focusable_ancestor"]
-	}
-
 	private func windowElement(pid: Int32, windowId: UInt32?, windowRef: String? = nil) -> AXUIElement? {
 		if let windowRef, let stored = refStore.window(for: windowRef) {
 			AXUIElementSetMessagingTimeout(stored, 1.0)
@@ -1531,10 +1729,9 @@ final class Bridge {
 			return windows.first
 		}
 		let candidates = cgWindowCandidates(pid: pid)
+		let pairings = windowPairings(windows: windows, candidates: candidates)
 		for window in windows {
-			let title = stringAttribute(window, attribute: kAXTitleAttribute as CFString) ?? ""
-			let frame = frameForWindow(window)
-			if let candidate = bestCandidate(frame: frame, title: title, candidates: candidates, usedIds: []), candidate.windowId == windowId {
+			if pairings[ObjectIdentifier(window)]?.candidate?.windowId == windowId {
 				return window
 			}
 		}
@@ -1621,71 +1818,11 @@ final class Bridge {
 		return "desktop_ax"
 	}
 
-	private func scoreTextInputElement(_ element: AXUIElement, role: String) -> Double {
-		var score = 0.0
-		if role == "AXSearchField" { score += 120 }
-		if role == "AXTextField" { score += 100 }
-		if role == "AXComboBox" { score += 80 }
-		if role == "AXTextArea" || role == "AXTextView" || role == "AXEditableText" { score += 70 }
-		if role == "AXSecureTextField" { score -= 40 }
-		if let frame = frameForElement(element) {
-			score += min(120, Double(frame.width * frame.height) / 5000.0)
-			if frame.width > 40 && frame.height > 16 { score += 20 }
-			if frame.origin.y < 220 { score += 15 }
-		} else {
-			score -= 100
-		}
-		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
-		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
-		if !title.isEmpty { score += 10 }
-		if !value.isEmpty { score += 5 }
-		return score
-	}
-
 	private func frameForElement(_ element: AXUIElement) -> CGRect? {
 		let origin = pointAttribute(element, attribute: kAXPositionAttribute as CFString)
 		let size = sizeAttribute(element, attribute: kAXSizeAttribute as CFString)
 		guard let origin, let size, size.width > 0, size.height > 0 else { return nil }
 		return CGRect(origin: origin, size: size)
-	}
-
-	private func rankedElementPayload(best: (AXUIElement, Double), ranked: [(AXUIElement, Double)], key: String) -> [String: Any] {
-		var payload = elementPayload(element: best.0, key: key, score: best.1)
-		payload["confidence"] = confidenceLabel(ranked)
-		payload["candidates"] = Array(ranked.prefix(3)).map { candidate, score in
-			candidateSummary(element: candidate, score: score)
-		}
-		return payload
-	}
-
-	private func confidenceLabel(_ ranked: [(AXUIElement, Double)]) -> String {
-		guard let first = ranked.first else { return "none" }
-		guard ranked.count > 1 else { return "high" }
-		let delta = first.1 - ranked[1].1
-		if delta >= 40 { return "high" }
-		if delta >= 15 { return "medium" }
-		return "low"
-	}
-
-	private func candidateSummary(element: AXUIElement, score: Double) -> [String: Any] {
-		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
-		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
-		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
-		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
-		let value = displayValue(element, role: role, subrole: subrole)
-		var summary: [String: Any] = [
-			"role": role,
-			"subrole": subrole,
-			"title": title,
-			"description": description,
-			"value": value,
-			"score": score,
-			"actions": actionNames(element),
-		]
-		if let frame = frameForElement(element) {
-			summary["frame"] = ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height]
-		}
-		return summary
 	}
 
 	private func elementPayload(element: AXUIElement, key: String, score: Double? = nil, source: String? = nil, axVisible: Bool = true) -> [String: Any] {
@@ -1838,39 +1975,6 @@ final class Bridge {
 		]
 	}
 
-	private func setValue(_ request: [String: Any]) throws -> [String: Any] {
-		let elementRef = try stringArg(request, "elementRef")
-		let value = try stringArg(request, "value")
-		guard let element = refStore.element(for: elementRef) else {
-			throw BridgeFailure(message: "Element reference is no longer valid", code: "element_ref_invalid")
-		}
-
-		let status = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFTypeRef)
-		if status != .success {
-			throw BridgeFailure(message: "Failed to set value (AX error \(status.rawValue))", code: "set_value_failed")
-		}
-		return ["set": true, "value": stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""]
-	}
-
-	private func selectText(_ request: [String: Any]) throws -> [String: Any] {
-		let elementRef = try stringArg(request, "elementRef")
-		guard let element = refStore.element(for: elementRef) else {
-			throw BridgeFailure(message: "Element reference is no longer valid", code: "element_ref_invalid")
-		}
-		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
-		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
-		let value = displayValue(element, role: role, subrole: subrole)
-		var range = CFRange(location: max(0, optionalIntArg(request, "start") ?? 0), length: max(0, optionalIntArg(request, "length") ?? value.count))
-		guard let axRange = AXValueCreate(.cfRange, &range) else {
-			throw BridgeFailure(message: "Failed to create selected text range", code: "select_text_failed")
-		}
-		let status = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
-		if status != .success {
-			throw BridgeFailure(message: "Failed to select text (AX error \(status.rawValue))", code: "select_text_failed")
-		}
-		return ["selected": true, "length": range.length]
-	}
-
 	private func axReadText(_ request: [String: Any]) throws -> [String: Any] {
 		let elementRef = try stringArg(request, "elementRef")
 		let offset = max(0, optionalIntArg(request, "offset") ?? 0)
@@ -1898,15 +2002,6 @@ final class Bridge {
 			"totalChars": characters.count,
 			"hasMore": end < characters.count,
 		]
-	}
-
-	private func typeText(_ request: [String: Any]) throws -> [String: Any] {
-		let text = try stringArg(request, "text")
-		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
-			throw BridgeFailure(message: "typeText requires pid in non-intrusive mode", code: "pid_required")
-		}
-		try postUnicodeText(text, pid: targetPid, delivery: eventDelivery(request))
-		return ["typed": true]
 	}
 
 	private func getMousePosition() -> [String: Any] {
@@ -1949,6 +2044,19 @@ final class Bridge {
 
 	private func axElementArray(_ element: AXUIElement, attribute: CFString) -> [AXUIElement] {
 		guard let value = copyAttribute(element, attribute: attribute) else { return [] }
+		if let array = value as? [AXUIElement] {
+			return array
+		}
+		if let anyArray = value as? [AnyObject] {
+			return anyArray.compactMap(asAXElement)
+		}
+		return []
+	}
+
+	private func axElementArrayIfPresent(_ element: AXUIElement, attribute: CFString) -> [AXUIElement]? {
+		var value: CFTypeRef?
+		let status = AXUIElementCopyAttributeValue(element, attribute, &value)
+		guard status == .success, let value else { return nil }
 		if let array = value as? [AXUIElement] {
 			return array
 		}
@@ -2016,6 +2124,10 @@ final class Bridge {
 		return owners
 	}
 
+	private func pidForWindowId(_ windowId: UInt32) -> Int32? {
+		windowInfo(windowId: windowId)?.pid
+	}
+
 	private func cgWindowCandidates(pid: Int32) -> [CGWindowCandidate] {
 		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
 			return []
@@ -2054,42 +2166,72 @@ final class Bridge {
 		return candidates
 	}
 
-	private func bestCandidate(
-		frame: CGRect,
-		title: String,
-		candidates: [CGWindowCandidate],
-		usedIds: Set<UInt32>
-	) -> CGWindowCandidate? {
-		var best: (candidate: CGWindowCandidate, score: Double)?
-		let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+	private func pairingForWindow(_ window: AXUIElement, pid: Int32) -> WindowPairing {
+		windowPairings(windows: [window], candidates: cgWindowCandidates(pid: pid))[ObjectIdentifier(window)] ?? WindowPairing(candidate: nil, score: -Double.greatestFiniteMagnitude, confidence: "low")
+	}
 
-		for candidate in candidates where !usedIds.contains(candidate.windowId) {
-			var score = 0.0
-			let candidateTitle = candidate.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-			if !normalizedTitle.isEmpty {
-				if candidateTitle == normalizedTitle {
-					score += 100
-				} else if candidateTitle.contains(normalizedTitle) {
-					score += 50
-				}
+	private func windowPairings(windows: [AXUIElement], candidates: [CGWindowCandidate]) -> [ObjectIdentifier: WindowPairing] {
+		var pairs: [(window: AXUIElement, candidate: CGWindowCandidate, score: Double)] = []
+		for window in windows {
+			let title = stringAttribute(window, attribute: kAXTitleAttribute as CFString) ?? ""
+			let frame = frameForWindow(window)
+			for candidate in candidates {
+				pairs.append((window, candidate, windowPairScore(frame: frame, title: title, candidate: candidate)))
 			}
+		}
+		pairs.sort { $0.score > $1.score }
+		var output: [ObjectIdentifier: WindowPairing] = [:]
+		var usedWindows = Set<ObjectIdentifier>()
+		var usedCandidateIds = Set<UInt32>()
+		for pair in pairs {
+			let key = ObjectIdentifier(pair.window)
+			if usedWindows.contains(key) || usedCandidateIds.contains(pair.candidate.windowId) { continue }
+			usedWindows.insert(key)
+			usedCandidateIds.insert(pair.candidate.windowId)
+			let frame = frameForWindow(pair.window)
+			let title = stringAttribute(pair.window, attribute: kAXTitleAttribute as CFString) ?? ""
+			output[key] = WindowPairing(candidate: pair.score >= 0 ? pair.candidate : nil, score: pair.score, confidence: pairingConfidence(frame: frame, title: title, candidate: pair.candidate, score: pair.score))
+		}
+		for window in windows {
+			let key = ObjectIdentifier(window)
+			if output[key] == nil {
+				output[key] = WindowPairing(candidate: nil, score: -Double.greatestFiniteMagnitude, confidence: "low")
+			}
+		}
+		return output
+	}
 
+	private func windowPairScore(frame: CGRect, title: String, candidate: CGWindowCandidate) -> Double {
+		var score = 0.0
+		let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		let candidateTitle = candidate.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		if !normalizedTitle.isEmpty && !candidateTitle.isEmpty {
+			if normalizedTitle == candidateTitle {
+				score += 100
+			} else if normalizedTitle.contains(candidateTitle) || candidateTitle.contains(normalizedTitle) {
+				score += 50
+			}
+		}
+		if frame.width > 1 && frame.height > 1 {
 			let dx = abs(candidate.bounds.origin.x - frame.origin.x)
 			let dy = abs(candidate.bounds.origin.y - frame.origin.y)
 			let dw = abs(candidate.bounds.size.width - frame.size.width)
 			let dh = abs(candidate.bounds.size.height - frame.size.height)
 			score -= Double(dx + dy + dw + dh) / 20.0
-
-			if let currentBest = best {
-				if score > currentBest.score {
-					best = (candidate, score)
-				}
-			} else {
-				best = (candidate, score)
-			}
 		}
+		if candidate.isOnscreen { score += 10 }
+		return score
+	}
 
-		return best?.candidate
+	private func pairingConfidence(frame: CGRect, title: String, candidate: CGWindowCandidate, score: Double) -> String {
+		guard frame.width > 1 && frame.height > 1 else { return "low" }
+		let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		let candidateTitle = candidate.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		let titleEqual = !normalizedTitle.isEmpty && !candidateTitle.isEmpty && normalizedTitle == candidateTitle
+		let geometryExact = abs(frame.origin.x - candidate.bounds.origin.x) <= 2 && abs(frame.origin.y - candidate.bounds.origin.y) <= 2 && abs(frame.width - candidate.bounds.width) <= 2 && abs(frame.height - candidate.bounds.height) <= 2
+		if titleEqual && geometryExact { return "exact" }
+		if score >= 50 { return "high" }
+		return "low"
 	}
 
 	private func displayScaleFactor(for frame: CGRect) -> Double {
@@ -2125,7 +2267,7 @@ final class Bridge {
 		return scale > 0 ? scale : 1.0
 	}
 
-	private func captureWindow(windowId: UInt32, maxDimension: Int? = nil) throws -> [String: Any] {
+	private func captureWindow(windowId: UInt32) throws -> CapturedWindowImage {
 #if PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
 		if #available(macOS 14.0, *) {
 			let semaphore = DispatchSemaphore(value: 0)
@@ -2157,57 +2299,36 @@ final class Bridge {
 
 			if semaphore.wait(timeout: .now() + .seconds(8)) == .timedOut {
 				task.cancel()
-				if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
+				if let payload = try cgWindowScreenshotFallback(windowId: windowId) {
 					return payload
 				}
-				throw BridgeFailure(message: "Screenshot timed out while capturing window \(windowId)", code: "screenshot_timeout")
+				throw BridgeFailure(message: "Capture timed out while capturing window \(windowId)", code: "capture_timeout")
 			}
 
 			if let error = capturedError.value {
-				if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
+				if let payload = try cgWindowScreenshotFallback(windowId: windowId) {
 					return payload
 				}
 				if let failure = error as? BridgeFailure {
 					throw failure
 				}
-				throw BridgeFailure(message: "Screenshot failed: \(error.localizedDescription)", code: "screenshot_failed")
+				throw BridgeFailure(message: "Capture failed: \(error.localizedDescription)", code: "capture_failed")
 			}
 
 			guard let image = capturedImage.value else {
-				if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
+				if let payload = try cgWindowScreenshotFallback(windowId: windowId) {
 					return payload
 				}
-				throw BridgeFailure(message: "Screenshot failed", code: "screenshot_failed")
+				throw BridgeFailure(message: "Capture failed", code: "capture_failed")
 			}
 
-			return try screenshotPayload(image: image, windowId: windowId, maxDimension: maxDimension)
+			return CapturedWindowImage(image: image, windowId: windowId, frame: currentWindowBounds(windowId: windowId) ?? CGRect(x: 0, y: 0, width: image.width, height: image.height))
 		}
 #endif
-		if let payload = try cgWindowScreenshotFallback(windowId: windowId, maxDimension: maxDimension) {
+		if let payload = try cgWindowScreenshotFallback(windowId: windowId) {
 			return payload
 		}
-		throw BridgeFailure(message: "Screenshot failed", code: "screenshot_failed")
-	}
-
-	private func screenshotPayload(image: CGImage, windowId: UInt32, maxDimension: Int? = nil) throws -> [String: Any] {
-		let outputImage = downscaledImage(image, maxDimension: maxDimension) ?? image
-		guard let pngData = NSBitmapImageRep(cgImage: outputImage).representation(using: .png, properties: [:]) else {
-			throw BridgeFailure(message: "Failed to encode screenshot as PNG", code: "encoding_failed")
-		}
-
-		let bounds = currentWindowBounds(windowId: windowId)
-		let scale = bounds.map { $0.width > 0 ? Double(outputImage.width) / $0.width : displayScaleFactor(for: $0) } ?? 1.0
-
-		var payload: [String: Any] = [
-			"pngBase64": pngData.base64EncodedString(),
-			"width": outputImage.width,
-			"height": outputImage.height,
-			"scaleFactor": scale,
-		]
-		if let jpegData = jpegData(image: outputImage, quality: 0.68) {
-			payload["jpegBase64"] = jpegData.base64EncodedString()
-		}
-		return payload
+		throw BridgeFailure(message: "Capture failed", code: "capture_failed")
 	}
 
 	private func jpegData(image: CGImage, quality: Double) -> Data? {
@@ -2237,29 +2358,14 @@ final class Bridge {
 		return context.makeImage()
 	}
 
-	private func cgWindowScreenshotFallback(windowId: UInt32, maxDimension: Int? = nil) throws -> [String: Any]? {
-#if !PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
-		if let payload = try cgWindowScreenshot(windowId: windowId, maxDimension: maxDimension) {
-			return payload
-		}
-#endif
-		if let payload = try systemScreenshotWindow(windowId: windowId, maxDimension: maxDimension) {
+	private func cgWindowScreenshotFallback(windowId: UInt32) throws -> CapturedWindowImage? {
+		if let payload = try systemScreenshotWindow(windowId: windowId) {
 			return payload
 		}
 		return nil
 	}
 
-#if !PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
-	private func cgWindowScreenshot(windowId: UInt32, maxDimension: Int? = nil) throws -> [String: Any]? {
-		let options: CGWindowListOption = [.optionIncludingWindow]
-		let imageOptions: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
-		guard let image = CGWindowListCreateImage(.null, options, CGWindowID(windowId), imageOptions) else { return nil }
-		guard image.width > 1, image.height > 1 else { return nil }
-		return try screenshotPayload(image: image, windowId: windowId, maxDimension: maxDimension)
-	}
-#endif
-
-	private func systemScreenshotWindow(windowId: UInt32, maxDimension: Int? = nil) throws -> [String: Any]? {
+	private func systemScreenshotWindow(windowId: UInt32) throws -> CapturedWindowImage? {
 		let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent("pi-cu-\(UUID().uuidString).png")
 		defer { try? FileManager.default.removeItem(at: tempUrl) }
 		// Owner-only perms in case TMPDIR ever resolves to a shared directory.
@@ -2282,7 +2388,7 @@ final class Bridge {
 		guard process.terminationStatus == 0 else { return nil }
 		guard let data = try? Data(contentsOf: tempUrl), !data.isEmpty else { return nil }
 		guard let imageRep = NSBitmapImageRep(data: data), let cgImage = imageRep.cgImage else { return nil }
-		return try screenshotPayload(image: cgImage, windowId: windowId, maxDimension: maxDimension)
+		return CapturedWindowImage(image: cgImage, windowId: windowId, frame: currentWindowBounds(windowId: windowId) ?? CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
 	}
 
 	private func currentWindowBounds(windowId: UInt32) -> CGRect? {
@@ -2291,15 +2397,19 @@ final class Bridge {
 			return scBounds
 		}
 #endif
+		return windowInfo(windowId: windowId)?.bounds
+	}
 
-		guard let descriptions = CGWindowListCreateDescriptionFromArray([NSNumber(value: windowId)] as CFArray) as? [[String: Any]],
-			let first = descriptions.first,
+	private func windowInfo(windowId: UInt32) -> (pid: Int32, bounds: CGRect)? {
+		guard let entries = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(windowId)) as? [[String: Any]],
+			let first = entries.first,
+			let pid = (first[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
 			let boundsDict = first[kCGWindowBounds as String] as? [String: Any],
 			let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
 		else {
 			return nil
 		}
-		return bounds
+		return (pid, bounds)
 	}
 
 #if PI_COMPUTER_USE_SCREEN_CAPTURE_KIT
@@ -2330,24 +2440,6 @@ final class Bridge {
 		return output.value
 	}
 #endif
-
-	private func mapWindowPoint(
-		windowId: UInt32,
-		x: Double,
-		y: Double,
-		captureWidth: Double,
-		captureHeight: Double
-	) throws -> CGPoint {
-		guard let bounds = currentWindowBounds(windowId: windowId) else {
-			throw BridgeFailure(message: "Target window is no longer available", code: "window_not_found")
-		}
-
-		let relX = min(max(x / captureWidth, 0), 1)
-		let relY = min(max(y / captureHeight, 0), 1)
-		let screenX = bounds.origin.x + bounds.size.width * relX
-		let screenY = bounds.origin.y + bounds.size.height * relY
-		return CGPoint(x: screenX, y: screenY)
-	}
 
 	private func eventDelivery(_ request: [String: Any]) -> String {
 		optionalStringArg(request, "delivery") == "pid" ? "pid" : "hid"

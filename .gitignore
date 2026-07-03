@@ -11,3 +11,4 @@ tmp/
 
 # Manual run outputs
 results/
+scripts/cubench-results.json

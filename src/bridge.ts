@@ -7,8 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { cdpClickForContext, cdpEvaluateForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeForContext, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
+import { cdpEvaluateForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeForContext, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputerUseConfig } from "./config.ts";
+import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
+import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, parseLookResponse, restoreOutline, searchOutline, serializeOutline, serializeOutlineNode, type LookResponse, type Outline, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode } from "./outline.ts";
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
 
 type WindowSelector = string | number;
@@ -20,7 +22,7 @@ interface StateTargetSnapshot {
 	windowRef?: string;
 }
 
-export interface ScreenshotParams {
+export interface ObserveTargetParams {
 	app?: string;
 	windowTitle?: string;
 	window?: WindowSelector;
@@ -39,14 +41,6 @@ interface WindowTargetParams {
 	stateId?: string;
 	image?: ImageMode;
 	responseMode?: "state" | "confirmation";
-}
-
-export interface ClickParams extends WindowTargetParams {
-	x?: number;
-	y?: number;
-	ref?: string;
-	button?: MouseButtonName;
-	clickCount?: number;
 }
 
 export interface TypeTextParams extends WindowTargetParams {
@@ -100,7 +94,7 @@ export interface WaitParams extends WindowTargetParams {
 	ms?: number;
 }
 
-export interface ObserveParams extends ScreenshotParams {
+export interface ObserveParams extends ObserveTargetParams {
 	mode?: "semantic" | "visual" | "fused";
 }
 
@@ -108,7 +102,7 @@ export interface SearchUiParams extends WindowTargetParams {
 	text?: string;
 	role?: string;
 	action?: string;
-	source?: AxTargetSource;
+	source?: string;
 	limit?: number;
 }
 
@@ -133,6 +127,8 @@ export interface ActParams extends WindowTargetParams {
 	scrollY?: number;
 	path?: DragParams["path"];
 	button?: MouseButtonName;
+	clickCount?: number;
+	method?: "ax" | "keyboard";
 	ms?: number;
 }
 
@@ -185,69 +181,37 @@ type ExecutionVariant = "stealth" | "default";
 type NativeInputDelivery = "pid" | "hid";
 type ActionDelivery = "ax" | NativeInputDelivery;
 type DeliveryPolicy = "ax_only" | "background" | "default";
-type Grounding = "ax" | "vision";
+type ActOutcome = "worked" | "didnt" | "unknown";
+
+interface HelperActPerformed {
+	grounding?: "description" | "coordinates";
+	delivery?: "ax" | "hid" | "pid";
+	refound?: boolean;
+}
+
+interface HelperActResult {
+	outcome: ActOutcome;
+	performed?: HelperActPerformed;
+	evidence?: Record<string, unknown>;
+	error?: { code?: string; message?: string; whatIsThere?: unknown };
+}
 
 interface ExecutionTrace {
 	strategy:
-		| "screenshot"
+		| "look"
+		| "act"
 		| "wait"
-		| "batch"
-		| "window_frame"
-		| "ax_press"
-		| "ax_focus"
-		| "coordinate_event_click"
-		| "coordinate_event_double_click"
-		| "coordinate_event_move"
-		| "coordinate_event_drag"
-		| "coordinate_event_scroll"
-		| "pid_event_click"
-		| "pid_event_double_click"
-		| "pid_event_move"
-		| "pid_event_drag"
-		| "pid_event_scroll"
-		| "ax_scroll"
-		| "ax_action"
 		| "browser_open_location"
-		| "cdp_navigate"
-		| "ax_set_value"
-		| "raw_keypress"
-		| "raw_key_text"
-		| "pid_keypress"
-		| "pid_key_text";
-	axAttempted?: boolean;
-	axSucceeded?: boolean;
-	fallbackUsed?: boolean;
+		| "cdp_navigate";
 	runtimeMode?: ExecutionVariant;
 	variant?: ExecutionVariant;
 	stealthCompatible?: boolean;
-	nonStealthReason?: string;
-	grounding?: Grounding;
 	delivery?: ActionDelivery;
 	deliveryPolicy?: DeliveryPolicy;
-	coordinateStateChanged?: boolean;
-	coordinateVerification?: "ax_signature_changed" | "no_observable_change" | "unavailable";
-	actionCount?: number;
-	completedActionCount?: number;
-	actions?: BatchActionTrace[];
-}
-
-interface BatchActionTrace {
-	index: number;
-	type: string;
-	strategy: ExecutionTrace["strategy"];
-	durationMs: number;
-	axAttempted?: boolean;
-	axSucceeded?: boolean;
-	fallbackUsed?: boolean;
-	runtimeMode?: ExecutionVariant;
-	variant?: ExecutionVariant;
-	stealthCompatible?: boolean;
-	nonStealthReason?: string;
-	grounding?: Grounding;
-	delivery?: ActionDelivery;
-	deliveryPolicy?: DeliveryPolicy;
-	coordinateStateChanged?: boolean;
-	coordinateVerification?: ExecutionTrace["coordinateVerification"];
+	outcome?: ActOutcome;
+	performed?: HelperActPerformed;
+	evidence?: Record<string, unknown>;
+	error?: HelperActResult["error"];
 }
 
 interface HelperDiagnostics {
@@ -283,9 +247,10 @@ export interface ComputerUseDetails {
 		timestamp: number;
 		coordinateSpace: "window-relative-screenshot-pixels";
 	};
-	axTargets?: AxTarget[];
-	visionTargets?: VisionTarget[];
-	scene?: SceneProjection;
+	lookId?: string;
+	renderedOutline?: string;
+	outline?: SerializedOutline;
+	note?: WindowNote;
 	activation: ActivationFlags;
 	execution: ExecutionTrace;
 	config?: {
@@ -349,6 +314,7 @@ export interface ListWindowsDetails {
 		sheetCount: number;
 		role?: string;
 		subrole?: string;
+		pairing: { confidence: "exact" | "high" | "low"; score: number };
 		browserUseAllowed: boolean;
 		score: number;
 	}>;
@@ -427,21 +393,22 @@ export interface WaitForDetails {
 	found: boolean;
 	gone?: boolean;
 	timedOut?: boolean;
-	target?: AxTarget;
+	target?: OutlineSearchMatch;
 	nodeCount?: number;
 	text?: string;
 	role?: string;
 }
 
-export interface SceneToolDetails {
+export interface OutlineToolDetails {
 	tool: "search_ui" | "expand_ui" | "inspect_ui";
 	stateId?: string;
-	scene?: SceneProjection;
-	matches?: SceneTarget[];
-	target?: SceneTarget;
-	axTarget?: AxTarget;
-	visionTarget?: VisionTarget;
+	lookId?: string;
+	outline?: SerializedOutline;
+	renderedOutline?: string;
+	matches?: Array<Omit<OutlineSearchMatch, "node"> & { node?: SerializedOutlineNode }>;
+	target?: SerializedOutlineNode;
 	raw?: unknown;
+	note?: WindowNote;
 }
 
 interface HelperApp {
@@ -464,6 +431,7 @@ interface HelperWindow {
 	title: string;
 	role?: string;
 	subrole?: string;
+	pairing: { confidence: "exact" | "high" | "low"; score: number };
 	framePoints: FramePoints;
 	scaleFactor: number;
 	isMinimized: boolean;
@@ -482,118 +450,10 @@ interface FrontmostResult {
 	windowId?: number;
 }
 
-interface ScreenshotPayload {
-	pngBase64: string;
-	jpegBase64?: string;
-	width: number;
-	height: number;
-	scaleFactor: number;
-}
-
-interface VisionTarget {
-	ref: string;
-	text: string;
-	confidence: number;
-	x: number;
-	y: number;
-	frame?: FramePoints;
-}
-
-interface SceneTarget {
-	ref: string;
-	label: string;
-	role?: string;
-	actions: string[];
-	frame?: FramePoints;
-	axRef?: string;
-	visualRefs: string[];
-	grounding: "ax" | "vision" | "ax+vision";
-	visibility: "visible" | "offscreen" | "unknown";
-	confidence: number;
-}
-
-interface SceneAssociation {
-	axRef: string;
-	visionRef: string;
-	confidence: number;
-	reasons: string[];
-}
-
-type SceneEdgeType = "visual_evidence_for" | "labels";
-
-interface SceneEdge extends SceneAssociation {
-	type: SceneEdgeType;
-}
-
-interface SceneProjection {
-	targets: SceneTarget[];
-	edges: SceneEdge[];
-	associations: SceneAssociation[];
-	unknowns: SceneTarget[];
-	diagnostics: {
-		coordinateMapping: {
-			windowFramePoints: FramePoints;
-			captureWidth: number;
-			captureHeight: number;
-			scaleFactor: number;
-		};
-		axTargetCount: number;
-		visionTargetCount: number;
-		associatedVisionCount: number;
-		unknownVisionCount: number;
-	};
-}
-
-interface FocusedElementResult {
-	exists: boolean;
-	elementRef?: string;
-	role?: string;
-	subrole?: string;
-	isTextInput?: boolean;
-	isSecure?: boolean;
-	canSetValue?: boolean;
-}
-
 interface FocusWindowResult {
 	focused: boolean;
 	alreadyFocused?: boolean;
 	reason?: string;
-}
-
-interface AxPressAtPointResult {
-	pressed: boolean;
-	reason?: string;
-}
-
-interface AxFocusResult {
-	focused: boolean;
-	reason?: string;
-}
-
-interface HelperAxTarget {
-	elementRef?: string;
-	role?: string;
-	subrole?: string;
-	title?: string;
-	description?: string;
-	identifier?: string;
-	value?: string;
-	actions?: string[];
-	source?: string;
-	isTextInput?: boolean;
-	canSetValue?: boolean;
-	canFocus?: boolean;
-	canPress?: boolean;
-	canScroll?: boolean;
-	canIncrement?: boolean;
-	canDecrement?: boolean;
-	axVisible?: boolean;
-	x?: number;
-	y?: number;
-	frame?: Partial<FramePoints>;
-	parentFrame?: Partial<FramePoints>;
-	score?: number;
-	depth?: number;
 }
 
 interface ResolvedTarget extends CurrentTarget {
@@ -603,44 +463,6 @@ interface ResolvedTarget extends CurrentTarget {
 	isOnscreen: boolean;
 	isMain: boolean;
 	isFocused: boolean;
-}
-
-
-type AxTargetSource = "desktop_ax" | "browser_chrome_ax" | "web_content_ax" | "unknown_ax";
-
-interface AxDiagnosticsDebug {
-	browserChromeOnly?: boolean;
-	browserChromeTargetCount?: number;
-	webContentTargetCount?: number;
-	sourceCounts?: Record<string, number>;
-	[key: string]: unknown;
-}
-
-interface AxTarget {
-	ref: string;
-	elementRef: string;
-	role: string;
-	subrole: string;
-	title: string;
-	description: string;
-	identifier: string;
-	value: string;
-	actions: string[];
-	source: AxTargetSource;
-	isTextInput: boolean;
-	canSetValue: boolean;
-	canFocus: boolean;
-	canPress: boolean;
-	canScroll: boolean;
-	canIncrement: boolean;
-	canDecrement: boolean;
-	axVisible: boolean;
-	x: number;
-	y: number;
-	frame?: FramePoints;
-	parentFrame?: FramePoints;
-	score?: number;
-	depth?: number;
 }
 
 interface PendingBrowserAddress {
@@ -670,10 +492,9 @@ interface RuntimeState {
 	currentCapture?: CurrentCapture;
 	currentStateTarget?: StateTargetSnapshot;
 	currentImageMode?: ImageMode;
-	currentAxTargets?: AxTarget[];
-	currentSemanticAxTargets?: AxTarget[];
-	currentVisionTargets?: VisionTarget[];
-	currentScene?: SceneProjection;
+	currentLook?: LookResponse;
+	currentOutline?: Outline;
+	currentNote?: WindowNote;
 	browserSnapshots: Map<string, CdpPageSnapshot>;
 	windowRefs: Map<string, WindowRefRecord>;
 	windowRefByIdentity: Map<string, string>;
@@ -716,14 +537,13 @@ const CURRENT_TARGET_GONE_ERROR =
 const NON_MACOS_ERROR = "pi-computer-use currently supports macOS 12+ only.";
 
 const COMMAND_TIMEOUT_MS = 15_000;
-const HELPER_PROTOCOL_VERSION = 2;
+const HELPER_PROTOCOL_VERSION = 3;
 
 const SCREENSHOT_TIMEOUT_MS = 25_000;
 const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const ACTION_SETTLE_MS = 280;
 const DEFAULT_WAIT_MS = 1_000;
 
-const RECOVERABLE_SCREENSHOT_ERROR_CODES = new Set(["screenshot_timeout", "window_not_found"]);
 const BROWSER_BUNDLE_IDS = new Set([
 	"com.apple.Safari",
 	"com.google.Chrome",
@@ -775,8 +595,6 @@ const BROWSER_CONTEXT_PREFIX = "browser:";
 const DESKTOP_CONTEXT_PREFIX = "desktop:";
 const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
 const AUTO_IMAGE_MAX_DIMENSION = 900;
-const AUTO_BROWSER_IMAGE_MAX_DIMENSION = 720;
-const AUTO_FALLBACK_IMAGE_MAX_DIMENSION = 800;
 const EXPLICIT_IMAGE_MAX_DIMENSION = 1_600;
 const AX_TARGET_TEXT_PREVIEW_CHARS = 240;
 const BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS = 2_000;
@@ -847,10 +665,6 @@ function normalizeError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
 
-function isRecoverableScreenshotError(error: unknown): error is HelperCommandError {
-	return error instanceof HelperCommandError && !!error.code && RECOVERABLE_SCREENSHOT_ERROR_CODES.has(error.code);
-}
-
 function currentRuntimeMode(): ExecutionVariant {
 	return isStrictAxMode() ? "stealth" : "default";
 }
@@ -865,19 +679,6 @@ function nativeInputDelivery(): NativeInputDelivery {
 	return currentDeliveryPolicy() === "background" ? "pid" : "hid";
 }
 
-function inferredTraceGrounding(strategy: ExecutionTrace["strategy"]): Grounding | undefined {
-	if (strategy.startsWith("ax_")) return "ax";
-	if (strategy.startsWith("coordinate_") || strategy.startsWith("pid_event_")) return "vision";
-	return undefined;
-}
-
-function inferredTraceDelivery(strategy: ExecutionTrace["strategy"]): ActionDelivery | undefined {
-	if (strategy.startsWith("ax_")) return "ax";
-	if (strategy.startsWith("pid_")) return "pid";
-	if (strategy.startsWith("coordinate_") || strategy.startsWith("raw_")) return "hid";
-	return undefined;
-}
-
 function executionTrace(
 	strategy: ExecutionTrace["strategy"],
 	variant: ExecutionVariant,
@@ -888,32 +689,15 @@ function executionTrace(
 		runtimeMode: currentRuntimeMode(),
 		variant,
 		stealthCompatible: variant === "stealth",
-		grounding: metadata.grounding ?? inferredTraceGrounding(strategy),
-		delivery: metadata.delivery ?? inferredTraceDelivery(strategy),
 		...metadata,
 	};
 }
 
-function strictModeBlock(message: string): never {
-	throw new Error(`${message} Stealth/strict AX mode is enabled, so non-AX, foreground-focus, and cursor fallbacks are blocked.`);
-}
-
 function settleMsForExecution(execution: ExecutionTrace): number {
-	if (execution.strategy === "batch") {
-		const actions = execution.actions ?? [];
-		return actions.length > 0 && actions.every((action) => action.variant === "stealth") ? 120 : ACTION_SETTLE_MS;
-	}
 	if (execution.variant === "stealth") {
 		switch (execution.strategy) {
-			case "ax_focus":
-			case "ax_set_value":
-				return 80;
-			case "ax_action":
 			case "browser_open_location":
-			case "ax_scroll":
 				return 120;
-			case "ax_press":
-				return 160;
 			default:
 				return 120;
 		}
@@ -1045,210 +829,11 @@ function normalizeKeyList(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string" && key.trim().length > 0) : [];
 }
 
-function ensurePointIsInCapture(
-	x: number,
-	y: number,
-	capture: CurrentCapture,
-	errorPrefix = "Coordinates",
-): void {
-	if (!Number.isFinite(x) || !Number.isFinite(y)) {
-		throw new Error(`${errorPrefix} must be finite numbers.`);
+function outlineNodeCenter(node: OutlineNode): { x: number; y: number } {
+	if (!node.rect) {
+		throw new Error(`Outline ref '${node.ref}' has no full-look coordinates after scoped expansion. Re-observe for coordinates.`);
 	}
-	if (x < 0 || y < 0 || x >= capture.width || y >= capture.height) {
-		throw new Error(
-			`${errorPrefix} (${Math.round(x)},${Math.round(y)}) are outside the latest capture bounds (${capture.width}x${capture.height}). Call observe again and retry.`,
-		);
-	}
-}
-
-function screenPointToCapturePoint(
-	target: Pick<ResolvedTarget, "framePoints">,
-	capture: CurrentCapture,
-	screenX: number,
-	screenY: number,
-): { x: number; y: number } {
-	const frame = target.framePoints;
-	const relX = frame.w > 0 ? (screenX - frame.x) / frame.w : 0;
-	const relY = frame.h > 0 ? (screenY - frame.y) / frame.h : 0;
-	return {
-		x: Math.max(0, Math.min(capture.width - 1, relX * capture.width)),
-		y: Math.max(0, Math.min(capture.height - 1, relY * capture.height)),
-	};
-}
-
-function axCoordinateFallbackPoint(target: AxTarget): { x: number; y: number } {
-	const frame = target.frame;
-	const parent = target.parentFrame;
-	const parentLooksLikeRow = frame && parent && parent.w > frame.w * 1.5 && parent.h >= frame.h && parent.h <= frame.h * 3;
-	return parentLooksLikeRow ? { x: parent.x + parent.w / 2, y: frame.y + frame.h / 2 } : { x: target.x, y: target.y };
-}
-
-function frameCenter(frame: FramePoints): { x: number; y: number } {
-	return { x: frame.x + frame.w / 2, y: frame.y + frame.h / 2 };
-}
-
-function frameArea(frame: FramePoints): number {
-	return Math.max(0, frame.w) * Math.max(0, frame.h);
-}
-
-function intersectionArea(a: FramePoints, b: FramePoints): number {
-	const x1 = Math.max(a.x, b.x);
-	const y1 = Math.max(a.y, b.y);
-	const x2 = Math.min(a.x + a.w, b.x + b.w);
-	const y2 = Math.min(a.y + a.h, b.y + b.h);
-	return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
-}
-
-function screenFrameToCaptureFrame(target: Pick<ResolvedTarget, "framePoints">, capture: CurrentCapture, frame: FramePoints): FramePoints {
-	const topLeft = screenPointToCapturePoint(target, capture, frame.x, frame.y);
-	const bottomRight = screenPointToCapturePoint(target, capture, frame.x + frame.w, frame.y + frame.h);
-	return { x: topLeft.x, y: topLeft.y, w: Math.max(0, bottomRight.x - topLeft.x), h: Math.max(0, bottomRight.y - topLeft.y) };
-}
-
-function axTargetLabel(target: AxTarget): string {
-	return target.title || target.description || target.value || target.identifier || "";
-}
-
-function textMatchScore(left: string, right: string): number {
-	const a = normalizeText(left);
-	const b = normalizeText(right);
-	if (!a || !b) return 0;
-	if (a === b) return 1;
-	if (a.includes(b) || b.includes(a)) return 0.75;
-	const aTokens = new Set(a.split(/\s+/).filter(Boolean));
-	const bTokens = new Set(b.split(/\s+/).filter(Boolean));
-	const overlap = [...aTokens].filter((token) => bTokens.has(token)).length;
-	return overlap / Math.max(aTokens.size, bTokens.size, 1);
-}
-
-function sceneAssociationScore(ax: AxTarget, axFrame: FramePoints | undefined, vision: VisionTarget): { confidence: number; reasons: string[] } {
-	const reasons: string[] = [];
-	const textScore = textMatchScore(axTargetLabel(ax), vision.text);
-	if (textScore >= 0.75) reasons.push("text_match");
-	if (!axFrame || !vision.frame) return { confidence: textScore * 0.55, reasons };
-	const overlap = intersectionArea(axFrame, vision.frame);
-	const visionContainment = overlap / Math.max(frameArea(vision.frame), 1);
-	const center = frameCenter(vision.frame);
-	const centerInside = center.x >= axFrame.x && center.x <= axFrame.x + axFrame.w && center.y >= axFrame.y && center.y <= axFrame.y + axFrame.h;
-	if (visionContainment >= 0.6) reasons.push("visual_contained_by_ax");
-	if (centerInside) reasons.push("visual_center_inside_ax");
-	if (ax.canPress || ax.canSetValue || ax.canFocus) reasons.push("actionable_ax");
-	const spatialScore = Math.max(visionContainment, centerInside ? 0.7 : 0);
-	const actionScore = ax.canPress || ax.canSetValue || ax.canFocus ? 0.15 : 0;
-	return { confidence: Math.min(1, textScore * 0.5 + spatialScore * 0.35 + actionScore), reasons };
-}
-
-function labelAssociationScore(ax: AxTarget, axFrame: FramePoints | undefined, vision: VisionTarget): { confidence: number; reasons: string[] } {
-	if (!ax.isTextInput || !axFrame || !vision.frame) return { confidence: 0, reasons: [] };
-	const label = frameCenter(vision.frame);
-	const field = frameCenter(axFrame);
-	const maxH = Math.max(axFrame.h, vision.frame.h);
-	const horizontalGap = axFrame.x - (vision.frame.x + vision.frame.w);
-	const verticalGap = axFrame.y - (vision.frame.y + vision.frame.h);
-	const leftOfField = horizontalGap >= 0 && horizontalGap <= Math.max(axFrame.w, 240) && Math.abs(label.y - field.y) <= maxH * 1.4;
-	const aboveField = verticalGap >= 0 && verticalGap <= maxH * 2.5 && Math.abs(label.x - field.x) <= Math.max(axFrame.w, vision.frame.w) * 0.7;
-	if (!leftOfField && !aboveField) return { confidence: 0, reasons: [] };
-	const distance = Math.hypot(Math.max(0, horizontalGap), Math.max(0, verticalGap));
-	return { confidence: Math.max(0.56, Math.min(0.82, 0.82 - distance / 1_000)), reasons: [leftOfField ? "label_left_of_field" : "label_above_field", "text_input_ax"] };
-}
-
-function bestEdgesByVision(edges: SceneEdge[]): SceneEdge[] {
-	const best = new Map<string, SceneEdge>();
-	for (const edge of edges) if (!best.get(edge.visionRef) || best.get(edge.visionRef)!.confidence < edge.confidence) best.set(edge.visionRef, edge);
-	return [...best.values()].sort((a, b) => b.confidence - a.confidence);
-}
-
-function clusterVisionUnknowns(visions: VisionTarget[]): SceneTarget[] {
-	const boxes = visions.filter((vision) => vision.frame);
-	const used = new Set<string>();
-	const output: SceneTarget[] = [];
-	for (const vision of boxes) {
-		if (used.has(vision.ref) || !vision.frame) continue;
-		const cluster = boxes.filter((candidate) => candidate.frame && !used.has(candidate.ref) && intersectionArea({ x: vision.frame!.x - 8, y: vision.frame!.y - 8, w: vision.frame!.w + 16, h: vision.frame!.h + 16 }, candidate.frame) > 0);
-		for (const item of cluster) used.add(item.ref);
-		const frames = cluster.map((item) => item.frame!);
-		const x1 = Math.min(...frames.map((frame) => frame.x));
-		const y1 = Math.min(...frames.map((frame) => frame.y));
-		const x2 = Math.max(...frames.map((frame) => frame.x + frame.w));
-		const y2 = Math.max(...frames.map((frame) => frame.y + frame.h));
-		output.push({
-			ref: `@u${output.length + 1}`,
-			label: cluster.map((item) => item.text).join(" "),
-			actions: ["press", "click"],
-			frame: { x: x1, y: y1, w: x2 - x1, h: y2 - y1 },
-			visualRefs: cluster.map((item) => item.ref),
-			grounding: "vision",
-			visibility: "visible",
-			confidence: Math.max(...cluster.map((item) => item.confidence)),
-		});
-	}
-	return output;
-}
-
-/** Pure projection: derives scene targets, typed edges, and unknown visual regions without mutating runtime state or native refs. */
-function buildSceneProjection(result: CaptureResult): SceneProjection {
-	const axFrames = new Map(result.axTargets.map((target) => [target.ref, target.frame ? screenFrameToCaptureFrame(result.target, result.capture, target.frame) : undefined]));
-	const visualEdges = bestEdgesByVision(result.axTargets.flatMap((ax) => (result.visionTargets ?? []).map((vision) => {
-		const scored = sceneAssociationScore(ax, axFrames.get(ax.ref), vision);
-		return { type: "visual_evidence_for" as const, axRef: ax.ref, visionRef: vision.ref, confidence: scored.confidence, reasons: scored.reasons };
-	}).filter((edge) => edge.confidence >= 0.55)));
-	const directlyAssociated = new Set(visualEdges.map((edge) => edge.visionRef));
-	const labelEdges = bestEdgesByVision(result.axTargets.flatMap((ax) => (result.visionTargets ?? []).filter((vision) => !directlyAssociated.has(vision.ref)).map((vision) => {
-		const scored = labelAssociationScore(ax, axFrames.get(ax.ref), vision);
-		return { type: "labels" as const, axRef: ax.ref, visionRef: vision.ref, confidence: scored.confidence, reasons: scored.reasons };
-	}).filter((edge) => edge.confidence >= 0.55)));
-	const edges = [...visualEdges, ...labelEdges];
-	const visionByAx = new Map<string, SceneEdge[]>();
-	for (const edge of edges) visionByAx.set(edge.axRef, [...(visionByAx.get(edge.axRef) ?? []), edge]);
-	const associatedVisionRefs = new Set(edges.map((edge) => edge.visionRef));
-	const targets = result.axTargets.map((ax, index) => {
-		const targetEdges = (visionByAx.get(ax.ref) ?? []).sort((a, b) => b.confidence - a.confidence);
-		const visualRefs = targetEdges.map((edge) => edge.visionRef);
-		return {
-			ref: `@t${index + 1}`,
-			axRef: ax.ref,
-			label: axTargetLabel(ax) || "(unlabeled)",
-			role: ax.role,
-			actions: ax.actions,
-			frame: axFrames.get(ax.ref),
-			visualRefs,
-			grounding: visualRefs.length ? "ax+vision" : "ax",
-			visibility: ax.axVisible ? "visible" : "offscreen",
-			confidence: (targetEdges.length ? Math.max(...targetEdges.map((edge) => edge.confidence)) : 0.65) * (ax.axVisible ? 1 : 0.35),
-		} satisfies SceneTarget;
-	});
-	const unknowns = clusterVisionUnknowns((result.visionTargets ?? []).filter((vision) => !associatedVisionRefs.has(vision.ref)));
-	return {
-		targets,
-		edges,
-		associations: edges,
-		unknowns,
-		diagnostics: {
-			coordinateMapping: {
-				windowFramePoints: result.target.framePoints,
-				captureWidth: result.capture.width,
-				captureHeight: result.capture.height,
-				scaleFactor: result.capture.scaleFactor,
-			},
-			axTargetCount: result.axTargets.length,
-			visionTargetCount: result.visionTargets?.length ?? 0,
-			associatedVisionCount: associatedVisionRefs.size,
-			unknownVisionCount: unknowns.length,
-		},
-	};
-}
-
-function normalizeDragPath(path: DragParams["path"], capture: CurrentCapture): Array<{ x: number; y: number }> {
-	if (!Array.isArray(path) || path.length < 2) {
-		throw new Error("drag.path must contain at least two points.");
-	}
-
-	return path.map((point, index) => {
-		const x = Array.isArray(point) ? toFiniteNumber(point[0], NaN) : toFiniteNumber(point?.x, NaN);
-		const y = Array.isArray(point) ? toFiniteNumber(point[1], NaN) : toFiniteNumber(point?.y, NaN);
-		ensurePointIsInCapture(x, y, capture, `Drag point ${index + 1}`);
-		return { x, y };
-	});
+	return { x: node.rect.x + node.rect.w / 2, y: node.rect.y + node.rect.h / 2 };
 }
 
 function validateStateId(stateId?: string): CurrentCapture {
@@ -1272,237 +857,51 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function parseAxDiagnosticsDebug(value: unknown): AxDiagnosticsDebug | undefined {
-	if (!isRecord(value)) return undefined;
-	return {
-		...value,
-		browserChromeOnly: value.browserChromeOnly === true,
-		browserChromeTargetCount: Number.isFinite(value.browserChromeTargetCount) ? Number(value.browserChromeTargetCount) : undefined,
-		webContentTargetCount: Number.isFinite(value.webContentTargetCount) ? Number(value.webContentTargetCount) : undefined,
-		sourceCounts: isRecord(value.sourceCounts)
-			? Object.fromEntries(Object.entries(value.sourceCounts).filter((entry): entry is [string, number] => Number.isFinite(entry[1])))
-			: undefined,
-	};
-}
-
-function axDiagnosticsFromResult(result: unknown, target: ResolvedTarget): CaptureResult["axDiagnostics"] {
-	const raw = isRecord(result) ? result : {};
-	const reason = toOptionalString(raw.reason);
-	const debug = parseAxDiagnosticsDebug(raw.diagnostics);
-	if (!reason && debug === undefined) return undefined;
-	if (reason === "window_not_found") {
-		const windowHint = target.windowRef ? ` Use list_windows and choose an existing content window such as ${target.windowRef}, then call observe({ window: "${target.windowRef}" }).` : " Use list_windows and choose an existing content window.";
-		return { reason, message: `Accessibility could not resolve the target browser window. Duplicate/empty browser windows can cause this.${windowHint}`, debug };
-	}
-	return { reason, message: reason ? `Accessibility target listing returned '${reason}'.` : undefined, debug };
-}
-
-function parseAxTargetSource(value: unknown): AxTargetSource {
-	return value === "desktop_ax" || value === "browser_chrome_ax" || value === "web_content_ax" ? value : "unknown_ax";
-}
-
-function parseVisionTargets(result: unknown): VisionTarget[] {
-	const items = Array.isArray(result) ? result : (isRecord(result) ? result.targets : undefined);
-	if (!Array.isArray(items)) return [];
-	return items
-		.map((raw, index) => {
-			const text = toOptionalString((raw as any)?.text);
-			if (!text) return undefined;
-			return {
-				ref: `@v${index + 1}`,
-				text,
-				confidence: Math.max(0, Math.min(1, toFiniteNumber((raw as any)?.confidence, 0))),
-				x: toFiniteNumber((raw as any)?.x, 0),
-				y: toFiniteNumber((raw as any)?.y, 0),
-				frame: parseOptionalFramePoints((raw as any)?.frame),
-			} as VisionTarget;
-		})
-		.filter((item): item is VisionTarget => Boolean(item));
-}
-
-function formatVisionTargetLabel(target: VisionTarget): string {
-	return `${target.ref} vision ${JSON.stringify(target.text)} at (${Math.round(target.x)},${Math.round(target.y)}) confidence=${target.confidence.toFixed(2)}`;
-}
-
-function previewAxText(value: unknown): string {
-	const text = toOptionalString(value) ?? "";
-	return text.length > AX_TARGET_TEXT_PREVIEW_CHARS ? `${text.slice(0, AX_TARGET_TEXT_PREVIEW_CHARS)}…` : text;
-}
-
-function parseAxTargets(result: unknown): AxTarget[] {
-	const items = Array.isArray(result) ? result : (isRecord(result) ? result.targets : undefined);
-	if (!Array.isArray(items)) return [];
-
-	return items
-		.map((raw, index) => {
-			const target = raw as HelperAxTarget;
-			const elementRef = toOptionalString(target?.elementRef);
-			if (!elementRef) return undefined;
-			const actions = Array.isArray(target?.actions) ? target.actions.filter((value): value is string => typeof value === "string") : [];
-			return {
-				ref: `@e${index + 1}`,
-				elementRef,
-				role: toOptionalString(target?.role) ?? "",
-				subrole: toOptionalString(target?.subrole) ?? "",
-				title: previewAxText(target?.title),
-				description: previewAxText(target?.description),
-				identifier: previewAxText(target?.identifier),
-				value: previewAxText(target?.value),
-				actions,
-				source: parseAxTargetSource(target?.source),
-				isTextInput: toBoolean(target?.isTextInput),
-				canSetValue: toBoolean(target?.canSetValue),
-				canFocus: toBoolean(target?.canFocus),
-				canPress: toBoolean(target?.canPress),
-				canScroll: toBoolean(target?.canScroll),
-				canIncrement: toBoolean(target?.canIncrement),
-				canDecrement: toBoolean(target?.canDecrement),
-				axVisible: target?.axVisible === undefined ? true : toBoolean(target.axVisible),
-				x: toFiniteNumber(target?.x, 0),
-				y: toFiniteNumber(target?.y, 0),
-				frame: parseOptionalFramePoints(target?.frame),
-				parentFrame: parseOptionalFramePoints(target?.parentFrame),
-				score: Number.isFinite(target?.score) ? Number(target.score) : undefined,
-				depth: Number.isFinite(target?.depth) ? Math.trunc(Number(target.depth)) : undefined,
-			} as AxTarget;
-		})
-		.filter((item): item is AxTarget => Boolean(item));
-}
-
-function formatAxTargetLabel(target: AxTarget): string {
-	const label = target.title || target.description || target.value || "(unlabeled)";
-	const identifier = target.identifier ? ` id=${JSON.stringify(target.identifier)}` : "";
+function formatOutlineNodeLabel(node: OutlineNode): string {
+	const label = outlineNodeLabel(node) || "(unlabeled)";
+	const identifier = node.identifier ? ` id=${JSON.stringify(node.identifier)}` : "";
 	const capabilities = [
-		target.canSetValue ? "setValue" : undefined,
-		target.canPress ? "press" : undefined,
-		target.canFocus ? "focus" : undefined,
-		target.canScroll ? "scroll" : undefined,
-		target.canIncrement || target.canDecrement ? "adjust" : undefined,
+		node.canSetValue ? "setValue" : undefined,
+		node.canPress ? "press" : undefined,
+		node.canFocus ? "focus" : undefined,
+		node.canScroll ? "scroll" : undefined,
+		node.canIncrement || node.canDecrement ? "adjust" : undefined,
+		node.pictureOnly ? "pictureOnly" : undefined,
 	].filter((item): item is string => Boolean(item));
-	const source = target.source !== "unknown_ax" ? ` source=${target.source}` : "";
-	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""}${source}${identifier} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
+	return `${node.ref} ${node.role}${node.subrole ? `/${node.subrole}` : ""}${identifier} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
 }
 
-function visionTargetByRef(ref: string): VisionTarget | undefined {
-	return runtimeState.currentVisionTargets?.find((candidate) => candidate.ref === ref);
-}
-
-function axTargetByRef(ref: string): AxTarget {
-	const axTarget = runtimeState.currentAxTargets?.find((candidate) => candidate.ref === ref) ?? runtimeState.currentSemanticAxTargets?.find((candidate) => candidate.ref === ref);
-	if (!axTarget) {
+function outlineNodeByRef(ref: string): OutlineNode {
+	const outline = runtimeState.currentOutline;
+	const node = outline ? nodeByRef(outline, ref) : undefined;
+	if (!node) {
 		const windowHint = runtimeState.currentTarget?.windowRef ? `({ window: "${runtimeState.currentTarget.windowRef}" })` : "";
-		throw new Error(`AX target '${ref}' is stale or not available for the latest state. Call observe${windowHint} again and choose a current scene/AX ref.`);
+		throw new Error(`Outline ref '${ref}' is stale or not available for the latest state. Call observe${windowHint} again and choose a current @e ref.`);
 	}
-	return axTarget;
+	return node;
 }
 
-function axTargetLabelKey(target: AxTarget): string {
-	return normalizeText(target.title || target.description || target.value);
-}
-
-function isElementRefInvalid(error: unknown): boolean {
-	return (error instanceof HelperCommandError && error.code === "element_ref_invalid") || /element reference is no longer valid|element_ref_invalid/i.test(normalizeError(error).message);
-}
-
-async function axTreeRawForTarget(target: ResolvedTarget, limit: number, signal?: AbortSignal): Promise<unknown> {
-	return await bridgeCommand(
-		"axSnapshotTree",
-		{ ...nativeWindowRequest(target), maxNodes: Math.max(1, Math.min(2_000, limit)), maxDepth: 20 },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch((error) => ({ targets: [], reason: error instanceof HelperCommandError ? (error.code ?? "ax_tree_failed") : "ax_tree_failed" }));
-}
-
-async function semanticAxTree(target: ResolvedTarget, signal?: AbortSignal): Promise<{ targets: AxTarget[]; raw: unknown }> {
-	const raw = await bridgeCommand("axSnapshotTree", {
-		...nativeWindowRequest(target),
-		maxNodes: 2_000,
-		maxDepth: 20,
-	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch((error) => ({ targets: [], reason: error instanceof HelperCommandError ? (error.code ?? "ax_tree_failed") : "ax_tree_failed" }));
-	return { raw, targets: parseAxTargets(raw) };
-}
-
-function sceneAxTargetsFromSemantic(targets: AxTarget[]): AxTarget[] {
-	const useful = targets.filter((target) => target.axVisible && (target.canPress || target.canSetValue || target.canFocus || target.canScroll || target.isTextInput));
-	return useful.length ? useful : targets.filter((target) => target.axVisible);
-}
-
-async function refreshAxTargets(target: ResolvedTarget, signal?: AbortSignal): Promise<AxTarget[]> {
-	const refreshed = parseAxTargets(await axTreeRawForTarget(target, 50, signal));
-	if (refreshed.length) {
-		runtimeState.currentAxTargets = refreshed;
+function wireRefForNode(node: OutlineNode): string {
+	if (node.pictureOnly || !node.wireRef) {
+		throw new Error(`Outline ref '${node.ref}' is pictureOnly and has no AX element. It can be clicked by coordinates, but AX-only actions are not available.`);
 	}
-	return refreshed;
-}
-
-async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal?: AbortSignal): Promise<AxTarget | undefined> {
-	const refreshed = await refreshAxTargets(target, signal);
-	if (!refreshed.length) return undefined;
-
-	const staleLabel = axTargetLabelKey(stale);
-	const staleIdentifier = normalizeText(stale.identifier);
-	const candidates = refreshed.filter((candidate) => {
-		if (candidate.role !== stale.role) return false;
-		if (staleIdentifier && normalizeText(candidate.identifier) !== staleIdentifier) return false;
-		if (!staleIdentifier && staleLabel && axTargetLabelKey(candidate) !== staleLabel) return false;
-		if (stale.canSetValue && !candidate.canSetValue) return false;
-		if (stale.canPress && !candidate.canPress) return false;
-		if (stale.canScroll && !candidate.canScroll) return false;
-		if (stale.canIncrement && !candidate.canIncrement) return false;
-		if (stale.canDecrement && !candidate.canDecrement) return false;
-		return true;
-	});
-	const pool = candidates.length ? candidates : refreshed.filter((candidate) => staleIdentifier ? normalizeText(candidate.identifier) === staleIdentifier : staleLabel && axTargetLabelKey(candidate) === staleLabel);
-	const best = pool.sort((a, b) => Math.hypot(a.x - stale.x, a.y - stale.y) - Math.hypot(b.x - stale.x, b.y - stale.y))[0];
-	return best ? { ...best, ref: stale.ref } : undefined;
-}
-
-function hasOnlyBrowserChromeCoverage(result: CaptureResult): boolean {
-	const hasChromeTargets = result.axTargets.some((target) => target.source === "browser_chrome_ax");
-	const hasContentTargets = result.axTargets.some((target) => target.source === "web_content_ax");
-	return (hasChromeTargets && !hasContentTargets) || result.axDiagnostics?.debug?.browserChromeOnly === true;
+	return node.wireRef;
 }
 
 function imageFallbackReason(
 	tool: string,
 	result: CaptureResult,
-	execution: ExecutionTrace,
 	imageMode: ImageMode = "auto",
 ): { reason: NonNullable<ComputerUseDetails["imageReason"]>; message: string } | undefined {
 	if (imageMode === "never") return undefined;
 	if (imageMode === "always") return { reason: "fallback_recovery", message: "An image was requested explicitly for visual verification." };
-	if (execution.fallbackUsed === true) {
-		return { reason: "fallback_recovery", message: "The action used a fallback path, so an image is attached for recovery." }
+	const outline = result.outline;
+	const labeled = outline.nodes.filter((node) => outlineNodeLabel(node)).length;
+	if (outline.nodes.length < 3) {
+		return { reason: "sparse_ax_targets", message: "Only a few outline nodes were found, so the look image is attached for context." }
 	}
-	if (hasOnlyBrowserChromeCoverage(result)) {
-		return { reason: "weak_ax_targets", message: "Accessibility exposed browser chrome targets but no web-content targets, so an image is attached for content fallback." }
-	}
-	if (result.axTargets.length === 0) {
-		if (isBrowserApp(result.target.appName, result.target.bundleId) && result.axDiagnostics?.reason === "window_not_found") {
-			return { reason: "browser_ax_window_unavailable", message: result.axDiagnostics.message ?? "The browser window could not be resolved through Accessibility, so an image is attached for recovery." }
-		}
-		return { reason: "no_ax_targets", message: "No useful AX targets were found, so an image is attached for vision fallback." }
-	}
-	const labels = result.axTargets.map((target) => normalizeText(target.title || target.description || target.value)).filter(Boolean)
-	const unlabeledCount = result.axTargets.filter((target) => !normalizeText(target.title || target.description || target.value)).length
-	const strongTextRoles = new Set(["AXTextField", "AXSearchField", "AXTextArea", "AXTextView", "AXEditableText", "AXComboBox"])
-	const strongTargets = result.axTargets.filter((target) => {
-		const label = normalizeText(target.title || target.description || target.value)
-		return strongTextRoles.has(target.role) || (!!label && (target.actions.includes("AXPress") || target.role === "AXLink" || target.role === "AXButton" || target.role === "AXWebArea"))
-	})
-	if (result.axTargets.length < 3) {
-		return { reason: "sparse_ax_targets", message: "Only a few AX targets were found, so an image is attached for extra context." }
-	}
-	if (strongTargets.length === 0) {
-		return { reason: "weak_ax_targets", message: "No strong AX targets were found, so an image is attached for vision fallback." }
-	}
-	if (result.axTargets.length < 3 && !strongTargets.some((target) => strongTextRoles.has(target.role))) {
-		return { reason: "sparse_ax_targets", message: "Only a few AX targets were found, so an image is attached for extra context." }
-	}
-	if (result.axTargets.length >= 3 && unlabeledCount * 2 > result.axTargets.length) {
-		return { reason: "unlabeled_ax_targets", message: "Most AX targets are unlabeled, so an image is attached for vision fallback." }
-	}
-	if (labels.length > 3 && new Set(labels).size * 2 <= labels.length) {
-		return { reason: "duplicated_ax_labels", message: "AX target labels are highly duplicated, so an image is attached for extra context." }
+	if (labeled * 3 < outline.nodes.length) {
+		return { reason: "unlabeled_ax_targets", message: "Most outline nodes are unlabeled, so the look image is attached for context." }
 	}
 	if (tool === "wait" && isBrowserApp(result.target.appName, result.target.bundleId)) {
 		return { reason: "browser_wait_verification", message: "Browser content may have changed visually during wait, so an image is attached for fallback." }
@@ -1839,31 +1238,30 @@ function parseFramePoints(raw: unknown): FramePoints {
 	};
 }
 
-function parseOptionalFramePoints(raw: unknown): FramePoints | undefined {
-	const frame = raw as Partial<FramePoints> | undefined;
-	if (!frame || ![frame.x, frame.y, frame.w, frame.h].every(Number.isFinite)) return undefined;
-	return { x: Number(frame.x), y: Number(frame.y), w: Math.max(1, Number(frame.w)), h: Math.max(1, Number(frame.h)) };
-}
-
 function parseWindows(result: unknown): HelperWindow[] {
 	const array = Array.isArray(result) ? result : (result as any)?.windows;
 	if (!Array.isArray(array)) return [];
 
-	return array.map((raw) => ({
-		windowId: Number.isFinite((raw as any)?.windowId) ? Math.trunc((raw as any).windowId) : undefined,
-		windowRef: toOptionalString((raw as any)?.windowRef),
-		title: toOptionalString((raw as any)?.title) ?? "",
-		role: toOptionalString((raw as any)?.role),
-		subrole: toOptionalString((raw as any)?.subrole),
-		framePoints: parseFramePoints(raw),
-		scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
-		isMinimized: toBoolean((raw as any)?.isMinimized),
-		isOnscreen: toBoolean((raw as any)?.isOnscreen),
-		isMain: toBoolean((raw as any)?.isMain),
-		isFocused: toBoolean((raw as any)?.isFocused),
-		isModal: toBoolean((raw as any)?.isModal),
-		sheetCount: Math.max(0, Math.trunc(toFiniteNumber((raw as any)?.sheetCount, 0))),
-	}));
+	return array.map((raw) => {
+		const pairing = (raw as any)?.pairing;
+		const confidence = pairing?.confidence === "exact" || pairing?.confidence === "high" || pairing?.confidence === "low" ? pairing.confidence : "low";
+		return {
+			windowId: Number.isFinite((raw as any)?.windowId) ? Math.trunc((raw as any).windowId) : undefined,
+			windowRef: toOptionalString((raw as any)?.windowRef),
+			title: toOptionalString((raw as any)?.title) ?? "",
+			role: toOptionalString((raw as any)?.role),
+			subrole: toOptionalString((raw as any)?.subrole),
+			pairing: { confidence, score: toFiniteNumber(pairing?.score, Number.NEGATIVE_INFINITY) },
+			framePoints: parseFramePoints(raw),
+			scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
+			isMinimized: toBoolean((raw as any)?.isMinimized),
+			isOnscreen: toBoolean((raw as any)?.isOnscreen),
+			isMain: toBoolean((raw as any)?.isMain),
+			isFocused: toBoolean((raw as any)?.isFocused),
+			isModal: toBoolean((raw as any)?.isModal),
+			sheetCount: Math.max(0, Math.trunc(toFiniteNumber((raw as any)?.sheetCount, 0))),
+		};
+	});
 }
 
 async function listApps(signal?: AbortSignal): Promise<HelperApp[]> {
@@ -1908,7 +1306,7 @@ function formatWindowLine(window: ListWindowsDetails["windows"][number]): string
 		.join(", ");
 	const frame = `${Math.round(window.framePoints.x)},${Math.round(window.framePoints.y)} ${Math.round(window.framePoints.w)}x${Math.round(window.framePoints.h)}`;
 	const id = window.windowId ? `windowId ${window.windowId}` : window.nativeWindowRef ? `nativeWindowRef ${window.nativeWindowRef}` : "unstable window id";
-	return `- ${window.windowRef} ${window.app} — ${window.windowTitle || "(untitled)"} (${id}, pid ${window.pid}, frame ${frame}, score ${window.score}${flags ? `, ${flags}` : ""})`;
+	return `- ${window.windowRef} ${window.app} — ${window.windowTitle || "(untitled)"} (${id}, pid ${window.pid}, frame ${frame}, pairing ${window.pairing.confidence}/${Math.round(window.pairing.score)}, score ${window.score}${flags ? `, ${flags}` : ""})`;
 }
 
 async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
@@ -2271,7 +1669,9 @@ async function selectWindowIfProvided(selector: WindowSelector | undefined, sign
 		(previous.windowId > 0 && selected.windowId > 0 ? previous.windowId !== selected.windowId : previous.windowRef !== selected.windowRef);
 	if (changedWindow) {
 		runtimeState.currentCapture = undefined;
-		runtimeState.currentAxTargets = undefined;
+		runtimeState.currentLook = undefined;
+		runtimeState.currentOutline = undefined;
+		delete runtimeState.currentNote;
 	}
 }
 
@@ -2359,7 +1759,7 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 	return resolved;
 }
 
-function matchesScreenshotSelection(target: ResolvedTarget, selection: ScreenshotParams): boolean {
+function matchesObserveSelection(target: ResolvedTarget, selection: ObserveTargetParams): boolean {
 	const windowQuery = normalizeWindowSelector(selection.window);
 	if (windowQuery) {
 		if (target.windowRef === windowQuery) return true;
@@ -2377,7 +1777,7 @@ function matchesScreenshotSelection(target: ResolvedTarget, selection: Screensho
 	return true;
 }
 
-async function resolveTargetForScreenshot(selection: ScreenshotParams, signal?: AbortSignal): Promise<ResolvedTarget> {
+async function resolveTargetForObserve(selection: ObserveTargetParams, signal?: AbortSignal): Promise<ResolvedTarget> {
 	const appQuery = trimOrUndefined(selection.app);
 	const windowTitleQuery = trimOrUndefined(selection.windowTitle);
 
@@ -2467,170 +1867,92 @@ async function ensureTargetWindowId(target: ResolvedTarget, signal?: AbortSignal
 	return refreshed;
 }
 
-async function helperScreenshot(windowId: number, signal?: AbortSignal, maxDimension?: number): Promise<ScreenshotPayload> {
-	const result = await bridgeCommand<any>(
-		"screenshot",
-		{ windowId, maxDimension },
-		{ timeoutMs: SCREENSHOT_TIMEOUT_MS, signal },
-	);
-
-	const base64 = toOptionalString(result?.pngBase64);
-	if (!base64) {
-		throw new Error("Helper returned an invalid screenshot payload.");
-	}
-
-	return {
-		pngBase64: base64,
-		jpegBase64: toOptionalString(result?.jpegBase64),
-		width: Math.max(1, Math.trunc(toFiniteNumber(result?.width, 1))),
-		height: Math.max(1, Math.trunc(toFiniteNumber(result?.height, 1))),
-		scaleFactor: Math.max(1, toFiniteNumber(result?.scaleFactor, 1)),
-	};
-}
-
-async function helperVisionTargets(windowId: number, signal?: AbortSignal, maxDimension?: number): Promise<VisionTarget[]> {
-	const result = await bridgeCommand<unknown>("visionTargets", { windowId, maxDimension }, { timeoutMs: SCREENSHOT_TIMEOUT_MS + 8_000, signal }).catch(() => undefined);
-	return parseVisionTargets(result);
-}
-
-function windowsByCaptureRecoveryPriority(
-	windows: HelperWindow[],
-	target: ResolvedTarget,
-	failureCode: string,
-): HelperWindow[] {
-	const sorted = [...windows].sort((a, b) => scoreWindow(b) - scoreWindow(a));
-	if (failureCode !== "screenshot_timeout") {
-		return sorted;
-	}
-
-	const alternatives = sorted.filter((window) => window.windowId !== target.windowId);
-	const original = sorted.filter((window) => window.windowId === target.windowId);
-	return [...alternatives, ...original];
-}
-
-async function recoverCaptureFromHelperFailure(
-	target: ResolvedTarget,
-	error: HelperCommandError,
-	signal?: AbortSignal,
-	maxDimension?: number,
-): Promise<{ target: ResolvedTarget; image: ScreenshotPayload }> {
-	const windows = await listWindows(target.pid, signal);
-	if (!windows.length) {
-		throw new Error(CURRENT_TARGET_GONE_ERROR);
-	}
-
-	const app: HelperApp = {
-		appName: target.appName,
-		bundleId: target.bundleId,
-		pid: target.pid,
-	};
-
-	const orderedWindows = windowsByCaptureRecoveryPriority(windows, target, error.code ?? "");
-	const candidates = orderedWindows.filter((window) => typeof window.windowId === "number" && window.windowId > 0).slice(0, 3);
-	if (!candidates.length) {
-		throw normalizeError(error);
-	}
-
-	let lastError: Error = normalizeError(error);
-	for (const candidateWindow of candidates) {
-		const candidateTarget = toResolvedTarget(app, candidateWindow);
-		try {
-			const image = await helperScreenshot(candidateTarget.windowId, signal, maxDimension);
-			return { target: candidateTarget, image };
-		} catch (candidateError) {
-			if (!isRecoverableScreenshotError(candidateError)) {
-				throw normalizeError(candidateError);
-			}
-			lastError = normalizeError(candidateError);
-		}
-	}
-
-	throw lastError;
-}
-
 interface CaptureResult {
 	target: ResolvedTarget;
 	capture: CurrentCapture;
-	image?: ScreenshotPayload;
-	axTargets: AxTarget[];
-	semanticAxTargets?: AxTarget[];
-	visionTargets?: VisionTarget[];
-	axDiagnostics?: { reason?: string; message?: string; debug?: AxDiagnosticsDebug };
+	look: LookResponse;
+	outline: Outline;
 	activation: ActivationFlags;
 }
 
-function captureForTarget(target: ResolvedTarget): CurrentCapture {
+function captureForLook(look: LookResponse): CurrentCapture {
 	return {
 		stateId: randomUUID(),
-		width: Math.max(1, Math.round(target.framePoints.w * target.scaleFactor)),
-		height: Math.max(1, Math.round(target.framePoints.h * target.scaleFactor)),
-		scaleFactor: target.scaleFactor,
+		width: look.image.width,
+		height: look.image.height,
+		scaleFactor: look.window.scaleFactor,
 		timestamp: Date.now(),
 	};
 }
 
-async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal, maxDimension = AUTO_IMAGE_MAX_DIMENSION): Promise<void> {
-	if (result.image) return;
-	try {
-		result.image = await helperScreenshot(result.target.windowId, signal, maxDimension);
-		result.capture.width = result.image.width;
-		result.capture.height = result.image.height;
-		result.capture.scaleFactor = result.image.scaleFactor;
-	} catch (error) {
-		if (!isRecoverableScreenshotError(error)) {
-			const normalized = normalizeError(error);
-			if (isBrowserApp(result.target.appName, result.target.bundleId)) {
-				throw new Error(`${normalized.message} Browser capture failed for ${result.target.appName} window '${result.target.windowTitle}'. Call list_windows and retry screenshot with an explicit existing content window ref, or use navigate_browser for direct URL navigation.`);
-			}
-			throw normalized;
-		}
-		const recovered = await recoverCaptureFromHelperFailure(result.target, error, signal, maxDimension);
-		result.target = recovered.target;
-		result.image = recovered.image;
-		result.capture.width = recovered.image.width;
-		result.capture.height = recovered.image.height;
-		result.capture.scaleFactor = recovered.image.scaleFactor;
-		const semantic = await semanticAxTree(result.target, signal);
-		result.semanticAxTargets = semantic.targets;
-		result.axTargets = sceneAxTargetsFromSemantic(semantic.targets);
-		result.axDiagnostics = axDiagnosticsFromResult(semantic.raw, result.target);
-	}
-	setCurrentTarget(result.target);
-	runtimeState.currentCapture = result.capture;
-	runtimeState.currentStateTarget = { pid: result.target.pid, windowId: result.target.windowId, windowRef: result.target.windowRef };
-	runtimeState.currentAxTargets = result.axTargets;
-	runtimeState.currentSemanticAxTargets = result.semanticAxTargets ?? result.axTargets;
+async function performLook(windowId: number, options: { readText: "auto" | "always" | "never"; scopeRef?: string; maxDimension?: number }, signal?: AbortSignal): Promise<LookResponse> {
+	return parseLookResponse(await bridgeCommand("look", {
+		windowId,
+		maxDimension: options.maxDimension,
+		readText: options.readText,
+		scopeRef: options.scopeRef,
+	}, { timeoutMs: SCREENSHOT_TIMEOUT_MS + 8_000, signal }));
 }
 
-async function captureCurrentTarget(signal?: AbortSignal): Promise<CaptureResult> {
+function noteWindowForTarget(target: ResolvedTarget | CurrentTarget, look?: LookResponse) {
+	return {
+		windowRef: target.windowRef,
+		title: target.windowTitle,
+		pairing: look?.window.pairing.confidence,
+		pairingScore: look?.window.pairing.score,
+	};
+}
+
+function actTargetPublicRef(params: { ref?: string }): string | undefined {
+	return trimOrUndefined(params.ref);
+}
+
+async function captureCurrentTarget(signal?: AbortSignal, readText: "auto" | "always" | "never" = "auto", maxDimension = AUTO_IMAGE_MAX_DIMENSION): Promise<CaptureResult> {
 	let target = await resolveCurrentTarget(signal);
 	target = await ensureTargetWindowId(target, signal);
-
-	const capture = captureForTarget(target);
-	const semantic = await semanticAxTree(target, signal);
-	const axTargets = sceneAxTargetsFromSemantic(semantic.targets);
-	const axDiagnostics = axDiagnosticsFromResult(semantic.raw, target);
+	const look = await performLook(target.windowId, { maxDimension, readText }, signal);
+	const outline = look.parsedOutline!;
+	const capture = captureForLook(look);
 
 	setCurrentTarget(target);
 	runtimeState.currentCapture = capture;
 	runtimeState.currentStateTarget = { pid: target.pid, windowId: target.windowId, windowRef: target.windowRef };
-	runtimeState.currentAxTargets = axTargets;
-	runtimeState.currentSemanticAxTargets = semantic.targets;
+	runtimeState.currentLook = look;
+	runtimeState.currentOutline = outline;
+	runtimeState.currentNote = noteFromLook(runtimeState.currentNote, outline, noteWindowForTarget(target, look));
 
 	return {
 		target,
 		capture,
-		axTargets,
-		semanticAxTargets: semantic.targets,
-		axDiagnostics,
+		look,
+		outline,
 		activation: emptyActivation(),
 	};
 }
 
-function autoImageMaxDimension(result: CaptureResult, fallbackReason?: ReturnType<typeof imageFallbackReason>): number {
-	if (isBrowserApp(result.target.appName, result.target.bundleId)) return AUTO_BROWSER_IMAGE_MAX_DIMENSION;
-	if (fallbackReason?.reason === "fallback_recovery") return AUTO_FALLBACK_IMAGE_MAX_DIMENSION;
-	return AUTO_IMAGE_MAX_DIMENSION;
+async function refreshCurrentTargetAfterAct(target: ResolvedTarget, targetRef: string | undefined, signal?: AbortSignal): Promise<CaptureResult> {
+	const outline = runtimeState.currentOutline;
+	if (!outline || !targetRef) return await captureCurrentTarget(signal);
+	const targetNode = nodeByRef(outline, targetRef);
+	if (!targetNode?.wireRef || targetNode.pictureOnly) return await captureCurrentTarget(signal);
+	const look = await performLook(target.windowId, { maxDimension: AUTO_IMAGE_MAX_DIMENSION, readText: "auto", scopeRef: targetNode.wireRef }, signal);
+	graftScopedOutline(outline, targetNode.ref, look.parsedOutline!);
+	outline.lookId = look.lookId;
+	const capture = captureForLook(look);
+
+	setCurrentTarget(target);
+	runtimeState.currentCapture = capture;
+	runtimeState.currentStateTarget = { pid: target.pid, windowId: target.windowId, windowRef: target.windowRef };
+	runtimeState.currentLook = look;
+	runtimeState.currentOutline = outline;
+
+	return {
+		target,
+		capture,
+		look,
+		outline,
+		activation: emptyActivation(),
+	};
 }
 
 async function buildToolResult(
@@ -2638,21 +1960,12 @@ async function buildToolResult(
 	summary: string,
 	result: CaptureResult,
 	execution: ExecutionTrace,
-	signal?: AbortSignal,
+	_signal?: AbortSignal,
 	imageMode: ImageMode = runtimeState.currentImageMode ?? "auto",
 ): Promise<AgentToolResult<ComputerUseDetails>> {
-	const fallbackReason = imageFallbackReason(tool, result, execution, imageMode);
-	const imageMaxDimension = imageMode === "always" ? EXPLICIT_IMAGE_MAX_DIMENSION : autoImageMaxDimension(result, fallbackReason);
-	if (fallbackReason) {
-		await ensureCaptureImage(result, signal, imageMaxDimension);
-	}
-	if ((fallbackReason || imageMode === "always") && !result.visionTargets?.length && result.target.windowId > 0) {
-		result.visionTargets = await helperVisionTargets(result.target.windowId, signal, imageMaxDimension);
-	}
-	runtimeState.currentVisionTargets = result.visionTargets;
-	runtimeState.currentSemanticAxTargets = result.semanticAxTargets ?? result.axTargets;
-	const scene = buildSceneProjection(result);
-	runtimeState.currentScene = scene;
+	const fallbackReason = imageFallbackReason(tool, result, imageMode);
+	const folded = foldToBudget(result.outline);
+	const renderedNote = renderNote(runtimeState.currentNote);
 
 	const details: ComputerUseDetails = {
 		tool,
@@ -2673,12 +1986,12 @@ async function buildToolResult(
 			timestamp: result.capture.timestamp,
 			coordinateSpace: "window-relative-screenshot-pixels",
 		},
-		axTargets: result.axTargets,
-		visionTargets: result.visionTargets,
-		scene,
+		lookId: result.look.lookId,
+		renderedOutline: folded.text,
+		outline: serializeOutline(result.outline),
+		note: runtimeState.currentNote,
 		activation: result.activation,
 		execution,
-		axDiagnostics: result.axDiagnostics,
 		status: "ok",
 		config: getComputerUseConfig(),
 		helper: runtimeState.helperDiagnostics,
@@ -2697,828 +2010,110 @@ async function buildToolResult(
 		}
 	}
 
-	const displayedAxTargets = result.axTargets.slice(0, 24);
-	const axTargetText = displayedAxTargets.length
-		? `\n\nPrefer these AX targets over coordinate clicks or focus-based text replacement when one matches your intent:\n${displayedAxTargets.map(formatAxTargetLabel).join("\n")}${result.axTargets.length > displayedAxTargets.length ? `\n… ${result.axTargets.length - displayedAxTargets.length} more semantic targets available via search_ui/expand_ui.` : ""}`
-		: "";
-	const visionText = result.visionTargets?.length
-		? `\n\nVision targets:\n${result.visionTargets.map(formatVisionTargetLabel).join("\n")}`
-		: "";
-	const sceneText = scene.targets.length || scene.unknowns.length
-		? `\n\nScene projection:\n${[
-			...scene.targets.slice(0, 12).map((target) => `${target.ref} ${target.role ?? "UI"} ${JSON.stringify(target.label)} grounding=${target.grounding}${target.visualRefs.length ? ` visual=${target.visualRefs.join(",")}` : ""}`),
-			...scene.unknowns.slice(0, 8).map((target) => `${target.ref} visible ${JSON.stringify(target.label)} grounding=vision-only`),
-		].join("\n")}`
-		: "";
+	const noteText = renderedNote ? `\n\n${renderedNote}` : "";
+	const outlineText = `\n\nOutline (${folded.nodeCount} nodes, lookId ${result.look.lookId}${folded.truncated ? ", folded output truncated" : ""}):\n${folded.text}`;
 	const fallbackText = fallbackReason ? `\n\n${fallbackReason.message}` : "";
-	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${consoleText}${axTargetText}${sceneText}${visionText}${fallbackText}` }];
+	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${consoleText}${noteText}${outlineText}${fallbackText}` }];
 	if (fallbackReason) {
-		content.push(result.image!.jpegBase64
-			? { type: "image", data: result.image!.jpegBase64, mimeType: "image/jpeg" }
-			: { type: "image", data: result.image!.pngBase64, mimeType: "image/png" });
+		content.push({ type: "image", data: result.look.image.jpegBase64, mimeType: "image/jpeg" });
 	}
 
 	return { content, details };
 }
 
-async function mouseClickAtCapturePoint(
-	target: ResolvedTarget,
-	capture: CurrentCapture,
-	x: number,
-	y: number,
-	button: MouseButtonName,
-	clickCount: number,
-	delivery: NativeInputDelivery = nativeInputDelivery(),
-	signal?: AbortSignal,
-): Promise<void> {
-	ensurePointIsInCapture(x, y, capture);
-	await bridgeCommand(
-		"mouseClick",
-		{
-			...nativeWindowRequest(target),
-			x,
-			y,
-			button,
-			clickCount,
-			captureWidth: capture.width,
-			captureHeight: capture.height,
-			delivery,
-		},
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	);
-}
+type HelperActAction = "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse";
+type HelperActTarget = { ref: string } | { x: number; y: number };
 
-interface CoordinateClickVerification {
-	stateChanged: boolean;
-	verification: ExecutionTrace["coordinateVerification"];
-}
-
-async function coordinateStateSignature(target: ResolvedTarget, signal?: AbortSignal): Promise<string | undefined> {
-	try {
-		const [focused, rawTargets] = await Promise.all([
-			bridgeCommand<FocusedElementResult>("focusedElement", nativeWindowRequest(target), { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(() => undefined),
-			axTreeRawForTarget(target, 30, signal),
-		]);
-		const focusedSignature = focused?.exists
-			? [focused.role, focused.subrole, focused.isTextInput, focused.canSetValue].map((item) => String(item ?? "")).join(":")
-			: "none";
-		const targetSignature = parseAxTargets(rawTargets)
-			.map((candidate) => [candidate.role, candidate.subrole, axTargetLabelKey(candidate), Math.round(candidate.x), Math.round(candidate.y), candidate.canPress, candidate.canFocus].join(":"))
-			.join("|");
-		return `${focusedSignature}\n${targetSignature}`;
-	} catch {
-		return undefined;
+function currentLookOrThrow(): LookResponse {
+	if (!runtimeState.currentLook || !runtimeState.currentCapture) {
+		throw new Error("No current look. Call observe first, then act using refs or coordinates from that look.");
 	}
+	return runtimeState.currentLook;
 }
 
-async function verifiedCoordinateClick(
-	target: ResolvedTarget,
-	capture: CurrentCapture,
-	x: number,
-	y: number,
-	button: MouseButtonName,
-	clickCount: number,
-	delivery: NativeInputDelivery,
-	signal?: AbortSignal,
-): Promise<CoordinateClickVerification> {
-	const before = await coordinateStateSignature(target, signal);
-	await mouseClickAtCapturePoint(target, capture, x, y, button, clickCount, delivery, signal);
-	await sleep(80, signal);
-	const after = await coordinateStateSignature(target, signal);
-	if (!before || !after) return { stateChanged: false, verification: "unavailable" };
-	const stateChanged = before !== after;
-	return { stateChanged, verification: stateChanged ? "ax_signature_changed" : "no_observable_change" };
-}
-
-function visionClickPoint(visual: VisionTarget, capture: CurrentCapture): { x: number; y: number } {
-	const containers = (runtimeState.currentAxTargets ?? [])
-		.map((target) => target.frame)
-		.filter((frame): frame is FramePoints => Boolean(frame && frame.w > 80 && frame.h > 24));
-	const containing = containers
-		.filter((frame) => visual.y >= frame.y && visual.y <= frame.y + frame.h && visual.x >= frame.x && visual.x <= frame.x + frame.w)
-		.sort((a, b) => a.w * a.h - b.w * b.h)[0];
-	if (containing && containing.w > Math.max((visual.frame?.w ?? 0) * 2, 120)) {
-		return { x: Math.min(capture.width - 1, Math.max(0, containing.x + containing.w / 2)), y: visual.y };
-	}
-	return { x: visual.x, y: visual.y };
-}
-
-async function dispatchClick(
-	params: ClickParams,
-	capture: CurrentCapture,
-	target: ResolvedTarget,
-	signal?: AbortSignal,
-): Promise<ExecutionTrace> {
-	const ref = trimOrUndefined(params.ref);
-	const x = toFiniteNumber(params.x, NaN);
-	const y = toFiniteNumber(params.y, NaN);
-	const button = normalizeMouseButton(params.button);
-	const clickCount = normalizeClickCount(params.clickCount);
-	const delivery = nativeInputDelivery();
-	const deliveryPolicy = currentDeliveryPolicy();
-	const clickStrategy = (count = clickCount): ExecutionTrace["strategy"] => delivery === "pid" ? (count > 1 ? "pid_event_double_click" : "pid_event_click") : (count > 1 ? "coordinate_event_double_click" : "coordinate_event_click");
-	const nonStealthReason = delivery === "pid" ? "pid_routed_mouse_click" : "coordinate_mouse_click_requires_pointer_event";
-
-	const performCoordinateClick = async (clickX: number, clickY: number): Promise<CoordinateClickVerification> =>
-		await verifiedCoordinateClick(target, capture, clickX, clickY, button, clickCount, delivery, signal);
-
-	if (ref) {
-		const visual = visionTargetByRef(ref);
-		if (visual) {
-			if (isStrictAxMode()) strictModeBlock(`Vision ref '${ref}' requires coordinate input.`);
-			if (button !== "left") throw new Error(`Vision refs only support left-button clicks. Use coordinates for ${button}-click.`);
-			const point = visionClickPoint(visual, capture);
-			const verification = await performCoordinateClick(point.x, point.y);
-			return executionTrace(clickStrategy(), "default", {
-				axAttempted: false,
-				axSucceeded: false,
-				fallbackUsed: true,
-				nonStealthReason: delivery === "pid" ? "vision_ref_click_uses_pid_routed_mouse_click" : "vision_ref_click_uses_coordinate_mouse_click",
-				grounding: "vision",
-				delivery,
-				deliveryPolicy,
-				coordinateStateChanged: verification.stateChanged,
-				coordinateVerification: verification.verification,
-			});
-		}
-		if (button !== "left") {
-			throw new Error(`AX target refs only support left-button clicks. Use coordinates for ${button}-click.`);
-		}
-		const attemptRefClick = async (axTarget: AxTarget): Promise<{ clickedViaAX: boolean; focusedViaAX: boolean }> => {
-			let clickedViaAX = false;
-			let focusedViaAX = false;
-			for (let index = 0; index < clickCount; index += 1) {
-				try {
-					const axResult = await bridgeCommand<AxPressAtPointResult>(
-						"axPressElement",
-						{ elementRef: axTarget.elementRef, pid: target.pid },
-						{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-					);
-					clickedViaAX = toBoolean(axResult?.pressed);
-				} catch {
-					clickedViaAX = false;
-				}
-				if (!clickedViaAX) break;
-				if (index + 1 < clickCount) {
-					await sleep(60, signal);
-				}
-			}
-
-			if (!clickedViaAX && clickCount === 1) {
-				try {
-					const focusResult = await bridgeCommand<AxFocusResult>(
-						"axFocusElement",
-						{ elementRef: axTarget.elementRef, pid: target.pid },
-						{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-					);
-					focusedViaAX = toBoolean(focusResult?.focused);
-				} catch {
-					focusedViaAX = false;
-				}
-			}
-			return { clickedViaAX, focusedViaAX };
-		};
-
-		const axTarget = axTargetByRef(ref);
-		const originalAxTargets = runtimeState.currentAxTargets;
-		let reacquiredTarget: AxTarget | undefined;
-		let { clickedViaAX, focusedViaAX } = await attemptRefClick(axTarget);
-		if (!clickedViaAX && !focusedViaAX) {
-			const reacquired = await reacquireAxTarget(axTarget, target, signal);
-			if (reacquired) {
-				reacquiredTarget = reacquired;
-				({ clickedViaAX, focusedViaAX } = await attemptRefClick(reacquired));
-			}
-		}
-		// Reacquisition refreshes the global AX target list. During a batched action
-		// sequence, subsequent actions still refer to refs from the pre-batch state,
-		// so preserve that ref namespace until the batch returns a fresh state.
-		if (originalAxTargets) {
-			runtimeState.currentAxTargets = originalAxTargets;
-		}
-
-		const effectiveTarget = reacquiredTarget ?? axTarget;
-		const focusIsSufficient = focusedViaAX && (effectiveTarget.isTextInput || effectiveTarget.canFocus);
-		if (!clickedViaAX && !focusIsSufficient) {
-			if (isStrictAxMode()) {
-				strictModeBlock(`AX click/focus could not be completed for ${ref}.`);
-			}
-			const screenPoint = axCoordinateFallbackPoint(effectiveTarget);
-			const fallbackPoint = screenPointToCapturePoint(target, capture, screenPoint.x, screenPoint.y);
-			const verification = await performCoordinateClick(fallbackPoint.x, fallbackPoint.y);
-			return executionTrace(clickStrategy(), "default", {
-				axAttempted: true,
-				axSucceeded: false,
-				fallbackUsed: true,
-				nonStealthReason: delivery === "pid" ? "ax_ref_click_fell_back_to_pid_routed_mouse_click" : "ax_ref_click_fell_back_to_coordinate_mouse_click",
-				grounding: "ax",
-				delivery,
-				deliveryPolicy,
-				coordinateStateChanged: verification.stateChanged,
-				coordinateVerification: verification.verification,
-			});
-		}
-
-		return executionTrace(clickedViaAX ? "ax_press" : "ax_focus", "stealth", {
-			axAttempted: true,
-			axSucceeded: true,
-			fallbackUsed: false,
-			grounding: "ax",
-			delivery: "ax",
-		});
-	}
-
+function ensurePointIsInLookImage(x: number, y: number, look: LookResponse, errorPrefix = "Coordinates"): void {
 	if (!Number.isFinite(x) || !Number.isFinite(y)) {
-		throw new Error("click requires either ref or both x and y.");
+		throw new Error(`${errorPrefix} must be finite numbers.`);
 	}
-	ensurePointIsInCapture(x, y, capture);
-
-	let clickedViaAX = false;
-	const canTryAX = button === "left" && clickCount === 1;
-	if (canTryAX) {
-		try {
-			const axResult = await bridgeCommand<AxPressAtPointResult>(
-				"axPressAtPoint",
-				{
-					...nativeWindowRequest(target),
-					x,
-					y,
-					captureWidth: capture.width,
-					captureHeight: capture.height,
-				},
-				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-			);
-			clickedViaAX = toBoolean(axResult?.pressed);
-		} catch {
-			clickedViaAX = false;
-		}
-
+	if (x < 0 || y < 0 || x >= look.image.width || y >= look.image.height) {
+		throw new Error(`${errorPrefix} (${Math.round(x)},${Math.round(y)}) are outside the latest look image bounds (${look.image.width}x${look.image.height}). Call observe again and retry.`);
 	}
-
-	let coordinateVerification: CoordinateClickVerification | undefined;
-	if (!clickedViaAX) {
-		if (isStrictAxMode()) {
-			strictModeBlock(`AX click could not be completed at (${Math.round(x)},${Math.round(y)}).`);
-		}
-		coordinateVerification = await performCoordinateClick(x, y);
-	}
-
-	const usedAxPath = clickedViaAX;
-	return executionTrace(
-		clickedViaAX ? "ax_press" : clickStrategy(),
-		usedAxPath ? "stealth" : "default",
-		{
-			axAttempted: canTryAX,
-			axSucceeded: usedAxPath,
-			fallbackUsed: canTryAX && !usedAxPath,
-			nonStealthReason: usedAxPath ? undefined : nonStealthReason,
-			grounding: usedAxPath ? "ax" : "vision",
-			delivery: usedAxPath ? "ax" : delivery,
-			deliveryPolicy: usedAxPath ? undefined : deliveryPolicy,
-			coordinateStateChanged: coordinateVerification?.stateChanged,
-			coordinateVerification: coordinateVerification?.verification,
-		},
-	);
 }
 
-async function postKeyboardText(text: string, target: ResolvedTarget, delivery: NativeInputDelivery = nativeInputDelivery(), signal?: AbortSignal): Promise<void> {
-	await bridgeCommand("typeText", { text, pid: target.pid, delivery }, { signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) });
-}
-
-async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
-	if (runtimeState.allowNextTypeTextAxReplacement) {
-		runtimeState.allowNextTypeTextAxReplacement = false;
-		const focusedElementRef = await focusedTextElementRef(target, signal);
-		if (focusedElementRef) {
-			await setAxValue(focusedElementRef, text, signal);
-			if (isBrowserApp(target.appName, target.bundleId)) {
-				runtimeState.pendingBrowserAddress = { text, pid: target.pid, windowId: target.windowId };
-			}
-			return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-		}
+function normalizeActPath(path: DragParams["path"], look: LookResponse): Array<{ x: number; y: number }> {
+	if (!Array.isArray(path) || path.length < 2) {
+		throw new Error("drag.path must contain at least two points.");
 	}
-	if (isStrictAxMode()) {
-		strictModeBlock("Raw text insertion is not AX-only. Use set_text for AX value replacement.");
-	}
-	await focusControlledWindow(target, signal);
-	const delivery = nativeInputDelivery();
-	await postKeyboardText(text, target, delivery, signal);
-	return executionTrace(delivery === "pid" ? "pid_key_text" : "raw_key_text", "default", {
-		axAttempted: false,
-		axSucceeded: false,
-		fallbackUsed: false,
-		delivery,
-		deliveryPolicy: currentDeliveryPolicy(),
-		nonStealthReason: delivery === "pid" ? "pid_routed_text_input" : "raw_text_insertion_requires_keyboard_focus",
+	return path.map((point, index) => {
+		const x = Array.isArray(point) ? toFiniteNumber(point[0], NaN) : toFiniteNumber(point?.x, NaN);
+		const y = Array.isArray(point) ? toFiniteNumber(point[1], NaN) : toFiniteNumber(point?.y, NaN);
+		ensurePointIsInLookImage(x, y, look, `Drag point ${index + 1}`);
+		return { x, y };
 	});
 }
 
-async function focusedTextElementRef(target: ResolvedTarget, signal?: AbortSignal): Promise<string | undefined> {
-	const focused: FocusedElementResult = await bridgeCommand<FocusedElementResult>(
-		"focusedElement",
-		nativeWindowRequest(target),
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch(() => ({ exists: false } as FocusedElementResult));
-
-	if (!focused.exists || !focused.isTextInput || !focused.canSetValue || !focused.elementRef) {
-		return undefined;
-	}
-	return focused.elementRef;
-}
-
-async function setAxValue(elementRef: string, text: string, signal?: AbortSignal): Promise<boolean> {
-	const result = await bridgeCommand<any>(
-		"setValue",
-		{
-			elementRef,
-			value: text,
-		},
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	);
-	return toOptionalString(result?.value) === text;
-}
-
-async function focusAxElement(elementRef: string, target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
-	const result = await bridgeCommand<AxFocusResult>(
-		"axFocusElement",
-		{ elementRef, pid: target.pid },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch(() => undefined);
-	return toBoolean(result?.focused);
-}
-
-async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
+function actTargetFromParams(params: { ref?: string; x?: number; y?: number }, look: LookResponse, action: HelperActAction): HelperActTarget {
 	const ref = trimOrUndefined(params.ref);
-	const method = params.method === "ax" ? "ax" : "keyboard";
-	if (method === "keyboard") {
-		if (isStrictAxMode()) {
-			strictModeBlock("Keyboard text replacement is not AX-only. Use default set_text AX semantics in strict mode.");
-		}
-		const delivery = nativeInputDelivery();
-		let keyboardTextElementRef: string | undefined;
-		if (ref) {
-			let axTarget = axTargetByRef(ref);
-			const capture = runtimeState.currentCapture;
-			if (capture) {
-				const screenPoint = axCoordinateFallbackPoint(axTarget);
-				const point = screenPointToCapturePoint(target, capture, screenPoint.x, screenPoint.y);
-				await mouseClickAtCapturePoint(target, capture, point.x, point.y, "left", 1, delivery, signal);
-				await sleep(60, signal);
-			}
-			let focused = await focusAxElement(axTarget.elementRef, target, signal);
-			if (!focused) {
-				const reacquired = await reacquireAxTarget(axTarget, target, signal);
-				if (reacquired) {
-					axTarget = reacquired;
-					focused = await focusAxElement(axTarget.elementRef, target, signal);
-				}
-			}
-			if (!focused) {
-				throw new Error(`Could not focus AX target '${ref}' for keyboard text replacement.`);
-			}
-			keyboardTextElementRef = axTarget.elementRef;
-		} else {
-			await focusControlledWindow(target, signal);
-		}
-		if (keyboardTextElementRef) {
-			await bridgeCommand("selectText", { elementRef: keyboardTextElementRef }, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(() => undefined);
-			await sleep(60, signal);
-		}
-		await postKeyboardText(params.text, target, delivery, signal);
-		return executionTrace(delivery === "pid" ? "pid_key_text" : "raw_key_text", "default", {
-			axAttempted: Boolean(ref),
-			axSucceeded: Boolean(ref),
-			fallbackUsed: false,
-			delivery,
-			deliveryPolicy: currentDeliveryPolicy(),
-			nonStealthReason: delivery === "pid" ? "keyboard_text_replacement_uses_pid_routed_key_events" : "keyboard_text_replacement_requires_foreground_key_events",
-		});
-	}
-
 	if (ref) {
-		let axTarget = axTargetByRef(ref);
-		if (axTarget.canSetValue !== false) {
-			try {
-				if (await setAxValue(axTarget.elementRef, params.text, signal)) {
-					return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-				}
-				if (isStrictAxMode()) strictModeBlock(`AX setValue on '${ref}' did not update the text value.`);
-			} catch (error) {
-				if (isElementRefInvalid(error)) {
-					const reacquired = await reacquireAxTarget(axTarget, target, signal);
-					if (reacquired && reacquired.canSetValue !== false) {
-						axTarget = reacquired;
-						if (await setAxValue(axTarget.elementRef, params.text, signal)) {
-							return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-						}
-					}
-				}
-				if (isStrictAxMode()) {
-					throw normalizeError(error);
-				}
-			}
-		}
-
-		if (isStrictAxMode()) {
-			strictModeBlock(`AX target '${ref}' does not expose a directly settable AX value.`);
-		}
-
-		let focusedViaRef = await focusAxElement(axTarget.elementRef, target, signal);
-		if (!focusedViaRef) {
-			const reacquired = await reacquireAxTarget(axTarget, target, signal);
-			if (reacquired) {
-				axTarget = reacquired;
-				focusedViaRef = await focusAxElement(axTarget.elementRef, target, signal);
-			}
-		}
-		if (focusedViaRef) {
-			const focusedElementRef = await focusedTextElementRef(target, signal);
-			if (focusedElementRef && await setAxValue(focusedElementRef, params.text, signal)) {
-				return executionTrace("ax_set_value", "stealth", {
-					axAttempted: true,
-					axSucceeded: true,
-					fallbackUsed: false,
-				});
-			}
-			return await dispatchSetText({ ...params, method: "keyboard", ref }, target, signal);
-		}
-	}
-
-	const focusedElementRef = await focusedTextElementRef(target, signal);
-	if (focusedElementRef) {
-		if (await setAxValue(focusedElementRef, params.text, signal)) {
-			return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-		}
-		if (isStrictAxMode()) strictModeBlock("AX setValue on the focused text control did not update the text value.");
-		return await dispatchSetText({ ...params, method: "keyboard" }, target, signal);
-	}
-
-	if (isStrictAxMode()) {
-		strictModeBlock("set_text in stealth mode requires a text AX ref from the latest screenshot or an already-focused text control.");
-	}
-
-	await focusControlledWindow(target, signal);
-	const focusedAfterWindowFocus = await focusedTextElementRef(target, signal);
-	if (!focusedAfterWindowFocus) {
-		throw new Error("AX value replacement requires a text AX ref or focused text control. Use set_text with ref from the latest screenshot when available.");
-	}
-	if (!await setAxValue(focusedAfterWindowFocus, params.text, signal)) {
-		return await dispatchSetText({ ...params, method: "keyboard" }, target, signal);
-	}
-	return executionTrace("ax_set_value", "default", {
-		axAttempted: true,
-		axSucceeded: true,
-		fallbackUsed: true,
-		nonStealthReason: "set_text_without_ref_requires_window_focus_fallback",
-	});
-}
-
-function isCommandL(keys: string[]): boolean {
-	return keys.length === 1 && /^(cmd|command|meta)\+l$/i.test(keys[0].replace(/\s+/g, ""));
-}
-
-async function focusBrowserAddressField(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
-	if (!isCommandL(keys) || !isBrowserApp(target.appName, target.bundleId)) return false;
-
-	const focusedTextInput = await bridgeCommand<{ focused?: boolean; elementRef?: string }>(
-		"axFocusTextInput",
-		nativeWindowRequest(target),
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch(() => undefined);
-	if (toBoolean(focusedTextInput?.focused)) {
-		runtimeState.allowNextTypeTextAxReplacement = true;
-		return true;
-	}
-
-	const refreshed = await refreshAxTargets(target, signal);
-	if (!refreshed.length) return false;
-	const field = refreshed
-		.filter((candidate) => candidate.canFocus && candidate.isTextInput && (candidate.role === "AXTextField" || candidate.role === "AXSearchField" || candidate.role === "AXComboBox"))
-		.sort((a, b) => a.y - b.y || a.x - b.x)[0];
-	if (!field) return false;
-	const focused = await focusAxElement(field.elementRef, target, signal);
-	if (focused) runtimeState.allowNextTypeTextAxReplacement = true;
-	return focused;
-}
-
-function semanticActionsForKeys(keys: string[]): string[] {
-	if (keys.length !== 1) return [];
-	const key = keys[0].trim().toLowerCase();
-	if (["enter", "return"].includes(key)) return ["confirm", "press"];
-	if (["escape", "esc"].includes(key)) return ["cancel"];
-	if (["space", "spacebar", " "].includes(key)) return ["press"];
-	return [];
-}
-
-function windowButtonForSemanticKey(keys: string[], targets: AxTarget[]): AxTarget | undefined {
-	if (keys.length !== 1) return undefined;
-	const key = keys[0].trim().toLowerCase();
-	const buttons = targets.filter((target) => target.canPress && target.role === "AXButton");
-	if (["escape", "esc"].includes(key)) {
-		return buttons.find((target) => ["cancel", "don't save", "dont save"].includes(axTargetLabelKey(target)));
-	}
-	if (["enter", "return"].includes(key)) {
-		return (
-			buttons.find((target) => normalizeText(target.subrole).includes("default")) ??
-			buttons.find((target) => ["ok", "done", "save", "add", "continue", "open", "choose"].includes(axTargetLabelKey(target)))
-		);
-	}
-	return undefined;
-}
-
-async function tryWindowAxKeyAction(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
-	const refreshed = await refreshAxTargets(target, signal);
-	if (!refreshed.length) return false;
-	const button = windowButtonForSemanticKey(keys, refreshed);
-	if (!button) return false;
-	const result = await bridgeCommand<{ performed?: boolean }>(
-		"axPerformActionElement",
-		{ elementRef: button.elementRef, pid: target.pid, action: "press" },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch(() => undefined);
-	return toBoolean(result?.performed);
-}
-
-async function tryFocusedAxKeyAction(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
-	const actions = semanticActionsForKeys(keys);
-	if (!actions.length) return false;
-	const focused = await focusedTextElementRef(target, signal);
-	if (!focused) {
-		const rawFocused = await bridgeCommand<FocusedElementResult>(
-			"focusedElement",
-			nativeWindowRequest(target),
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch(() => undefined);
-		if (!rawFocused?.exists || !rawFocused.elementRef) return await tryWindowAxKeyAction(keys, target, signal);
-		for (const action of actions) {
-			const result = await bridgeCommand<{ performed?: boolean }>(
-				"axPerformActionElement",
-				{ elementRef: rawFocused.elementRef, pid: target.pid, action },
-				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-			).catch(() => undefined);
-			if (toBoolean(result?.performed)) return true;
-		}
-		return await tryWindowAxKeyAction(keys, target, signal);
-	}
-	for (const action of actions) {
-		const result = await bridgeCommand<{ performed?: boolean }>(
-			"axPerformActionElement",
-			{ elementRef: focused, pid: target.pid, action },
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch(() => undefined);
-		if (toBoolean(result?.performed)) return true;
-	}
-	return await tryWindowAxKeyAction(keys, target, signal);
-}
-
-async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
-	const keys = normalizeKeyList(params.keys);
-	if (keys.length === 0) {
-		throw new Error("keypress.keys must contain at least one key.");
-	}
-
-	const openedPendingBrowserLocation = await openBrowserLocationFromPendingAddress(keys, target, signal);
-	if (openedPendingBrowserLocation) {
-		return executionTrace("browser_open_location", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-	}
-
-	const focusedAddressViaAX = await focusBrowserAddressField(keys, target, signal);
-	if (focusedAddressViaAX) {
-		return executionTrace("ax_focus", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-	}
-
-	const performedViaAX = await tryFocusedAxKeyAction(keys, target, signal);
-	if (performedViaAX) {
-		return executionTrace("ax_action", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-	}
-
-	if (isStrictAxMode()) {
-		strictModeBlock("Keypress is not AX-only and no semantic AX equivalent was available.");
-	}
-	const delivery = nativeInputDelivery();
-	if (delivery === "hid") await focusControlledWindow(target, signal);
-	await bridgeCommand("keyPress", { keys, pid: target.pid, delivery }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
-	return executionTrace(delivery === "pid" ? "pid_keypress" : "raw_keypress", "default", {
-		axAttempted: semanticActionsForKeys(keys).length > 0,
-		axSucceeded: false,
-		fallbackUsed: semanticActionsForKeys(keys).length > 0,
-		delivery,
-		deliveryPolicy: currentDeliveryPolicy(),
-		nonStealthReason: delivery === "pid" ? "pid_routed_keypress" : "keypress_requires_keyboard_focus",
-	});
-}
-
-function scrollStepCount(delta: number): number {
-	return Math.max(1, Math.min(8, Math.ceil(Math.abs(delta) / 500)));
-}
-
-interface ScrollAttemptResult {
-	scrolled: boolean;
-	reason?: string;
-}
-
-async function tryAxScrollElement(elementRef: string, target: ResolvedTarget, scrollX: number, scrollY: number, signal?: AbortSignal): Promise<ScrollAttemptResult> {
-	const result = await bridgeCommand<{ scrolled?: boolean; reason?: string }>(
-		"axScrollElement",
-		{ elementRef, pid: target.pid, scrollX, scrollY, steps: Math.max(scrollStepCount(scrollX), scrollStepCount(scrollY)) },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch((error) => ({ scrolled: false, reason: normalizeError(error).message }));
-	return { scrolled: toBoolean(result?.scrolled), reason: toOptionalString(result?.reason) };
-}
-
-async function tryAxScrollAtPoint(
-	target: ResolvedTarget,
-	capture: CurrentCapture,
-	x: number,
-	y: number,
-	scrollX: number,
-	scrollY: number,
-	signal?: AbortSignal,
-): Promise<ScrollAttemptResult> {
-	const result = await bridgeCommand<{ scrolled?: boolean; reason?: string }>(
-		"axScrollAtPoint",
-		{
-			...nativeWindowRequest(target),
-			x,
-			y,
-			scrollX,
-			scrollY,
-			steps: Math.max(scrollStepCount(scrollX), scrollStepCount(scrollY)),
-			captureWidth: capture.width,
-			captureHeight: capture.height,
-		},
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	).catch((error) => ({ scrolled: false, reason: normalizeError(error).message }));
-	return { scrolled: toBoolean(result?.scrolled), reason: toOptionalString(result?.reason) };
-}
-
-async function dispatchScroll(
-	params: ScrollParams,
-	capture: CurrentCapture,
-	target: ResolvedTarget,
-	signal?: AbortSignal,
-): Promise<ExecutionTrace> {
-	const ref = trimOrUndefined(params.ref);
-	const x = toFiniteNumber(params.x, NaN);
-	const y = toFiniteNumber(params.y, NaN);
-	const scrollX = normalizeScrollDelta(params.scrollX);
-	const scrollY = normalizeScrollDelta(params.scrollY);
-	if (scrollX === 0 && scrollY === 0) {
-		throw new Error("scroll requires a non-zero scrollX or scrollY.");
-	}
-
-	let scrollAttempt: ScrollAttemptResult = { scrolled: false };
-	if (ref) {
-		const axTarget = axTargetByRef(ref);
-		scrollAttempt = await tryAxScrollElement(axTarget.elementRef, target, scrollX, scrollY, signal);
-		if (!scrollAttempt.scrolled) {
-			const reacquired = await reacquireAxTarget(axTarget, target, signal);
-			if (reacquired) {
-				scrollAttempt = await tryAxScrollElement(reacquired.elementRef, target, scrollX, scrollY, signal);
-			}
-		}
-	} else if (Number.isFinite(x) && Number.isFinite(y)) {
-		ensurePointIsInCapture(x, y, capture);
-		scrollAttempt = await tryAxScrollAtPoint(target, capture, x, y, scrollX, scrollY, signal);
-	} else {
-		throw new Error("scroll requires either ref or both x and y. If the target came from an old state, call observe again and retry with a current scene/AX scroll ref or coordinates.");
-	}
-
-	if (scrollAttempt.scrolled) {
-		return executionTrace("ax_scroll", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-	}
-
-	const reasonText = scrollAttempt.reason ? ` Reason: ${scrollAttempt.reason}.` : "";
-	if (isStrictAxMode()) {
-		strictModeBlock(ref ? `AX scroll could not be completed for ${ref}.${reasonText}` : `AX scroll could not be completed at (${Math.round(x)},${Math.round(y)}).${reasonText}`);
-	}
-	if (!Number.isFinite(x) || !Number.isFinite(y)) {
-		throw new Error(`Coordinate scroll fallback requires x and y.${reasonText} Provide coordinates from the latest screenshot or use a current AX scroll target.`);
-	}
-	ensurePointIsInCapture(x, y, capture);
-	const delivery = nativeInputDelivery();
-	await bridgeCommand(
-		"scrollWheel",
-		{
-			...nativeWindowRequest(target),
-			x,
-			y,
-			scrollX,
-			scrollY,
-			captureWidth: capture.width,
-			captureHeight: capture.height,
-			delivery,
-		},
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	);
-	return executionTrace(delivery === "pid" ? "pid_event_scroll" : "coordinate_event_scroll", "default", {
-		axAttempted: true,
-		axSucceeded: false,
-		fallbackUsed: true,
-		delivery,
-		deliveryPolicy: currentDeliveryPolicy(),
-		nonStealthReason: delivery === "pid" ? "pid_routed_scroll" : "coordinate_scroll_requires_pointer_event",
-	});
-}
-
-async function dispatchMoveMouse(
-	params: MoveMouseParams,
-	capture: CurrentCapture,
-	target: ResolvedTarget,
-	signal?: AbortSignal,
-): Promise<ExecutionTrace> {
-	if (isStrictAxMode()) {
-		strictModeBlock("Mouse movement is not AX-only.");
+		const node = outlineNodeByRef(ref);
+		if (node.wireRef && !node.pictureOnly) return { ref: node.wireRef };
+		const point = outlineNodeCenter(node);
+		ensurePointIsInLookImage(point.x, point.y, look);
+		return point;
 	}
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
-	ensurePointIsInCapture(x, y, capture);
-	const delivery = nativeInputDelivery();
-	await bridgeCommand(
-		"mouseMove",
-		{ ...nativeWindowRequest(target), x, y, captureWidth: capture.width, captureHeight: capture.height, delivery },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-	);
-	return executionTrace(delivery === "pid" ? "pid_event_move" : "coordinate_event_move", "default", {
-		axAttempted: false,
-		axSucceeded: false,
-		fallbackUsed: false,
-		delivery,
+	if (Number.isFinite(x) && Number.isFinite(y)) {
+		ensurePointIsInLookImage(x, y, look);
+		return { x, y };
+	}
+	if (action === "typeText" || action === "keypress") {
+		return { x: Math.floor(look.image.width / 2), y: Math.floor(look.image.height / 2) };
+	}
+	throw new Error(`${action} requires either ref or both x and y.`);
+}
+
+function executionTraceFromAct(result: HelperActResult): ExecutionTrace {
+	return executionTrace("act", result.performed?.delivery === "ax" ? "stealth" : "default", {
+		outcome: result.outcome,
+		performed: result.performed,
+		evidence: result.evidence,
+		error: result.error,
+		delivery: result.performed?.delivery,
 		deliveryPolicy: currentDeliveryPolicy(),
-		nonStealthReason: delivery === "pid" ? "pid_routed_mouse_move" : "mouse_move_requires_cursor_control",
 	});
 }
 
-function dragAdjustment(path: Array<{ x: number; y: number }> | undefined): { action: "increment" | "decrement"; steps: number } | undefined {
-	if (!path || path.length < 2) return undefined;
-	const first = path[0];
-	const last = path[path.length - 1];
-	const dx = last.x - first.x;
-	const dy = last.y - first.y;
-	const primary = Math.abs(dx) >= Math.abs(dy) ? dx : -dy;
-	if (Math.abs(primary) < 4) return undefined;
-	return { action: primary > 0 ? "increment" : "decrement", steps: Math.max(1, Math.min(20, Math.round(Math.abs(primary) / 20))) };
-}
-
-async function tryAxAdjustElement(axTarget: AxTarget, adjustment: { action: "increment" | "decrement"; steps: number }, target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
-	if (adjustment.action === "increment" && !axTarget.canIncrement) return false;
-	if (adjustment.action === "decrement" && !axTarget.canDecrement) return false;
-	let performed = false;
-	for (let index = 0; index < adjustment.steps; index += 1) {
-		const result = await bridgeCommand<{ performed?: boolean }>(
-			"axPerformActionElement",
-			{ elementRef: axTarget.elementRef, pid: target.pid, action: adjustment.action },
-			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
-		).catch(() => undefined);
-		if (!toBoolean(result?.performed)) break;
-		performed = true;
-	}
-	return performed;
-}
-
-async function dispatchDrag(
-	params: DragParams,
-	capture: CurrentCapture,
+async function helperAct(
 	target: ResolvedTarget,
+	action: HelperActAction,
+	actTarget: HelperActTarget,
+	params: Record<string, unknown>,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
-	const path = params.path ? normalizeDragPath(params.path, capture) : undefined;
-	const ref = trimOrUndefined(params.ref);
-	let adjustedViaAX = false;
-	if (ref && path) {
-		const axTarget = axTargetByRef(ref);
-		const adjustment = dragAdjustment(path);
-		if (adjustment) {
-			adjustedViaAX = await tryAxAdjustElement(axTarget, adjustment, target, signal);
-			if (!adjustedViaAX) {
-				const reacquired = await reacquireAxTarget(axTarget, target, signal);
-				if (reacquired) adjustedViaAX = await tryAxAdjustElement(reacquired, adjustment, target, signal);
-			}
-		}
-	}
-	if (adjustedViaAX) {
-		return executionTrace("ax_action", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
-	}
-	if (isStrictAxMode()) {
-		strictModeBlock(ref ? `AX adjustment could not be completed for ${ref}.` : "Drag is not AX-only.");
-	}
-	if (!path) {
-		throw new Error("drag requires path points for pointer fallback or a ref plus path for AX adjustment.");
-	}
-	const delivery = nativeInputDelivery();
-	await bridgeCommand(
-		"mouseDrag",
-		{ ...nativeWindowRequest(target), path, captureWidth: capture.width, captureHeight: capture.height, delivery },
-		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	const look = currentLookOrThrow();
+	const result = await bridgeCommand<HelperActResult>(
+		"act",
+		{
+			lookId: look.lookId,
+			pid: target.pid,
+			target: actTarget,
+			action,
+			policy: currentDeliveryPolicy(),
+			params: { ...params, delivery: nativeInputDelivery() },
+		},
+		{ signal, timeoutMs: Math.max(COMMAND_TIMEOUT_MS, typeof params.text === "string" ? params.text.length * 25 + 4_000 : COMMAND_TIMEOUT_MS) },
 	);
-	return executionTrace(delivery === "pid" ? "pid_event_drag" : "coordinate_event_drag", "default", {
-		axAttempted: Boolean(ref),
-		axSucceeded: false,
-		fallbackUsed: Boolean(ref),
-		delivery,
-		deliveryPolicy: currentDeliveryPolicy(),
-		nonStealthReason: delivery === "pid" ? "pid_routed_drag" : "drag_requires_pointer_event",
-	});
+	if (!result || !["worked", "didnt", "unknown"].includes(result.outcome)) {
+		throw new Error("Helper act returned an invalid result without an outcome.");
+	}
+	return executionTraceFromAct(result);
+}
+
+function actOutcomeText(execution: ExecutionTrace): string {
+	if (execution.outcome === "worked") return " Helper verified it worked.";
+	if (execution.outcome === "didnt") return " Helper verified it did not work.";
+	return " Helper could not verify the result.";
 }
 
 function confirmationToolResult(tool: string, target: ResolvedTarget, execution: ExecutionTrace, message: string): AgentToolResult<ConfirmationDetails> {
@@ -3541,19 +2136,16 @@ function confirmationToolResult(tool: string, target: ResolvedTarget, execution:
 	};
 }
 
-function autoConfirmButton(targets: AxTarget[]): AxTarget | undefined {
-	return targets.find((target) => target.canPress && target.role === "AXButton" && /^(confirm|ok|continue|apply)\b/i.test(axTargetLabel(target).trim()));
-}
-
 async function runActionTool(
 	tool: string,
 	signal: AbortSignal | undefined,
 	dispatch: (target: ResolvedTarget) => Promise<ExecutionTrace>,
-	summaryFactory: (target: ResolvedTarget, returnedState: boolean) => string,
-	options: { responseMode?: WindowTargetParams["responseMode"] } = {},
+	summaryFactory: (target: ResolvedTarget, returnedState: boolean, execution: ExecutionTrace) => string,
+	options: { responseMode?: WindowTargetParams["responseMode"]; targetRef?: string } = {},
 ): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	const currentTarget = await resolveCurrentTarget(signal);
 	let stateMayHaveChanged = false;
+	const noteBeforeAct = runtimeState.currentNote;
 
 	try {
 		const readyTarget = await ensureTargetWindowId(currentTarget, signal);
@@ -3563,16 +2155,14 @@ async function runActionTool(
 
 			await sleep(settleMsForExecution(execution), signal);
 			if (options.responseMode === "confirmation") {
-				return confirmationToolResult(tool, readyTarget, execution, summaryFactory(readyTarget, false));
+				return confirmationToolResult(tool, readyTarget, execution, summaryFactory(readyTarget, false, execution));
 			}
-			let captureResult = await captureCurrentTarget(signal);
-			const confirmButton = autoConfirmButton(captureResult.axTargets);
-			if (confirmButton) {
-				await bridgeCommand("axPerformActionElement", { elementRef: confirmButton.elementRef, pid: captureResult.target.pid, action: "press" }, { signal, timeoutMs: COMMAND_TIMEOUT_MS }).catch(() => undefined);
-				await sleep(settleMsForExecution(execution), signal);
-				captureResult = await captureCurrentTarget(signal);
-			}
-			return await buildToolResult(tool, summaryFactory(captureResult.target, true), captureResult, execution, signal);
+			const captureResult = await refreshCurrentTargetAfterAct(readyTarget, options.targetRef, signal);
+			runtimeState.currentNote = noteAfterAct(noteBeforeAct, options.targetRef, captureResult.outline, {
+				window: noteWindowForTarget(captureResult.target, captureResult.look),
+				windowChanged: execution.evidence?.windowChanged === true,
+			});
+			return await buildToolResult(tool, summaryFactory(captureResult.target, true, execution), captureResult, execution, signal);
 		});
 	} catch (error) {
 		if (stateMayHaveChanged) {
@@ -3630,6 +2220,7 @@ async function collectWindowDetails(apps: HelperApp[], config: ReturnType<typeof
 				sheetCount: window.sheetCount,
 				role: window.role,
 				subrole: window.subrole,
+				pairing: window.pairing,
 				browserUseAllowed: config.browser_use || !isBrowserApp(app.appName, app.bundleId),
 				score: scoreWindow(window),
 			});
@@ -3720,22 +2311,7 @@ function browserSnapshotTarget(snapshotId: string | undefined, ref: string | und
 	return { contextId: snapshot.contextId, backendNodeId: target.backendNodeId };
 }
 
-async function performBrowserClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails> | undefined> {
-	const contextId = trimOrUndefined(params.contextId);
-	if (!isBrowserContextId(contextId)) return undefined;
-	const target = browserSnapshotTarget(params.stateId, trimOrUndefined(params.ref));
-	if (!target || target.contextId !== contextId || !Number.isFinite(target.backendNodeId)) {
-		throw new Error("Browser click requires contextId, stateId from snapshot, and a clickable browser ref from that snapshot.");
-	}
-	const clickCount = Math.max(1, Math.min(3, Number.isFinite(params.clickCount) ? Math.trunc(params.clickCount!) : 1));
-	for (let index = 0; index < clickCount; index += 1) {
-		const clicked = await cdpClickForContext(contextId, target.backendNodeId!);
-		if (!clicked) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
-	}
-	return await performSnapshot({ contextId, image: params.image }, signal);
-}
-
-// Side effect: browser snapshots are cached so later click(contextId,stateId,ref) can resolve opaque @r refs.
+// Side effect: browser snapshots are cached so later browser tools can resolve opaque @r refs.
 async function refreshBrowserSnapshot(contextId: string, image?: ImageMode, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails>> {
 	return await performSnapshot({ contextId, image }, signal);
 }
@@ -3795,10 +2371,10 @@ async function performReadText(params: ReadTextParams, signal?: AbortSignal): Pr
 	const desktopWindowRef = contextId ? desktopWindowRefFromContext(contextId) : undefined;
 	await selectWindowIfProvided(params.window ?? desktopWindowRef, signal);
 	validateStateId(params.stateId);
-	if (!ref) throw new Error("read_text requires ref for desktop contexts. Call observe/inspect_ui and use a text-bearing scene/AX ref.");
-	const target = axTargetByRef(ref);
+	if (!ref) throw new Error("read_text requires ref for desktop contexts. Call observe/inspect_ui and use a text-bearing outline ref.");
+	const node = outlineNodeByRef(ref);
 	const raw = await bridgeCommand("axReadText", {
-		elementRef: target.elementRef,
+		elementRef: wireRefForNode(node),
 		offset: Math.max(0, Math.trunc(toFiniteNumber(params.offset, 0))),
 		limit: Math.max(1, Math.min(100_000, Math.trunc(toFiniteNumber(params.limit, 4_000)))),
 	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
@@ -3815,16 +2391,6 @@ async function performReadText(params: ReadTextParams, signal?: AbortSignal): Pr
 		text,
 	};
 	return { content: [{ type: "text", text: text || "(empty text slice)" }], details };
-}
-
-async function listAxTreeRaw(target: ResolvedTarget, params: SnapshotParams, signal?: AbortSignal): Promise<unknown> {
-	const scope = trimOrUndefined(params.scopeRef) ? axTargetByRef(trimOrUndefined(params.scopeRef)!).elementRef : undefined;
-	return await bridgeCommand("axSnapshotTree", {
-		...nativeWindowRequest(target),
-		elementRef: scope,
-		maxNodes: Math.max(1, Math.min(2_000, Math.trunc(toFiniteNumber(params.maxNodes, 120)))),
-		maxDepth: Math.max(1, Math.min(20, Math.trunc(toFiniteNumber(params.maxDepth, 4)))),
-	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
 }
 
 function normalizeWaitTimeoutMs(value: unknown): number {
@@ -3869,9 +2435,9 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		timeoutMs,
 	}, { signal, timeoutMs: timeoutMs + 2_000 });
 	const record = isRecord(raw) ? raw : {};
-	const axTargets = parseAxTargets(isRecord(record.target) ? { targets: [record.target] } : []);
-	const foundTarget = axTargets[0];
-	if (foundTarget) runtimeState.currentAxTargets = axTargets;
+	const refreshed = await captureCurrentTarget(signal, "auto");
+	const matches = searchOutline(refreshed.outline, text, role, undefined, 1);
+	const foundTarget = matches[0];
 	const details: WaitForDetails = {
 		tool: "wait_for",
 		contextId,
@@ -3879,7 +2445,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		gone: toBoolean(record.gone) || undefined,
 		timedOut: toBoolean(record.timedOut) || undefined,
 		target: foundTarget,
-		nodeCount: Number.isFinite(record.nodeCount) ? Number(record.nodeCount) : undefined,
+		nodeCount: Number.isFinite(record.nodeCount) ? Number(record.nodeCount) : refreshed.outline.nodes.length,
 		text,
 		role,
 	};
@@ -3894,7 +2460,7 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 	const browser = await cdpSnapshotForContext(contextId).catch(() => undefined);
 	if (browser) {
 		const targetText = browser.targets.length
-			? `\n\nTargets:\n${browser.targets.map((target) => `${target.ref} ${target.role} \"${previewAxText(target.name)}\" [${target.actions.join(",")}]`).join("\n")}`
+			? `\n\nTargets:\n${browser.targets.map((target) => `${target.ref} ${target.role} \"${textPreview(target.name, AX_TARGET_TEXT_PREVIEW_CHARS)}\" [${target.actions.join(",")}]`).join("\n")}`
 			: "";
 		const browserTextPreview = textPreview(browser.text, BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS);
 		const pageText = browserTextPreview ? `\n\nPage text preview (${browserTextPreview.length}/${browser.text.length} chars; use read_text for more):\n${browserTextPreview}` : "";
@@ -3913,31 +2479,27 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 	const windowRef = desktopWindowRefFromContext(contextId);
 	if (!windowRef) throw new Error(`Unknown context '${contextId}'. Call list_contexts and use a current contextId.`);
 	await selectWindowIfProvided(windowRef, signal);
-	let target = await resolveCurrentTarget(signal);
-	target = await ensureTargetWindowId(target, signal);
-	const capture = captureForTarget(target);
-	setCurrentTarget(target);
-	runtimeState.currentCapture = capture;
-	runtimeState.currentStateTarget = { pid: target.pid, windowId: target.windowId, windowRef: target.windowRef };
-	const axResult = await listAxTreeRaw(target, params, signal);
-	const axTargets = parseAxTargets(axResult);
-	runtimeState.currentAxTargets = axTargets;
+	const scopeRef = trimOrUndefined(params.scopeRef);
+	const result = await captureCurrentTarget(signal, "never", AUTO_IMAGE_MAX_DIMENSION);
+	const folded = foldToBudget(result.outline, { maxDepth: Math.max(1, Math.trunc(toFiniteNumber(params.maxDepth, 2))), maxNodes: Math.max(1, Math.min(2_000, Math.trunc(toFiniteNumber(params.maxNodes, 150)))) }, scopeRef ? [scopeRef] : []);
 	const desktop: ComputerUseDetails = {
 		tool: "snapshot",
 		target: {
-			app: target.appName,
-			bundleId: target.bundleId,
-			pid: target.pid,
-			windowTitle: target.windowTitle,
-			windowId: target.windowId,
-			windowRef: target.windowRef,
-			nativeWindowRef: target.nativeWindowRef,
+			app: result.target.appName,
+			bundleId: result.target.bundleId,
+			pid: result.target.pid,
+			windowTitle: result.target.windowTitle,
+			windowId: result.target.windowId,
+			windowRef: result.target.windowRef,
+			nativeWindowRef: result.target.nativeWindowRef,
 		},
-		capture: { ...capture, coordinateSpace: "window-relative-screenshot-pixels" },
-		axTargets,
+		capture: { ...result.capture, coordinateSpace: "window-relative-screenshot-pixels" },
+		lookId: result.look.lookId,
+		renderedOutline: folded.text,
+		outline: serializeOutline(result.outline),
+		note: runtimeState.currentNote,
 		activation: emptyActivation(),
-		execution: executionTrace("screenshot", "stealth", { fallbackUsed: false }),
-		axDiagnostics: axDiagnosticsFromResult(axResult, target),
+		execution: executionTrace("look", "stealth"),
 		status: "ok",
 		config: getComputerUseConfig(),
 	};
@@ -3945,175 +2507,120 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 		tool: "snapshot",
 		contextId,
 		kind: "desktop_window",
-		snapshotId: capture.stateId,
+		snapshotId: result.capture.stateId,
 		availableActions: ["observe", "search_ui", "expand_ui", "inspect_ui", "act", "read_text", "wait_for"],
 		desktop,
 	};
-	const lines = axTargets.map((item) => `${"  ".repeat(Math.max(0, item.depth ?? 0))}${formatAxTargetLabel(item)}`);
-	const scope = trimOrUndefined(params.scopeRef) ? ` scoped to ${params.scopeRef}` : "";
-	return { content: [{ type: "text", text: `Captured desktop context ${contextId}${scope}. ${axTargets.length} AX node${axTargets.length === 1 ? "" : "s"}.\n${lines.join("\n")}` }], details };
+	const scope = scopeRef ? ` scoped to ${scopeRef}` : "";
+	return { content: [{ type: "text", text: `Captured desktop context ${contextId}${scope}. ${result.outline.nodes.length} outline node${result.outline.nodes.length === 1 ? "" : "s"}.\n${folded.text}` }], details };
 }
 
-async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
-	runtimeState.currentImageMode = normalizeImageMode(params.image);
+/** Side effects: captures/updates current target, capture state, look, and parsed outline. */
+async function performObserve(params: ObserveParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	const mode = params.mode ?? "fused";
+	const image = params.image ?? (mode === "semantic" ? "never" : mode === "visual" ? "always" : "auto");
+	const readText = mode === "semantic" ? "never" : mode === "visual" ? "always" : "auto";
+	runtimeState.currentImageMode = normalizeImageMode(image);
 	const selection = {
 		app: trimOrUndefined(params.app),
 		windowTitle: trimOrUndefined(params.windowTitle),
 		window: normalizeWindowSelector(params.window),
 	};
-
 	const requestedTarget = selection.window
 		? await resolveTargetByWindowSelector(params.window!, signal)
-		: await resolveTargetForScreenshot(selection, signal);
-	const captureResult = await captureCurrentTarget(signal);
-	if (!matchesScreenshotSelection(captureResult.target, selection)) {
+		: await resolveTargetForObserve(selection, signal);
+	const captureResult = await captureCurrentTarget(signal, readText, normalizeImageMode(image) === "always" ? EXPLICIT_IMAGE_MAX_DIMENSION : AUTO_IMAGE_MAX_DIMENSION);
+	if (!matchesObserveSelection(captureResult.target, selection)) {
 		throw new Error(
 			`Observation target drifted from the requested selection. Requested ${requestedTarget.appName} — ${requestedTarget.windowTitle}, captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Call observe again or specify a more exact window title.`,
 		);
 	}
-	const summary = `Captured ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal, normalizeImageMode(params.image));
+	const summary = `Observed ${mode} ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest outline state.`;
+	return await buildToolResult("observe", summary, captureResult, executionTrace("look", "stealth"), signal, normalizeImageMode(image));
 }
 
-/** Side effects: captures/updates current target, capture state, AX targets, vision targets, and derived scene. */
-async function performObserve(params: ObserveParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
-	const mode = params.mode ?? "fused";
-	const image = params.image ?? (mode === "semantic" ? "never" : mode === "visual" ? "always" : "auto");
-	const result = await performScreenshot({ ...params, image }, signal);
-	result.details.tool = "observe";
-	const first = result.content[0];
-	result.content[0] = { type: "text", text: (first?.type === "text" ? first.text : "").replace(/^Captured/, `Observed ${mode}`) };
-	return result;
-}
-
-function currentSceneOrThrow(stateId?: string): SceneProjection {
+function currentOutlineOrThrow(stateId?: string): Outline {
 	validateStateId(stateId);
-	if (!runtimeState.currentScene) throw new Error("No current scene. Call observe or screenshot first.");
-	return runtimeState.currentScene;
+	if (!runtimeState.currentOutline) throw new Error("No current outline. Call observe first.");
+	return runtimeState.currentOutline;
 }
 
-function sceneTargetByRef(ref: string, scene = currentSceneOrThrow()): SceneTarget | undefined {
-	const sceneTarget = [...scene.targets, ...scene.unknowns].find((target) => target.ref === ref || target.axRef === ref || target.visualRefs.includes(ref));
-	if (sceneTarget) return sceneTarget;
-	const ax = runtimeState.currentSemanticAxTargets?.find((candidate) => candidate.ref === ref);
-	return ax ? semanticSceneTarget(ax) : undefined;
-}
-
-function actionRefForSceneRef(ref: string): string {
-	if (ref.startsWith("@e") || ref.startsWith("@v")) return ref;
-	const target = runtimeState.currentScene ? sceneTargetByRef(ref, runtimeState.currentScene) : undefined;
-	return target?.axRef ?? target?.visualRefs[0] ?? ref;
-}
-
-function actionSearchRank(target: SceneTarget, action?: string): number {
-	if (!action) return 0;
-	if (target.role === "AXButton") return 40;
-	if (target.axRef && target.actions.length) return 20;
-	return 0;
-}
-
-function exactTextRank(target: SceneTarget, text?: string): number {
-	return text && normalizeText(target.label) === normalizeText(text) ? 100 : 0;
-}
-
-function semanticSceneTarget(ax: AxTarget): SceneTarget {
-	return {
-		ref: ax.ref,
-		axRef: ax.ref,
-		label: axTargetLabel(ax) || "(unlabeled)",
-		role: ax.role,
-		actions: ax.actions,
-		frame: ax.frame,
-		visualRefs: [],
-		grounding: "ax",
-		visibility: ax.axVisible ? "visible" : "offscreen",
-		confidence: ax.axVisible ? 0.6 : 0.35,
-	};
-}
-
-function visionSceneTarget(vision: VisionTarget): SceneTarget {
-	return {
-		ref: vision.ref,
-		label: vision.text,
-		actions: ["press", "click"],
-		frame: vision.frame,
-		visualRefs: [vision.ref],
-		grounding: "vision",
-		visibility: "visible",
-		confidence: vision.confidence,
-	};
-}
-
-function searchSceneTargets(scene: SceneProjection, text: string | undefined, role: string | undefined, action: string | undefined, source: string | undefined, limit: number): SceneTarget[] {
-	const seenAx = new Set(scene.targets.map((target) => target.axRef).filter((item): item is string => Boolean(item)));
-	const semantic = (runtimeState.currentSemanticAxTargets ?? [])
-		.filter((ax) => !seenAx.has(ax.ref))
-		.map(semanticSceneTarget);
-	const rawVision = role || source ? [] : (runtimeState.currentVisionTargets ?? []).map(visionSceneTarget);
-	return [...scene.targets, ...semantic, ...rawVision, ...scene.unknowns]
-		.map((target) => ({ target, textScore: text ? textMatchScore(target.label, text) : 1 }))
-		.filter((item) => !text || item.textScore > 0)
-		.filter((item) => !role || item.target.role === role)
-		.filter((item) => !action || item.target.actions.some((candidate) => normalizeText(candidate).includes(normalizeText(action))))
-		.filter((item) => !source || runtimeState.currentSemanticAxTargets?.find((ax) => ax.ref === (item.target.axRef ?? item.target.ref))?.source === source)
-		.sort((a, b) => b.textScore - a.textScore || exactTextRank(b.target, text) - exactTextRank(a.target, text) || actionSearchRank(b.target, action) - actionSearchRank(a.target, action) || b.target.confidence - a.target.confidence)
-		.slice(0, limit)
-		.map((item) => item.target);
-}
-
-/** Pure scene query unless a window selector is supplied, in which case current target selection may change. */
-async function performSearchUi(params: SearchUiParams, signal?: AbortSignal): Promise<AgentToolResult<SceneToolDetails>> {
+/** Pure outline query unless a window selector is supplied, in which case current target selection may change. */
+async function performSearchUi(params: SearchUiParams, signal?: AbortSignal): Promise<AgentToolResult<OutlineToolDetails>> {
 	await selectWindowIfProvided(params.window, signal);
-	const scene = currentSceneOrThrow(params.stateId);
+	const outline = currentOutlineOrThrow(params.stateId);
 	const text = trimOrUndefined(params.text);
 	const role = trimOrUndefined(params.role);
 	const action = trimOrUndefined(params.action);
-	const source = trimOrUndefined(params.source);
 	const limit = Math.max(1, Math.min(50, Math.trunc(toFiniteNumber(params.limit, 12))));
-	const matches = searchSceneTargets(scene, text, role, action, source, limit);
-	const details: SceneToolDetails = { tool: "search_ui", stateId: runtimeState.currentCapture?.stateId, scene, matches };
-	const lines = matches.map((target) => `${target.ref} ${target.role ?? "UI"} ${JSON.stringify(target.label)} grounding=${target.grounding}`);
-	return { content: [{ type: "text", text: `Found ${matches.length} UI match${matches.length === 1 ? "" : "es"}.\n${lines.join("\n")}` }], details };
+	const matches = searchOutline(outline, text, role, action, limit);
+	const detailMatches = matches.map((match) => ({ ...match, node: serializeOutlineNode(match.node) }));
+	const details: OutlineToolDetails = { tool: "search_ui", stateId: runtimeState.currentCapture?.stateId, lookId: outline.lookId, outline: serializeOutline(outline), matches: detailMatches, note: runtimeState.currentNote };
+	const lines = matches.map((match) => `${match.ref} ${match.role || "AXUnknown"} ${JSON.stringify(match.label || "(unlabeled)")}\n  path: ${match.path}`);
+	const noteHeader = renderNote(runtimeState.currentNote);
+	const noteText = noteHeader ? `${noteHeader}\n\n` : "";
+	return { content: [{ type: "text", text: `${noteText}Found ${matches.length} outline match${matches.length === 1 ? "" : "es"}.\n${lines.join("\n")}` }], details };
 }
 
-/** Reads cached scene; AX refs may trigger a scoped AX snapshot, which allocates fresh native element refs. */
-async function performExpandUi(params: ExpandUiParams, signal?: AbortSignal): Promise<AgentToolResult<SceneToolDetails>> {
+/** Reads cached outline; truncated refs trigger a scoped look. */
+async function performExpandUi(params: ExpandUiParams, signal?: AbortSignal): Promise<AgentToolResult<OutlineToolDetails>> {
 	await selectWindowIfProvided(params.window, signal);
-	const scene = currentSceneOrThrow(params.stateId);
+	let outline = currentOutlineOrThrow(params.stateId);
 	const ref = trimOrUndefined(params.ref);
 	if (!ref) throw new Error("expand_ui.ref is required.");
-	const target = sceneTargetByRef(ref, scene);
-	if (!target) throw new Error(`Scene ref '${ref}' is not available in the current scene.`);
-	const visual = target.visualRefs.map((visionRef) => runtimeState.currentVisionTargets?.find((candidate) => candidate.ref === visionRef)).filter((item): item is VisionTarget => Boolean(item));
-	const axRef = target.axRef ?? (ref.startsWith("@e") ? ref : undefined);
-	const ax = runtimeState.currentSemanticAxTargets?.find((candidate) => candidate.ref === axRef) ?? runtimeState.currentAxTargets?.find((candidate) => candidate.ref === axRef);
+	let target = nodeByRef(outline, ref);
+	if (!target) throw new Error(`Outline ref '${ref}' is not available in the current outline.`);
 	const depth = Math.max(1, Math.min(8, Math.trunc(toFiniteNumber(params.depth, 3))));
-	let subtree: AxTarget[] = [];
-	if (axRef && ax && runtimeState.currentTarget) subtree = parseAxTargets(await listAxTreeRaw(await ensureTargetWindowId(await resolveCurrentTarget(signal), signal), { contextId: "", scopeRef: axRef, maxDepth: depth, maxNodes: 120 }, signal));
-	const details: SceneToolDetails = { tool: "expand_ui", stateId: runtimeState.currentCapture?.stateId, scene, target, axTarget: ax, raw: { visual, subtree } };
-	const subtreeLines = subtree.length ? `\nsubtree:\n${subtree.map((node) => `${"  ".repeat(Math.max(0, node.depth ?? 0))}${formatAxTargetLabel(node)}`).join("\n")}` : "";
-	return { content: [{ type: "text", text: `${target.ref} ${target.role ?? "UI"} ${JSON.stringify(target.label)} grounding=${target.grounding}\nvisual=${target.visualRefs.join(",") || "none"}\nactions=${target.actions.join(",") || "none"}${subtreeLines}` }], details };
+	const regionKey = noteRegionKeyForRef(outline, ref);
+	const regionChanged = Boolean(regionKey && runtimeState.currentNote?.regions.some((region) => region.key === regionKey && region.status === "changed"));
+	if (target.truncated || regionChanged) {
+		const currentTarget = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
+		const scoped = await performLook(currentTarget.windowId, { readText: "auto", scopeRef: wireRefForNode(target), maxDimension: 1 }, signal);
+		target = graftScopedOutline(outline, target.ref, scoped.parsedOutline!);
+	}
+	const folded = foldToBudget(outline, { maxDepth: depth, maxNodes: 150 }, [target.ref]);
+	const details: OutlineToolDetails = { tool: "expand_ui", stateId: runtimeState.currentCapture?.stateId, lookId: outline.lookId, outline: serializeOutline(outline), target: serializeOutlineNode(target), renderedOutline: folded.text, note: runtimeState.currentNote };
+	return { content: [{ type: "text", text: `${formatOutlineNodeLabel(target)}\npath: ${outlineNodePath(target)}\n\n${folded.text}` }], details };
 }
 
-/** Pure cached-scene inspection unless a window selector is supplied. */
-async function performInspectUi(params: InspectUiParams, signal?: AbortSignal): Promise<AgentToolResult<SceneToolDetails>> {
+/** Pure cached-outline inspection unless a window selector is supplied. */
+async function performInspectUi(params: InspectUiParams, signal?: AbortSignal): Promise<AgentToolResult<OutlineToolDetails>> {
 	await selectWindowIfProvided(params.window, signal);
-	const scene = currentSceneOrThrow(params.stateId);
+	const outline = currentOutlineOrThrow(params.stateId);
 	const ref = trimOrUndefined(params.ref);
 	if (!ref) throw new Error("inspect_ui.ref is required.");
-	const target = sceneTargetByRef(ref, scene);
-	if (!target) throw new Error(`Scene ref '${ref}' is not available in the current scene.`);
-	const axTarget = runtimeState.currentSemanticAxTargets?.find((candidate) => candidate.ref === (target.axRef ?? ref)) ?? runtimeState.currentAxTargets?.find((candidate) => candidate.ref === (target.axRef ?? ref));
-	const visionTarget = runtimeState.currentVisionTargets?.find((candidate) => candidate.ref === ref || target.visualRefs.includes(candidate.ref));
-	const details: SceneToolDetails = { tool: "inspect_ui", stateId: runtimeState.currentCapture?.stateId, scene, target, axTarget, visionTarget, raw: params.includeRaw ? { axTargets: runtimeState.currentSemanticAxTargets ?? runtimeState.currentAxTargets, sceneAxTargets: runtimeState.currentAxTargets, visionTargets: runtimeState.currentVisionTargets } : undefined };
-	return { content: [{ type: "text", text: `${target.ref} ${target.role ?? "UI"} ${JSON.stringify(target.label)}\ngrounding=${target.grounding} confidence=${target.confidence.toFixed(2)}\nframe=${target.frame ? JSON.stringify(target.frame) : "none"}` }], details };
+	const target = nodeByRef(outline, ref);
+	if (!target) throw new Error(`Outline ref '${ref}' is not available in the current outline.`);
+	const details: OutlineToolDetails = { tool: "inspect_ui", stateId: runtimeState.currentCapture?.stateId, lookId: outline.lookId, outline: serializeOutline(outline), target: serializeOutlineNode(target), raw: params.includeRaw ? serializeOutlineNode(target) : undefined, note: runtimeState.currentNote };
+	const fields = [
+		formatOutlineNodeLabel(target),
+		`path: ${outlineNodePath(target)}`,
+		`rect: ${JSON.stringify(target.rect)}`,
+		`actions: ${target.actions.join(",") || "none"}`,
+		`capabilities: ${[
+			target.canPress ? "press" : undefined,
+			target.canFocus ? "focus" : undefined,
+			target.canSetValue ? "setValue" : undefined,
+			target.canScroll ? "scroll" : undefined,
+			target.canIncrement ? "increment" : undefined,
+			target.canDecrement ? "decrement" : undefined,
+			target.isTextInput ? "textInput" : undefined,
+		].filter(Boolean).join(",") || "none"}`,
+		`annotations: ${[
+			target.offscreen ? "offscreen" : undefined,
+			target.pictureOnly ? "pictureOnly" : undefined,
+			target.truncated ? "truncated" : undefined,
+			target.scrollExtent ? `scrollable ${target.scrollExtent.seen}/${target.scrollExtent.total}` : undefined,
+		].filter(Boolean).join(",") || "none"}`,
+	];
+	return { content: [{ type: "text", text: fields.join("\n") }], details };
 }
 
 async function performAct(params: ActParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails | ConfirmationDetails>> {
 	switch (params.action) {
-		case "press":
-		case "click": return await performClick(params, signal);
-		case "doubleClick": return await performDoubleClick(params, signal);
+		case "press": return await performHelperAct(params, "press", "press", signal);
+		case "click": return await performHelperAct(params, "click", "click", signal);
+		case "doubleClick": return await performHelperAct({ ...params, clickCount: 2 }, "click", "double_click", signal);
 		case "setText": return await performSetText({ ...params, text: params.text ?? "" }, signal);
 		case "typeText": return await performTypeText({ ...params, text: params.text ?? "" }, signal);
 		case "keypress": return await performKeypress({ ...params, keys: params.keys ?? [] }, signal);
@@ -4124,33 +2631,27 @@ async function performAct(params: ActParams, signal?: AbortSignal): Promise<Agen
 	}
 }
 
-async function performClick(params: ClickParams, signal?: AbortSignal, tool = "click"): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails | ConfirmationDetails>> {
-	const browserResult = await performBrowserClick(params, signal);
-	if (browserResult) return browserResult;
+async function performHelperAct(
+	params: WindowTargetParams & { ref?: string; x?: number; y?: number; button?: MouseButtonName; clickCount?: number },
+	action: HelperActAction,
+	tool: string,
+	signal?: AbortSignal,
+): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId);
-	const ref = trimOrUndefined(params.ref);
-	const effectiveRef = ref ? actionRefForSceneRef(ref) : undefined;
-	const x = toFiniteNumber(params.x, NaN);
-	const y = toFiniteNumber(params.y, NaN);
-	const button = normalizeMouseButton(params.button);
-	const clickCount = normalizeClickCount(params.clickCount);
-
-	const verb = clickCount > 1 ? "Double-clicked" : button === "left" ? "Clicked" : `${button}-clicked`;
+	validateStateId(params.stateId);
+	const look = currentLookOrThrow();
+	const actTarget = actTargetFromParams(params, look, action);
+	const label = trimOrUndefined(params.ref) ?? ("x" in actTarget ? `(${Math.round(actTarget.x)},${Math.round(actTarget.y)})` : "target");
 	return await runActionTool(
 		tool,
 		signal,
-		async (target) => await dispatchClick({ ...params, ref: effectiveRef, clickCount }, capture, target, signal),
-		(target, returnedState) => {
-			const suffix = returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state.";
-			if (ref) {
-				const axTarget = runtimeState.currentSemanticAxTargets?.find((candidate) => candidate.ref === effectiveRef) ?? runtimeState.currentAxTargets?.find((candidate) => candidate.ref === effectiveRef);
-				return `${verb} ${axTarget ? formatAxTargetLabel(axTarget) : ref} in ${target.appName} — ${target.windowTitle}.${suffix}`;
-			}
-			return `${verb} at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}.${suffix}`;
-		},
-		{ responseMode: params.responseMode },
+		async (target) => await helperAct(target, action, actTarget, {
+			button: normalizeMouseButton(params.button),
+			clickCount: normalizeClickCount(params.clickCount),
+		}, signal),
+		(target, returnedState, execution) => `${tool.replace(/_/g, " ")} ${label} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		{ responseMode: params.responseMode, targetRef: actTargetPublicRef(params) },
 	);
 }
 
@@ -4160,12 +2661,15 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 	}
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
+	validateStateId(params.stateId);
+	const look = currentLookOrThrow();
 	const text = typeof params.text === "string" ? params.text : "";
+	const actTarget = actTargetFromParams({}, look, "typeText");
 	return await runActionTool(
 		"type_text",
 		signal,
-		async (target) => await dispatchTypeText(text, target, signal),
-		(target, returnedState) => `Inserted text in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		async (target) => await helperAct(target, "typeText", actTarget, { text }, signal),
+		(target, returnedState, execution) => `Inserted text in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
 		{ responseMode: params.responseMode },
 	);
 }
@@ -4175,26 +2679,36 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
+	validateStateId(params.stateId);
+	const look = currentLookOrThrow();
 	const text = typeof params.text === "string" ? params.text : "";
-	const ref = trimOrUndefined(params.ref);
+	const actTarget = actTargetFromParams(params, look, "setText");
 	return await runActionTool(
 		"set_text",
 		signal,
-		async (target) => await dispatchSetText({ ...params, ref: ref ? actionRefForSceneRef(ref) : undefined, text }, target, signal),
-		(target, returnedState) => `Set text value in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
-		{ responseMode: params.responseMode },
+		async (target) => await helperAct(target, "setText", actTarget, { text, method: params.method }, signal),
+		(target, returnedState, execution) => `Set text value in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		{ responseMode: params.responseMode, targetRef: actTargetPublicRef(params) },
 	);
 }
 
 async function performKeypress(params: KeypressParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
+	validateStateId(params.stateId);
+	const look = currentLookOrThrow();
 	const keys = normalizeKeyList(params.keys);
+	if (keys.length === 0) throw new Error("keypress.keys must contain at least one key.");
+	const openedPendingBrowserLocation = await openBrowserLocationFromPendingAddress(keys, await resolveCurrentTarget(signal), signal);
+	if (openedPendingBrowserLocation) {
+		return confirmationToolResult("keypress", await resolveCurrentTarget(signal), executionTrace("browser_open_location", "stealth", { outcome: "worked" }), "Opened pending browser location through CDP.");
+	}
+	const actTarget = actTargetFromParams({}, look, "keypress");
 	return await runActionTool(
 		"keypress",
 		signal,
-		async (target) => await dispatchKeypress({ keys }, target, signal),
-		(target, returnedState) => `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		async (target) => await helperAct(target, "keypress", actTarget, { keys }, signal),
+		(target, returnedState, execution) => `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
 		{ responseMode: params.responseMode },
 	);
 }
@@ -4204,35 +2718,39 @@ async function performScroll(params: ScrollParams, signal?: AbortSignal): Promis
 	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId);
+	validateStateId(params.stateId);
+	const look = currentLookOrThrow();
 	const ref = trimOrUndefined(params.ref);
-	const effectiveRef = ref ? actionRefForSceneRef(ref) : undefined;
-	const x = toFiniteNumber(params.x, NaN);
-	const y = toFiniteNumber(params.y, NaN);
+	const actTarget = actTargetFromParams(params, look, "scroll");
+	const scrollX = normalizeScrollDelta(params.scrollX);
+	const scrollY = normalizeScrollDelta(params.scrollY);
+	if (scrollX === 0 && scrollY === 0) throw new Error("scroll requires a non-zero scrollX or scrollY.");
 	return await runActionTool(
 		"scroll",
 		signal,
-		async (target) => await dispatchScroll({ ...params, ref: effectiveRef }, capture, target, signal),
-		(target, returnedState) => {
-			const suffix = returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state.";
+		async (target) => await helperAct(target, "scroll", actTarget, { scrollX, scrollY }, signal),
+		(target, returnedState, execution) => {
+			const suffix = returnedState ? " Returned the latest outline state." : " Call observe if you need updated state.";
 			return ref
-				? `Scrolled ${ref} in ${target.appName} — ${target.windowTitle}.${suffix}`
-				: `Scrolled at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}.${suffix}`;
+				? `Scrolled ${ref} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${suffix}`
+				: `Scrolled in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${suffix}`;
 		},
-		{ responseMode: params.responseMode },
+		{ responseMode: params.responseMode, targetRef: actTargetPublicRef(params) },
 	);
 }
 
 async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId);
+	validateStateId(params.stateId);
+	const look = currentLookOrThrow();
+	const actTarget = actTargetFromParams(params, look, "moveMouse");
 	return await runActionTool(
 		"move_mouse",
 		signal,
-		async (target) => await dispatchMoveMouse(params, capture, target, signal),
-		(target, returnedState) =>
-			`Moved mouse to (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		async (target) => await helperAct(target, "moveMouse", actTarget, {}, signal),
+		(target, returnedState, execution) =>
+			`Moved mouse in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
 		{ responseMode: params.responseMode },
 	);
 }
@@ -4240,19 +2758,17 @@ async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): 
 async function performDrag(params: DragParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateStateId(params.stateId);
-	const ref = trimOrUndefined(params.ref);
+	validateStateId(params.stateId);
+	const look = currentLookOrThrow();
+	const actTarget = actTargetFromParams(params, look, "drag");
+	const path = normalizeActPath(params.path, look);
 	return await runActionTool(
 		"drag",
 		signal,
-		async (target) => await dispatchDrag({ ...params, ref: ref ? actionRefForSceneRef(ref) : undefined }, capture, target, signal),
-		(target, returnedState) => `Dragged in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
-		{ responseMode: params.responseMode },
+		async (target) => await helperAct(target, "drag", actTarget, { path }, signal),
+		(target, returnedState, execution) => `Dragged in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		{ responseMode: params.responseMode, targetRef: actTargetPublicRef(params) },
 	);
-}
-
-async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails | ConfirmationDetails>> {
-	return await performClick({ ...params, clickCount: 2 }, signal, "double_click");
 }
 
 function managedBrowserExecutable(browser: "helium" | "chrome"): string {
@@ -4353,9 +2869,9 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 			const captureResult = await captureCurrentTarget(signal);
 			return await buildToolResult(
 				"navigate_browser",
-				`Navigated ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
+				`Navigated ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest outline state.`,
 				captureResult,
-				executionTrace("cdp_navigate", "stealth", { axAttempted: false, axSucceeded: false, fallbackUsed: false }),
+				executionTrace("cdp_navigate", "stealth"),
 				signal,
 			);
 		});
@@ -4372,9 +2888,9 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 		const captureResult = await captureCurrentTarget(signal);
 		return await buildToolResult(
 			"navigate_browser",
-			`Navigated ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
+			`Navigated ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest outline state.`,
 			captureResult,
-			executionTrace("browser_open_location", "stealth", { axAttempted: false, axSucceeded: false, fallbackUsed: false }),
+			executionTrace("browser_open_location", "stealth"),
 			signal,
 		);
 	});
@@ -4406,8 +2922,8 @@ async function performWait(params: WaitParams, signal?: AbortSignal): Promise<Ag
 	const ms = Math.min(60_000, Math.round(msRaw));
 	await sleep(ms, signal);
 	const captureResult = await captureCurrentTarget(signal);
-	const summary = `Waited ${ms}ms in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-	return await buildToolResult("wait", summary, captureResult, executionTrace("wait", "stealth", { fallbackUsed: false }), signal);
+	const summary = `Waited ${ms}ms in ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest outline state.`;
+	return await buildToolResult("wait", summary, captureResult, executionTrace("wait", "stealth"), signal);
 }
 
 async function executeTool<T>(ctx: ExtensionContext, signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
@@ -4447,10 +2963,9 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	runtimeState.currentTarget = undefined;
 	runtimeState.currentCapture = undefined;
 	runtimeState.currentStateTarget = undefined;
-	runtimeState.currentAxTargets = undefined;
-	runtimeState.currentSemanticAxTargets = undefined;
-	runtimeState.currentVisionTargets = undefined;
-	runtimeState.currentScene = undefined;
+	runtimeState.currentLook = undefined;
+	runtimeState.currentOutline = undefined;
+	runtimeState.currentNote = undefined;
 	runtimeState.windowRefs.clear();
 	runtimeState.windowRefByIdentity.clear();
 	runtimeState.nextWindowRefIndex = 1;
@@ -4522,11 +3037,28 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 			scaleFactor: Math.max(1, toFiniteNumber(details.capture.scaleFactor, 1)),
 			timestamp: Number.isFinite(details.capture.timestamp) ? details.capture.timestamp : Date.now(),
 		};
-		runtimeState.currentAxTargets = Array.isArray(details.axTargets)
-			? details.axTargets.filter((item): item is AxTarget => Boolean(item && typeof item.ref === "string" && typeof item.elementRef === "string"))
-			: undefined;
-		runtimeState.currentVisionTargets = Array.isArray(details.visionTargets) ? details.visionTargets : undefined;
-		runtimeState.currentScene = details.scene;
+		if (details.outline?.root && typeof details.outline.lookId === "string") {
+			runtimeState.currentOutline = restoreOutline(details.outline);
+			runtimeState.currentLook = {
+				lookId: details.outline.lookId,
+				capturedAt: details.capture.timestamp / 1000,
+				window: {
+					windowId: Math.trunc(details.target.windowId),
+					framePoints: { x: 0, y: 0, w: details.capture.width, h: details.capture.height },
+					scaleFactor: details.capture.scaleFactor,
+					pairing: { confidence: "low", score: Number.NEGATIVE_INFINITY },
+					isModal: false,
+					sheetCount: 0,
+					role: "",
+					subrole: "",
+				},
+				image: { jpegBase64: "", width: details.capture.width, height: details.capture.height },
+				outline: runtimeState.currentOutline.root,
+				timings: {},
+				parsedOutline: runtimeState.currentOutline,
+			};
+		}
+		if (details.note) runtimeState.currentNote = details.note;
 
 		restoredCurrent = true;
 		continue;

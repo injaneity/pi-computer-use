@@ -45,8 +45,9 @@
 		"postinstall": "node scripts/setup-helper.mjs --postinstall",
 		"typecheck": "tsc -p tsconfig.json",
 		"test:schema": "node scripts/check-tool-schemas.mjs",
+		"test:invariants": "node scripts/check-invariants.mjs",
 		"test:commits": "node scripts/check-commit-messages.mjs",
-		"test": "npm run typecheck && npm run test:schema",
+		"test": "npm run typecheck && npm run test:schema && npm run test:invariants",
 		"build:native": "node scripts/build-native.mjs"
 	},
 	"peerDependencies": {
