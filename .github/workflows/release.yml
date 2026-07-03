@@ -1,0 +1,314 @@
+name: Release
+
+# Release order matters:
+# 1. Build and sign the helper app from the tagged source.
+# 2. Stage a draft GitHub Release with the exact signed helper asset.
+# 3. Publish the npm package with that same signed helper app injected into prebuilt/macos.
+# 4. Publish the GitHub Release only after npm succeeds.
+#
+# This mirrors Pi's release flow: public release publication is last, and any
+# failed run cleans up the draft release instead of leaving a half-published
+# version behind.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v0.4.0"
+        required: true
+      source_ref:
+        description: "Source ref to build/publish; defaults to tag"
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  KEYCHAIN_PASSWORD: ci-keychain-password
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build-signed-helper:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify tag matches package version
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          VERSION="$VERSION" node -e 'const version = process.env.VERSION; const pkg = require("./package.json"); if (pkg.version !== version) { throw new Error(`package.json version ${pkg.version} does not match release tag ${version}`); }'
+
+      - name: Import code-signing certificate
+        env:
+          APPLICATION_CERT_BASE64: ${{ secrets.APPLICATION_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -l build.keychain
+
+          echo "$APPLICATION_CERT_BASE64" | base64 --decode > application.p12
+          security import application.p12 -k build.keychain -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign > /dev/null 2>&1
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain > /dev/null 2>&1
+          rm application.p12
+
+          if ! security find-identity -p codesigning build.keychain | grep -qF "$SIGN_IDENTITY"; then
+            echo "Error: signing identity '$SIGN_IDENTITY' not found in imported cert" >&2
+            security find-identity -p codesigning build.keychain
+            exit 1
+          fi
+
+      - name: Build universal helper binary
+        run: node scripts/build-native.mjs --arch universal --variant modern --no-sign
+
+      - name: Assemble helper app inside package tree
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          APP=prebuilt/macos/universal/modern/pi-computer-use.app
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS"
+          cp prebuilt/macos/universal/modern/bridge "$APP/Contents/MacOS/bridge"
+          chmod 755 "$APP/Contents/MacOS/bridge"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>com.injaneity.pi-computer-use</string>
+          <key>CFBundleName</key><string>pi-computer-use</string>
+          <key>CFBundleDisplayName</key><string>pi-computer-use</string>
+          <key>CFBundleExecutable</key><string>bridge</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+          <key>CFBundleVersion</key><string>${VERSION}</string>
+          <key>LSMinimumSystemVersion</key><string>14.0</string>
+          <key>LSUIElement</key><true/>
+          </dict></plist>
+          PLIST
+
+      - name: Sign helper app
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          APP=prebuilt/macos/universal/modern/pi-computer-use.app
+          codesign --force --deep --timestamp --options runtime \
+            --entitlements scripts/pi-computer-use.entitlements \
+            --identifier com.injaneity.pi-computer-use \
+            --sign "$SIGN_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          DR=$(codesign -dr - "$APP" 2>&1)
+          echo "$DR"
+          echo "$DR" | grep -q 'identifier "com.injaneity.pi-computer-use"'
+          echo "$DR" | grep -q 'certificate leaf'
+
+      - name: Notarize and staple helper app
+        if: vars.NOTARIZE == 'true'
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APP=prebuilt/macos/universal/modern/pi-computer-use.app
+          /usr/bin/ditto -c -k --keepParent "$APP" notarize.zip
+          xcrun notarytool submit notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APP_SPECIFIC_PASSWORD" \
+            --wait --timeout 20m
+          xcrun stapler staple "$APP"
+          rm notarize.zip
+
+      - name: Package release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          APP=prebuilt/macos/universal/modern/pi-computer-use.app
+          /usr/bin/ditto -c -k --keepParent "$APP" release-assets/pi-computer-use.app.zip
+          cd release-assets
+          shasum -a 256 pi-computer-use.app.zip > SHA256SUMS
+
+      - name: Upload release payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  stage-github-release:
+    runs-on: ubuntu-latest
+    needs: build-signed-helper
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download release payload
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+
+      - name: Validate release payload
+        run: |
+          set -euo pipefail
+          cd release-assets
+          test -f pi-computer-use.app.zip
+          test -f SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+
+          existing_release="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [[ "$existing_release" == "false" ]]; then
+            echo "::error::GitHub Release $RELEASE_TAG is already published. Refusing to mutate a public release."
+            exit 1
+          fi
+          if [[ "$existing_release" == "true" ]]; then
+            gh release delete "$RELEASE_TAG" --yes
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --draft \
+            --title "$RELEASE_TAG" \
+            --generate-notes \
+            pi-computer-use.app.zip \
+            SHA256SUMS
+
+          expected_asset_names="$(printf '%s\n' SHA256SUMS pi-computer-use.app.zip | sort)"
+          actual_asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
+          if [[ "$actual_asset_names" != "$expected_asset_names" ]]; then
+            echo "::error::Draft GitHub Release asset set does not match expected files."
+            diff -u <(printf '%s\n' "$expected_asset_names") <(printf '%s\n' "$actual_asset_names") || true
+            exit 1
+          fi
+
+  publish-npm:
+    runs-on: macos-14
+    needs: stage-github-release
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Download release payload
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+
+      - name: Inject signed helper app into npm package tree
+        run: |
+          set -euo pipefail
+          mkdir -p prebuilt/macos/universal/modern
+          rm -rf prebuilt/macos/universal/modern/pi-computer-use.app
+          /usr/bin/ditto -x -k release-assets/pi-computer-use.app.zip prebuilt/macos/universal/modern
+          codesign --verify --strict prebuilt/macos/universal/modern/pi-computer-use.app
+
+      - name: Run checks
+        run: npm test
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+
+  publish-github-release:
+    runs-on: ubuntu-latest
+    needs:
+      - stage-github-release
+      - publish-npm
+    permissions:
+      contents: write
+    steps:
+      - name: Publish staged GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          existing_release="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [[ "$existing_release" == "" ]]; then
+            echo "::error::Draft GitHub Release $RELEASE_TAG does not exist."
+            exit 1
+          fi
+          if [[ "$existing_release" == "false" ]]; then
+            echo "::error::GitHub Release $RELEASE_TAG is already published."
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false
+
+  cleanup-draft-github-release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-signed-helper
+      - stage-github-release
+      - publish-npm
+      - publish-github-release
+    if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Delete draft GitHub Release after failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          existing_release="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [[ "$existing_release" == "true" ]]; then
+            gh release delete "$RELEASE_TAG" --yes
+          fi
