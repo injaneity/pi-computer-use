@@ -4,22 +4,35 @@
   <img src="./assets/logo/logo3.png" width="50%" alt="pi-computer-use">
 </p>
 
-`pi-computer-use` is a macOS extension for Pi that lets an agent inspect and control desktop windows through a compact UI scene model.
+`pi-computer-use` lets AI agents use macOS apps.
 
-The extension uses macOS Accessibility as the semantic backbone, native window capture for coordinate mapping, and optional visual evidence when AX data is not enough. The public tool surface is intentionally small:
+An agent can look at an app window, understand the buttons and text inside it, and perform actions like clicking, typing, scrolling, and waiting for something to change. This is useful when the agent needs to work with a normal desktop app instead of an API, a terminal command, or a file.
 
-- `observe`
-- `search_ui`
-- `expand_ui`
-- `inspect_ui`
-- `act`
+New to computer use? Start with: [Wait, what exactly is Computer Use?](http://localhost:4173/what-exactly-is-computer-use/)
 
-Discovery, browser, text, and wait utilities are also available.
+## What this package does
+
+This is a Pi extension. After installation, Pi agents get tools for:
+
+- finding open apps and windows
+- observing what is visible in a window
+- searching the visible interface for text, buttons, and controls
+- inspecting parts of the interface in more detail
+- clicking, typing, scrolling, and pressing UI controls
+- waiting for UI changes
+
+In short: it gives an agent a controlled way to operate desktop software.
+
+## What this package is not
+
+`pi-computer-use` is not a replacement for app APIs or MCP servers. If an app has a reliable direct integration, use that first.
+
+Computer use is most helpful when the only available interface is the app on screen.
 
 ## Install
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.3.3
+pi install git:github.com/injaneity/pi-computer-use@main
 ```
 
 Start Pi and grant permissions to:
@@ -33,33 +46,29 @@ Required macOS permissions:
 - Accessibility
 - Screen Recording, shown as Screen and System Audio Recording on newer macOS versions
 
-The setup flow registers the helper with TCC first, so it is already listed
-in both Settings panes — enable the toggles and choose Recheck. See
-[docs/troubleshooting.md](./docs/troubleshooting.md) for permission
-diagnostics (`source.attribution`, live capture probe).
+The setup flow registers the helper first, so it should already appear in both Settings panes. Enable the toggles and choose Recheck.
 
 Use `/computer-use` inside Pi to show the active configuration and where it came from.
 
-## Basic flow
+## Main tools
 
-```ts
-list_windows({ app: "TextEdit" })
-observe({ window: "@w1", mode: "fused" })
-search_ui({ text: "Save", action: "press" })
-act({ ref: "@t1", action: "press", stateId: "..." })
-```
+- `list_apps`
+- `list_windows`
+- `observe`
+- `search_ui`
+- `expand_ui`
+- `inspect_ui`
+- `act`
+- `read_text`
+- `wait_for`
 
-Prefer scene refs from `observe` and `search_ui`:
-
-- `@tN` is a scene target backed by AX and, when available, visual evidence.
-- `@uN` is an unknown visible region that AX did not explain.
-- `@eN` is a raw AX ref.
-- `@vN` is a raw visual text ref.
+See [docs/usage.md](./docs/usage.md) for the full tool reference.
 
 ## Documentation
 
 - [Usage](./docs/usage.md)
 - [Architecture](./docs/architecture.md)
+- [Architecture v2](./docs/architecture-v2.md)
 - [Configuration](./docs/configuration.md)
 - [Development](./docs/development.md)
 - [Troubleshooting](./docs/troubleshooting.md)
@@ -67,7 +76,7 @@ Prefer scene refs from `observe` and `search_ui`:
 
 ## Development status
 
-The current architecture is scene-first. Older direct tools such as `screenshot`, `click`, `set_text`, and `computer_actions` are no longer part of the public extension surface. Use `observe` and `act` instead.
+The current architecture is centered on `observe` and `act`: first inspect the current UI state, then ask the helper to perform one grounded action transaction. Older direct tools such as `screenshot`, `click`, `set_text`, and `computer_actions` are no longer part of the public extension surface.
 
 Behavioral benchmarking should use `cubench` against the registered extension tools.
 
