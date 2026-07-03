@@ -1,7 +1,7 @@
 {
 	"name": "@injaneity/pi-computer-use",
 	"version": "0.3.3",
-	"description": "Pi extension that brings token-efficient desktop & browser automation on macOS.",
+	"description": "Pi extension that lets AI agents observe and control macOS apps.",
 	"type": "module",
 	"keywords": [
 		"pi-package",
@@ -9,8 +9,8 @@
 		"pi",
 		"computer-use",
 		"macos",
-		"screenshot",
-		"automation"
+		"desktop-automation",
+		"accessibility"
 	],
 	"license": "MIT",
 	"repository": {

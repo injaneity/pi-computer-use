@@ -74,6 +74,6 @@ When CDP is active:
 
 - `navigate_browser` uses CDP navigation when possible.
 - Browser console messages are attached to relevant tool results.
-- The desktop scene tools still work for browser windows.
+- The desktop observe/act tools still work for browser windows.
 
 With the variable unset, CDP is inactive.

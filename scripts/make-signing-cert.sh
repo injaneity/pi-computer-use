@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create a stable self-signed code-signing certificate for release signing,
-# exported as a .p12 ready for the release-helper workflow secrets.
+# exported as a .p12 ready for the release workflow secrets.
 #
 # Why self-signed is enough: TCC anchors an app's permission grants on the
 # signature's designated requirement (`identifier + certificate leaf`), not
@@ -16,7 +16,7 @@
 # the workflow secrets for a Developer ID cert (users re-grant that once).
 #
 # Usage: ./scripts/make-signing-cert.sh [output-dir]
-# Then, for the release-helper workflow:
+# Then, for the Release workflow:
 #   base64 -i <dir>/id.p12 | pbcopy      -> secret APPLICATION_CERT_BASE64
 #   secret CERT_PASSWORD  = the password you enter below
 #   secret SIGN_IDENTITY  = "pi-computer-use Self Signed"

@@ -1,94 +1,71 @@
 # Usage
 
-`pi-computer-use` exposes a small tool surface. The normal loop is:
+`pi-computer-use` exposes tools for observing and acting on macOS app windows.
 
-1. Choose a window or context.
-2. Observe the UI scene.
-3. Search or expand if the target is not obvious.
-4. Act by ref.
+The normal loop is:
+
+1. Choose a window or browser context.
+2. Call `observe`.
+3. Use `search_ui`, `expand_ui`, or `inspect_ui` if the target is not obvious.
+4. Call `act` with a current ref.
 
 ## Tools
 
 | Tool | Purpose |
 | --- | --- |
 | `list_apps` | List running macOS apps. |
-| `list_windows` | List controllable windows and their refs. |
-| `list_contexts` | List desktop windows and CDP browser contexts. |
-| `observe` | Capture the current UI scene. |
-| `search_ui` | Search the current scene by text, role, action, or source. |
-| `expand_ui` | Show local context for one ref. |
-| `inspect_ui` | Show provenance and evidence for one ref. |
-| `act` | Perform one action by ref or coordinates. |
-| `read_text` | Page through long text. |
+| `list_windows` | List controllable desktop windows. |
+| `list_contexts` | List desktop windows and CDP browser pages. |
+| `observe` | Capture one look and return a folded UI outline plus running note. |
+| `search_ui` | Search the current outline by text, role, action, or capability. |
+| `expand_ui` | Show local outline context for one ref. |
+| `inspect_ui` | Show fields, rects, actions, annotations, and evidence for one ref. |
+| `act` | Perform one action by ref or image coordinate. |
+| `read_text` | Page through long text from a text-bearing ref or browser context. |
 | `wait_for` | Wait for text or role to appear or disappear. |
 | `launch_browser_context` | Start a managed CDP browser. |
 | `navigate_browser` | Navigate a browser window or CDP context. |
 | `evaluate_browser` | Run JavaScript in a CDP browser context. |
 
-## Desktop example
+## Refs and state
 
-```ts
-list_windows({ app: "TextEdit" })
-observe({ window: "@w1", mode: "fused" })
-search_ui({ text: "Replace", action: "press" })
-act({ action: "press", ref: "@t1" })
-```
+`observe`, `search_ui`, and `expand_ui` return outline refs like `@e12`.
 
-Use `mode: "semantic"` when AX is enough and you want the cheapest observation. Use `mode: "fused"` when visual evidence may help. Use `mode: "visual"` when the UI is likely custom drawn.
+Use current refs from the latest state. A ref can become stale after the UI changes, the window changes, or a new observation replaces the previous outline.
 
-## Refs
+Some outline nodes are marked `pictureOnly`. These represent visual evidence without an AX element. They can help the agent understand what is visible, but AX-only actions cannot target them by ref. Use coordinates only when there is no better semantic target.
 
-`observe` returns several ref types:
+## Observation modes
 
-| Ref | Meaning |
+`observe` supports three modes:
+
+| Mode | Use when |
 | --- | --- |
-| `@tN` | Scene target. Prefer this for actions. |
-| `@uN` | Unknown visible region. Use when AX does not explain something visible. |
-| `@eN` | Raw AX target. Useful for debugging or precise AX actions. |
-| `@vN` | Raw visual text target. Coordinate based fallback. |
-| `@wN` | Window ref from `list_windows`. |
+| `semantic` | AX structure is enough and you want the cheapest result. |
+| `fused` | Default. Include visual evidence when it is useful. |
+| `visual` | The app is custom drawn or AX is sparse. |
 
-Scene targets can combine AX semantics with visual evidence. For example, a text field can be associated with a visible label, or a button can be associated with OCR text inside its frame.
-
-## Progressive disclosure
-
-Start with `observe`. If the target is not visible in the compact result, search first:
-
-```ts
-search_ui({ text: "Email", action: "set" })
-```
-
-If you need local context:
-
-```ts
-expand_ui({ ref: "@t3", depth: 3 })
-```
-
-If you need evidence or coordinates:
-
-```ts
-inspect_ui({ ref: "@t3" })
-```
-
-Avoid asking for full trees. Expand one ref at a time.
+Images are optional. Use `image: "never"` for text-only results, `image: "always"` when visual inspection matters, and `image: "auto"` for the default behavior.
 
 ## Acting
 
+Prefer refs:
+
 ```ts
-act({ action: "setText", ref: "@t2", text: "hello" })
-act({ action: "press", ref: "@t4" })
-act({ action: "scroll", ref: "@t8", scrollY: 400 })
+act({ action: "press", ref: "@e12" })
+act({ action: "setText", ref: "@e18", text: "hello" })
+act({ action: "scroll", ref: "@e7", scrollY: 400 })
 act({ action: "keypress", keys: ["Enter"] })
 act({ action: "wait", ms: 500 })
 ```
 
-Coordinates are fallback only:
+Coordinate fallback uses image pixels from the latest observed window:
 
 ```ts
 act({ action: "click", x: 420, y: 300 })
 ```
 
-Coordinates are window-relative screenshot pixels from the latest observation.
+`act` returns an outcome of `worked`, `didnt`, or `unknown`, plus execution evidence when available.
 
 ## Browser use
 
@@ -97,7 +74,7 @@ For normal browser windows, use the same desktop flow:
 ```ts
 list_windows({ app: "Helium" })
 observe({ window: "@w1", mode: "fused" })
-act({ action: "press", ref: "@t1" })
+act({ action: "press", ref: "@e12" })
 ```
 
 For CDP browser contexts:

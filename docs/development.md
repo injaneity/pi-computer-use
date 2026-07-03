@@ -4,21 +4,26 @@
 
 ```text
 extensions/computer-use.ts       Public Pi tool registration
-src/bridge.ts                    TypeScript runtime and scene model
-native/macos/bridge.swift        macOS helper for AX, capture, and input
+src/bridge.ts                    TypeScript runtime and tool implementation
+src/outline.ts                   Outline parsing, folding, search, and ref mapping
+src/note.ts                      Disposable running-note generation
+native/macos/bridge.swift        macOS helper for AX, capture, permissions, and input
 scripts/build-native.mjs         Native helper build script
 scripts/setup-helper.mjs         Helper install script
+scripts/check-invariants.mjs     Architecture invariant checks
 ```
 
-The public tool surface lives in `extensions/computer-use.ts`. Keep it small. Internal complexity belongs in `src/bridge.ts` and the native helper.
+The public tool surface lives in `extensions/computer-use.ts`. Keep it small. Internal complexity belongs in `src/bridge.ts`, `src/outline.ts`, `src/note.ts`, and the native helper.
 
 ## Checks
 
-Run TypeScript and tool-schema checks:
+Run all static checks:
 
 ```bash
 npm test
 ```
+
+This runs TypeScript, tool-schema compatibility checks, architecture invariants, and Swift typechecking.
 
 Rebuild the native helper after Swift changes:
 
@@ -26,42 +31,39 @@ Rebuild the native helper after Swift changes:
 npm run build:native
 ```
 
-## Architecture notes
+## Architecture rules
 
-The runtime is scene-first:
+The runtime is outline-first:
 
-- macOS AX provides the semantic tree backbone
-- native visible-child attributes help filter visibility
-- capture metadata maps AX screen points into screenshot pixels
-- visual text becomes evidence, not the source of truth
-- `@t` scene refs are preferred for actions
-- `@u` refs represent visible regions not explained by AX
+- `observe` returns a folded UI outline and running note.
+- `search_ui`, `expand_ui`, and `inspect_ui` provide progressive disclosure.
+- `act` is the only public desktop action entrypoint.
+- The helper owns grounding, preflight, execution, and verification.
+- Removed direct tools such as `screenshot`, `click`, `set_text`, and `computer_actions` should not reappear as public extension tools.
 
-The extension registers a small public API:
+Run invariants after architecture changes:
 
-```text
-observe
-search_ui
-expand_ui
-inspect_ui
-act
+```bash
+npm run test:invariants
 ```
 
-Discovery, browser, text, and wait utilities are also registered. Do not add direct public action tools unless the architecture changes.
+Set `PI_CU_LIVE=1` only when you want live helper checks in addition to static checks.
 
 ## Benchmarks
 
-Use `cubench` for behavior validation. It should exercise the registered extension tools rather than importing bridge internals.
-
-Recommended flow:
+`scripts/cubench.mjs` is a local measurement harness for observation size, helper timing, image size, and bridge round trips.
 
 ```bash
-cubench
-cubench --output results/cubench-baseline.local.json
-cubench --baseline results/cubench-baseline.local.json --output results/cubench-current.local.json
+node scripts/cubench.mjs
 ```
 
-Run cubench for changes to AX traversal, scene association, visual grounding, browser handling, permissions, setup, or payload size.
+It writes:
+
+```text
+scripts/cubench-results.json
+```
+
+Use it for changes to AX traversal, outline folding, visual evidence, action refresh, browser handling, permissions, setup, or payload size.
 
 ## Native helper
 
@@ -71,43 +73,23 @@ The helper installed for permissions is:
 /Applications/pi-computer-use.app
 ```
 
-The built helper binary is stored under `prebuilt/macos` and installed by `scripts/setup-helper.mjs`.
+Local development can use ad-hoc signing. Release builds must use the release workflow so the helper app is signed with the stable release certificate.
 
 ## Release signing
 
-TCC keys permission grants to the app's code-signing *designated
-requirement*. An ad-hoc signature pins that to the exact binary hash
-(cdhash), so an ad-hoc release orphans every user's grants on update. Any
-real certificate — Developer ID **or a stable self-signed cert** — anchors
-the requirement on `identifier + certificate leaf`, so grants survive all
-releases as long as you sign every release with the same cert. (Verified:
-two different binaries signed with one cert produce an identical designated
-requirement.)
+macOS TCC keys Accessibility and Screen Recording grants to an app's code-signing designated requirement. An ad-hoc signature pins that requirement to the exact binary hash, so updates can orphan existing grants. A stable certificate anchors the requirement on `identifier + certificate leaf`, allowing grants to survive future releases signed with the same certificate.
 
-You do NOT need an Apple Developer Program membership for grant stability.
-Apple enrollment (Developer ID + notarization) is only required to clear
-Gatekeeper on **browser-downloaded** apps; npm-delivered installs carry no
-quarantine attribute, so a self-signed cert is sufficient.
+Release setup:
 
-Setup:
+1. Run `./scripts/make-signing-cert.sh` once, or use a Developer ID Application certificate.
+2. Add repository secrets:
+   - `APPLICATION_CERT_BASE64`
+   - `CERT_PASSWORD`
+   - `SIGN_IDENTITY`
+3. For Developer ID notarization, set repository variable `NOTARIZE=true` and add:
+   - `TEAM_ID`
+   - `APPLE_ID`
+   - `APP_SPECIFIC_PASSWORD`
+4. Push a `v*` tag or run the `Release` workflow manually.
 
-1. Run `./scripts/make-signing-cert.sh` once to generate a 10-year
-   self-signed cert (`id.p12`). Back up `key.pem`/`cert.pem` permanently —
-   losing them forces a one-time re-grant on the next release.
-2. Add repository secrets `APPLICATION_CERT_BASE64` (base64 of `id.p12`),
-   `CERT_PASSWORD`, and `SIGN_IDENTITY` (`pi-computer-use Self Signed`).
-   For a Developer ID cert instead, set `SIGN_IDENTITY` to its full name,
-   add the `NOTARIZE=true` repository variable, and the `TEAM_ID` /
-   `APPLE_ID` / `APP_SPECIFIC_PASSWORD` secrets.
-3. `.github/workflows/release-helper.yml` builds the universal
-   `pi-computer-use.app` on tag push, signs it (hardened runtime), asserts
-   the designated requirement anchors on the cert leaf (fails the release
-   if it regressed to ad-hoc), notarizes+staples when `NOTARIZE=true`, and
-   attaches the zip to the release.
-4. Before `npm publish`, unzip that release asset into
-   `prebuilt/macos/universal/modern/pi-computer-use.app`. The installer
-   prefers it over per-arch bundles and loose binaries, verifies its
-   signature, installs it verbatim with `ditto`, and never re-signs it.
-
-Local dev builds stay ad-hoc; the installer's guard
-(`PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1`) covers that path.
+`.github/workflows/release.yml` builds the universal helper, signs it, optionally notarizes it, stages a draft GitHub Release, injects the same signed helper app into the npm package, publishes npm, and only then publishes the GitHub Release.

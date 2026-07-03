@@ -248,7 +248,7 @@ async function setup() {
 	const arch = normalizeArch(process.arch);
 	const variant = selectedHelperVariant();
 	// Prefer the release-signed universal bundle (one artifact for both
-	// arches, produced by .github/workflows/release-helper.yml) over
+	// arches, produced by .github/workflows/release.yml) over
 	// per-arch bundles, over loose binaries (dev fallback).
 	const universalAppPath = prebuiltAppPathForArch("universal", variant);
 	const prebuiltAppPath = (await exists(universalAppPath))

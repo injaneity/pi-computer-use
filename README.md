@@ -68,7 +68,6 @@ See [docs/usage.md](./docs/usage.md) for the full tool reference.
 
 - [Usage](./docs/usage.md)
 - [Architecture](./docs/architecture.md)
-- [Architecture v2](./docs/architecture-v2.md)
 - [Configuration](./docs/configuration.md)
 - [Development](./docs/development.md)
 - [Troubleshooting](./docs/troubleshooting.md)
@@ -78,7 +77,7 @@ See [docs/usage.md](./docs/usage.md) for the full tool reference.
 
 The current architecture is centered on `observe` and `act`: first inspect the current UI state, then ask the helper to perform one grounded action transaction. Older direct tools such as `screenshot`, `click`, `set_text`, and `computer_actions` are no longer part of the public extension surface.
 
-Behavioral benchmarking should use `cubench` against the registered extension tools.
+Behavioral benchmarking should use `node scripts/cubench.mjs` against the registered extension tools.
 
 ## License
 

@@ -107,7 +107,7 @@ The bridge can sometimes reacquire stale AX refs by role, label, capability, and
 
 ## Coordinates are rejected
 
-Coordinates are window-relative screenshot pixels from the latest observation. They are invalid if:
+Coordinates are image pixels from the latest observed window. They are invalid if:
 
 - the window changed size
 - the target window changed
