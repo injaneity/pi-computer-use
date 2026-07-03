@@ -1,5 +1,5 @@
 import { parseLookResponse, type LookResponse } from "../../outline.ts";
-import { toBoolean, finiteNumber, toOptionalString } from "../coerce.ts";
+import { toBoolean, toFiniteNumber, toOptionalString } from "../coerce.ts";
 import type { ComputerUsePlatformBackend, FramePoints, HelperActResult, PlatformActRequest, PlatformApp, PlatformFocusWindowResult, PlatformFrontmostResult, PlatformObserveRequest, PlatformReadTextRequest, PlatformReadTextResponse, PlatformTarget, PlatformWaitForRequest, PlatformWaitForResponse, PlatformWindow, PlatformWindowQuery } from "../types.ts";
 import { macosHelper } from "./helper.ts";
 
@@ -9,7 +9,7 @@ function parseApps(result: unknown): PlatformApp[] {
 
 	return array
 		.map((raw) => {
-			const pid = Math.trunc(finiteNumber((raw as any)?.pid, NaN));
+			const pid = Math.trunc(toFiniteNumber((raw as any)?.pid, NaN));
 			if (!Number.isFinite(pid) || pid <= 0) return undefined;
 			const appName = toOptionalString((raw as any)?.appName) ?? "Unknown App";
 			return {
@@ -25,10 +25,10 @@ function parseApps(result: unknown): PlatformApp[] {
 function parseFramePoints(raw: unknown): FramePoints {
 	const frame = (raw as any)?.framePoints ?? {};
 	return {
-		x: finiteNumber(frame.x, 0),
-		y: finiteNumber(frame.y, 0),
-		w: Math.max(1, finiteNumber(frame.w, 1)),
-		h: Math.max(1, finiteNumber(frame.h, 1)),
+		x: toFiniteNumber(frame.x, 0),
+		y: toFiniteNumber(frame.y, 0),
+		w: Math.max(1, toFiniteNumber(frame.w, 1)),
+		h: Math.max(1, toFiniteNumber(frame.h, 1)),
 	};
 }
 
@@ -45,15 +45,15 @@ function parseWindows(result: unknown): PlatformWindow[] {
 			title: toOptionalString((raw as any)?.title) ?? "",
 			role: toOptionalString((raw as any)?.role),
 			subrole: toOptionalString((raw as any)?.subrole),
-			pairing: { confidence, score: finiteNumber(pairing?.score, Number.NEGATIVE_INFINITY) },
+			pairing: { confidence, score: toFiniteNumber(pairing?.score, Number.NEGATIVE_INFINITY) },
 			framePoints: parseFramePoints(raw),
-			scaleFactor: Math.max(1, finiteNumber((raw as any)?.scaleFactor, 1)),
+			scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
 			isMinimized: toBoolean((raw as any)?.isMinimized),
 			isOnscreen: toBoolean((raw as any)?.isOnscreen),
 			isMain: toBoolean((raw as any)?.isMain),
 			isFocused: toBoolean((raw as any)?.isFocused),
 			isModal: toBoolean((raw as any)?.isModal),
-			sheetCount: Math.max(0, Math.trunc(finiteNumber((raw as any)?.sheetCount, 0))),
+			sheetCount: Math.max(0, Math.trunc(toFiniteNumber((raw as any)?.sheetCount, 0))),
 		};
 	});
 }
@@ -69,7 +69,7 @@ export const macosBackend: Pick<ComputerUsePlatformBackend, "listApps" | "listWi
 
 	async getFrontmost(signal?: AbortSignal): Promise<PlatformFrontmostResult> {
 		const result = await macosHelper.command<any>("getFrontmost", {}, { signal });
-		const pid = Math.trunc(finiteNumber(result?.pid, NaN));
+		const pid = Math.trunc(toFiniteNumber(result?.pid, NaN));
 		if (!Number.isFinite(pid) || pid <= 0) {
 			throw new Error("No frontmost app was available for screenshot targeting.");
 		}

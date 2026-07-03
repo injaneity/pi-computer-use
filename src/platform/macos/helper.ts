@@ -5,7 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { toBoolean, finiteNumber, toOptionalString } from "../coerce.ts";
+import { toBoolean, toFiniteNumber, toOptionalString } from "../coerce.ts";
 import type { PlatformDiagnostics } from "../types.ts";
 
 const COMMAND_TIMEOUT_MS = 15_000;
@@ -228,9 +228,9 @@ export class MacosHelperClient {
 	async diagnosticsCommand(signal?: AbortSignal): Promise<PlatformDiagnostics> {
 		const result = await this.command<any>("diagnostics", {}, { signal });
 		const diagnostics = {
-			protocolVersion: Math.trunc(finiteNumber(result?.protocolVersion, 0)),
-			pid: Math.trunc(finiteNumber(result?.pid, 0)),
-			parentPid: Math.trunc(finiteNumber(result?.parentPid, 0)) || undefined,
+			protocolVersion: Math.trunc(toFiniteNumber(result?.protocolVersion, 0)),
+			pid: Math.trunc(toFiniteNumber(result?.pid, 0)),
+			parentPid: Math.trunc(toFiniteNumber(result?.parentPid, 0)) || undefined,
 			parentAppName: toOptionalString(result?.parentAppName),
 			parentBundleId: toOptionalString(result?.parentBundleId),
 			parentPath: toOptionalString(result?.parentPath),

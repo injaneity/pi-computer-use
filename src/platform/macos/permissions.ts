@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ensurePermissions, type PermissionStatus } from "../../permissions.ts";
-import { toBoolean, finiteNumber, toOptionalString } from "../coerce.ts";
+import { toBoolean, toFiniteNumber, toOptionalString } from "../coerce.ts";
 import type { PlatformReadyState } from "../types.ts";
 import { HELPER_APP_PATH, macosHelper } from "./helper.ts";
 
@@ -16,8 +16,8 @@ async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus>
 		source: rawSource && typeof rawSource === "object"
 			? {
 				attribution: rawSource.attribution === "helper-app" ? "helper-app" : "caller",
-				pid: Math.trunc(finiteNumber(rawSource.pid, 0)) || undefined,
-				parentPid: Math.trunc(finiteNumber(rawSource.parentPid, 0)) || undefined,
+				pid: Math.trunc(toFiniteNumber(rawSource.pid, 0)) || undefined,
+				parentPid: Math.trunc(toFiniteNumber(rawSource.parentPid, 0)) || undefined,
 				executablePath: toOptionalString(rawSource.executablePath),
 				parentPath: toOptionalString(rawSource.parentPath),
 				parentBundleId: toOptionalString(rawSource.parentBundleId),
