@@ -359,7 +359,9 @@ function executionTrace(
 }
 
 function settleMsForExecution(execution: ExecutionTrace): number {
-	if (execution.performed?.deltaSource === "events") return 0;
+	// Any deltaSource means the helper already awaited UI quiescence; the
+	// bridge must not double-pay with its own settle sleep.
+	if (execution.performed?.deltaSource) return 0;
 	if (execution.variant === "stealth") {
 		switch (execution.strategy) {
 			case "browser_open_location":

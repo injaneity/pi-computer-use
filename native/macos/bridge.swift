@@ -1602,54 +1602,17 @@ final class Bridge {
 		return Array(events[cursor...])
 	}
 
-	private func waitForRootEventQuiescence(pid: Int32, cursor: Int) -> [RootAXEvent] {
-		let start = Date()
-		var sawEvent = false
-		var lastCount = rootEvents(pid: pid, since: cursor).count
-		if lastCount > 0 { sawEvent = true }
-		while true {
-			let elapsed = Date().timeIntervalSince(start)
-			let events = rootEvents(pid: pid, since: cursor)
-			if events.count > lastCount {
-				sawEvent = true
-				lastCount = events.count
-			}
-			if !sawEvent && elapsed >= 0.10 { return events }
-			if sawEvent {
-				let lastEventAt = events.last?.timestamp ?? start.timeIntervalSince1970
-				if Date().timeIntervalSince1970 - lastEventAt >= 0.08 || elapsed >= 0.50 { return events }
-			}
-			usleep(10_000)
+	// Onscreen CGWindowList id set for one pid: ~1-2ms per call, so it can be
+	// polled tightly where a full AX enumeration cannot.
+	private func cgRootSignature(pid: Int32) -> Set<UInt32> {
+		guard let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return [] }
+		var ids = Set<UInt32>()
+		for entry in entries {
+			guard let owner = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, owner == pid else { continue }
+			guard let windowId = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
+			ids.insert(windowId)
 		}
-	}
-
-	private func rootDelta(from events: [RootAXEvent], pid: Int32) -> [[String: Any]] {
-		var output: [[String: Any]] = []
-		var seen = Set<String>()
-		for event in events {
-			let name = event.notification
-			let change: String
-			if name.contains("Created") || name.contains("Opened") { change = "appeared" }
-			else if name.contains("Destroyed") || name.contains("Closed") { change = "closed" }
-			else if name.contains("Focused") { change = "focused" }
-			else { continue }
-			var root: [String: Any] = ["pid": Int(pid)]
-			if let element = event.element {
-				let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
-				let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
-				root["kind"] = name.contains("Menu") ? "menu" : rootKind(role: role, subrole: subrole)
-				root["title"] = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
-				root["role"] = role
-				root["rootRef"] = refStore.storeWindow(element)
-				let frame = frameForWindow(element)
-				root["framePoints"] = ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height]
-			} else {
-				root["kind"] = name.contains("Menu") ? "menu" : "window"
-			}
-			let key = "\(change):\(root["kind"] ?? ""):\(root["rootRef"] ?? ""):\(root["title"] ?? "")"
-			if seen.insert(key).inserted { output.append(rootDeltaItem(change: change, root: root, pid: pid)) }
-		}
-		return output
+		return ids
 	}
 
 	private func refindElement(ref: String, pid: Int32, windowId: UInt32) -> AXUIElement? {
@@ -1707,10 +1670,10 @@ final class Bridge {
 		let eventsLive = ensureRootObserver(pid: pid)
 		let eventCursor = eventsLive ? rootEventCursor(pid: pid) : 0
 		let beforeRootSnapshot = rootMetadataSnapshot(pid: pid)
+		let beforeCgSignature = cgRootSignature(pid: pid)
 		let beforeFrontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-		let beforeSheetCount = eventsLive ? 0 : (windowElement(pid: pid, windowId: record.windowId).map { sheetElements(of: $0).count } ?? 0)
-		let beforeFocusedWindow = eventsLive ? "" : focusedWindowSummary(pid: pid)
-		var rootDeltaRetryHint = false
+		let beforeSheetCount = windowElement(pid: pid, windowId: record.windowId).map { sheetElements(of: $0).count } ?? 0
+		let beforeFocusedWindow = focusedWindowSummary(pid: pid)
 		let beforeValue: String?
 		let beforeSelected: String?
 
@@ -1725,7 +1688,6 @@ final class Bridge {
 			}
 			if refound { performed["refound"] = true }
 			element = stored
-			rootDeltaRetryHint = false
 			beforeValue = stringAttribute(stored, attribute: kAXValueAttribute as CFString)
 			beforeSelected = stringAttribute(stored, attribute: kAXSelectedTextAttribute as CFString)
 		} else if let xNumber = target["x"] as? NSNumber, let yNumber = target["y"] as? NSNumber {
@@ -1807,7 +1769,7 @@ final class Bridge {
 				performed["grounding"] = "description"
 				performed["delivery"] = "ax"
 				let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
-				return attachRootDelta(to: ["outcome": value == text ? "worked" : "didnt", "performed": performed, "evidence": ["value": value]], before: beforeRootSnapshot, beforeFrontmostPid: beforeFrontmostPid, pid: pid, eventsLive: eventsLive, eventCursor: eventCursor, retryHint: false)
+				return attachRootDelta(to: ["outcome": value == text ? "worked" : "didnt", "performed": performed, "evidence": ["value": value]], before: beforeRootSnapshot, beforeFrontmostPid: beforeFrontmostPid, pid: pid, eventsLive: eventsLive, eventCursor: eventCursor, beforeCgSignature: beforeCgSignature)
 			}
 			try executeCoordinates(coordinatePoint())
 		} else if action == "typeText" {
@@ -1832,7 +1794,7 @@ final class Bridge {
 				performed["grounding"] = "description"
 				performed["delivery"] = "ax"
 				let after = scrollPositionSignature(element)
-				return attachRootDelta(to: ["outcome": before != after ? "worked" : "unknown", "performed": performed], before: beforeRootSnapshot, beforeFrontmostPid: beforeFrontmostPid, pid: pid, eventsLive: eventsLive, eventCursor: eventCursor, retryHint: false)
+				return attachRootDelta(to: ["outcome": before != after ? "worked" : "unknown", "performed": performed], before: beforeRootSnapshot, beforeFrontmostPid: beforeFrontmostPid, pid: pid, eventsLive: eventsLive, eventCursor: eventCursor, beforeCgSignature: beforeCgSignature)
 			}
 			try executeCoordinates(coordinatePoint())
 		} else {
@@ -1855,7 +1817,7 @@ final class Bridge {
 		if windowChanged { evidence["windowChanged"] = true }
 		var response: [String: Any] = ["outcome": outcome, "performed": performed]
 		if !evidence.isEmpty { response["evidence"] = evidence }
-		return attachRootDelta(to: response, before: beforeRootSnapshot, beforeFrontmostPid: beforeFrontmostPid, pid: pid, eventsLive: eventsLive, eventCursor: eventCursor, retryHint: rootDeltaRetryHint)
+		return attachRootDelta(to: response, before: beforeRootSnapshot, beforeFrontmostPid: beforeFrontmostPid, pid: pid, eventsLive: eventsLive, eventCursor: eventCursor, beforeCgSignature: beforeCgSignature)
 	}
 
 	private func rootIdentity(_ root: [String: Any]) -> String {
@@ -1906,35 +1868,37 @@ final class Bridge {
 		return item
 	}
 
-	private func attachRootDelta(to response: [String: Any], before: [String: [String: Any]], beforeFrontmostPid: pid_t?, pid: Int32, eventsLive: Bool, eventCursor: Int, retryHint: Bool) -> [String: Any] {
+	// The AX snapshot diff is authoritative: macOS emits no AXObserver
+	// notification at all when a sheet appears (verified on macOS 26), so
+	// events can only accelerate the decision, never make it. A cheap
+	// CGWindowList id-set poll detects real-window appearance/closure early;
+	// the AX diff runs once at the first signal or at timeout.
+	private func attachRootDelta(to response: [String: Any], before: [String: [String: Any]], beforeFrontmostPid: pid_t?, pid: Int32, eventsLive: Bool, eventCursor: Int, beforeCgSignature: Set<UInt32>) -> [String: Any] {
 		var output = response
 		var performed = output["performed"] as? [String: Any] ?? [:]
-		if eventsLive {
-			let events = waitForRootEventQuiescence(pid: pid, cursor: eventCursor)
-			var delta = rootDelta(from: events, pid: pid)
-			if delta.isEmpty {
-				delta = rootDelta(before: before, beforeFrontmostPid: beforeFrontmostPid, pid: pid)
-				if delta.isEmpty && retryHint {
-					for _ in 0..<2 where delta.isEmpty {
-						usleep(120_000)
-						delta = rootDelta(before: before, beforeFrontmostPid: beforeFrontmostPid, pid: pid)
-					}
-				}
-			}
-			performed["deltaSource"] = "events"
-			output["performed"] = performed
-			if !delta.isEmpty { output["rootDelta"] = delta }
-			return output
+
+		// AXUIElementDestroyed is deliberately not a signal: it fires for every
+		// rebuilt list row; a genuinely closed root also leaves the CG set.
+		let signalNotifications: Set<String> = ["AXWindowCreated", "AXSheetCreated", "AXMenuOpened", "AXMenuClosed", "AXFocusedWindowChanged"]
+		var source = "snapshot"
+		let deadline = Date().addingTimeInterval(0.40)
+		while Date() < deadline {
+			if cgRootSignature(pid: pid) != beforeCgSignature { source = "cg-poll"; break }
+			if let beforeFrontmostPid, NSWorkspace.shared.frontmostApplication?.processIdentifier != beforeFrontmostPid { source = "cg-poll"; break }
+			if eventsLive && rootEvents(pid: pid, since: eventCursor).contains(where: { signalNotifications.contains($0.notification) }) { source = "events"; break }
+			usleep(30_000)
 		}
 
-		// Snapshot fallback keeps the old short retry because some apps do not
-		// emit AX root notifications consistently.
 		var delta = rootDelta(before: before, beforeFrontmostPid: beforeFrontmostPid, pid: pid)
-		for _ in 0..<2 where delta.isEmpty {
-			usleep(120_000)
-			delta = rootDelta(before: before, beforeFrontmostPid: beforeFrontmostPid, pid: pid)
+		if delta.isEmpty && source != "snapshot" {
+			// A signal fired but the AX tree can lag the CG window; give it a
+			// bounded moment to catch up.
+			for _ in 0..<3 where delta.isEmpty {
+				usleep(80_000)
+				delta = rootDelta(before: before, beforeFrontmostPid: beforeFrontmostPid, pid: pid)
+			}
 		}
-		performed["deltaSource"] = "snapshot"
+		performed["deltaSource"] = source
 		output["performed"] = performed
 		if !delta.isEmpty { output["rootDelta"] = delta }
 		return output
