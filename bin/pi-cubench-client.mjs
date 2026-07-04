@@ -45,7 +45,12 @@ try {
 
 	// The confirm-modal variant raises a sheet; the act's root delta is how
 	// the agent learns about it. Observe the new root before searching it.
-	const appeared = renameResult.details?.execution?.rootDelta?.find((delta) => delta.change === "appeared");
+	let appeared = renameResult.details?.execution?.rootDelta?.find((delta) => delta.change === "appeared");
+	if (!appeared && input.variant?.includes?.("confirm-modal")) {
+		const roots = await tool(executeFind, { app: input.target?.appName ?? "Cubench", kind: "sheet" });
+		const sheet = roots.details?.windows?.[0];
+		if (sheet) appeared = { ref: sheet.windowRef, kind: sheet.kind, title: sheet.windowTitle, change: "appeared" };
+	}
 	if (appeared) {
 		observations += 1;
 		await tool(executeObserve, { root: appeared.ref, mode: "fused", image: "never" });

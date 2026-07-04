@@ -88,6 +88,7 @@ export interface HelperActPerformed {
 	grounding?: "description" | "coordinates";
 	delivery?: "ax" | NativeInputDelivery;
 	refound?: boolean;
+	deltaSource?: "events" | "snapshot";
 }
 
 export interface PlatformRootDelta {
