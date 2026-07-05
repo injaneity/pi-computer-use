@@ -261,6 +261,21 @@ fn list_windows_impl(
     }))
 }
 
+pub fn foreground_pid() -> Option<u64> {
+    #[cfg(not(windows))]
+    {
+        None
+    }
+    #[cfg(windows)]
+    {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.0.is_null() { return None; }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)); }
+        (pid != 0).then_some(u64::from(pid))
+    }
+}
+
 pub fn focus_window(
     store: &RefStore,
     target_ref: &crate::refs::WindowRef,

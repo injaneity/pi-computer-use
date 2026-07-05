@@ -169,7 +169,7 @@ mod native {
     use super::control_type_to_role;
     use crate::refs::{NativeHandle, RefStore};
 
-    use windows::core::BSTR;
+    use windows::core::{BSTR, VARIANT};
     use windows::Win32::Foundation::*;
     use windows::Win32::System::Com::*;
     use windows::Win32::System::Ole::{SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound};
@@ -446,6 +446,25 @@ mod native {
         if runtime_id(&root).as_deref() == Some(runtime_id_target) {
             return Ok((com, uia, root));
         }
+        // UIA RuntimeId is exposed as a SAFEARRAY and is not reliably accepted by
+        // CreatePropertyCondition across providers/windows-rs VARIANT conversion,
+        // so use AutomationId as the fast server-side lookup when available and
+        // keep RuntimeId as the authoritative equality check/fallback scan.
+        if !automation_id.is_empty() {
+            let value = VARIANT::from(automation_id);
+            if let Ok(condition) = unsafe { uia.CreatePropertyCondition(UIA_AutomationIdPropertyId, &value) } {
+                if let Ok(element) = unsafe { root.FindFirst(TreeScope_Subtree, &condition) } {
+                    if runtime_id(&element).as_deref() == Some(runtime_id_target) || runtime_id_target.is_empty() {
+                        return Ok((com, uia, element));
+                    }
+                    let candidate_id = unsafe { element.CurrentAutomationId().unwrap_or_default().to_string() };
+                    if candidate_id == automation_id && runtime_id_target.is_empty() {
+                        return Ok((com, uia, element));
+                    }
+                }
+            }
+        }
+
         let condition = unsafe { uia.CreateTrueCondition().map_err(|e| format!("CreateTrueCondition: {e}"))? };
         let found = unsafe { root.FindAll(TreeScope_Subtree, &condition).map_err(|e| format!("FindAll: {e}"))? };
         let count = unsafe { found.Length().map_err(|e| format!("ElementArray.Length: {e}"))? };

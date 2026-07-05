@@ -23,6 +23,7 @@ struct ElementRecord {
 
 #[derive(Clone, Debug)]
 struct LookRecord {
+    pid: u64,
     frame_x: f64,
     frame_y: f64,
     frame_w: f64,
@@ -33,7 +34,12 @@ struct LookRecord {
     elements: HashMap<String, ElementRecord>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
+struct RootSnapshot {
+    roots: HashMap<String, Value>,
+    foreground_pid: Option<u64>,
+}
+
 struct HelperState {
     store: RefStore,
     roots: HashMap<String, Value>,
@@ -195,7 +201,7 @@ fn handle_look(args: &Value) -> Result<Value, ProtocolError> {
     let look_id = format!("look_{}", state.next_look);
     state.next_look += 1;
     let (outline, element_records) = outline_from_elements(&root_ref, kind, &root, &elements, fx, fy, image_w, image_h, fw, fh);
-    let record = LookRecord { frame_x: fx, frame_y: fy, frame_w: fw, frame_h: fh, image_w, image_h, has_image: image_payload.is_some(), elements: element_records };
+    let record = LookRecord { pid: root.get("pid").and_then(Value::as_u64).unwrap_or(0), frame_x: fx, frame_y: fy, frame_w: fw, frame_h: fh, image_w, image_h, has_image: image_payload.is_some(), elements: element_records };
     state.looks.insert(look_id.clone(), record);
 
     let mut response = json!({
@@ -296,11 +302,12 @@ fn outline_from_elements(root_ref: &str, kind: &str, root: &Value, elements: &[V
 
 fn handle_act(args: &Value) -> Result<Value, ProtocolError> {
     let parsed = input::parse_act_request(args)?;
-    let before = snapshot_roots()?;
     let record = {
         let state = helper_state().lock().map_err(|_| internal("helper state lock poisoned"))?;
         state.looks.get(&parsed.look_id).cloned().ok_or_else(|| ProtocolError::new(format!("Look id '{}' is no longer available", parsed.look_id), ErrorCode::StaleLook))?
     };
+    let target_pid = parsed.pid.or((record.pid != 0).then_some(record.pid)).ok_or_else(|| invalid("act requires pid or observed root pid for root deltas"))?;
+    let before = snapshot_roots(target_pid)?;
 
     let mut response = match &parsed.target {
         input::ActTarget::Ref(reference) => act_on_ref(args, &parsed, &record, reference)?,
@@ -317,8 +324,8 @@ fn handle_act(args: &Value) -> Result<Value, ProtocolError> {
         }
     };
 
-    let (after, source) = await_delta_snapshot(&before)?;
-    response = input::response_with_delta(response, source, root_delta(&before, &after));
+    let (after, source) = await_delta_snapshot(target_pid, &before)?;
+    response = input::response_with_delta(response, source, root_delta(&before, &after, target_pid));
     Ok(response)
 }
 
@@ -392,25 +399,28 @@ fn screen_point(record: &LookRecord, x: f64, y: f64) -> Value {
     })
 }
 
-fn snapshot_roots() -> Result<HashMap<String, Value>, ProtocolError> {
+fn snapshot_roots(pid: u64) -> Result<RootSnapshot, ProtocolError> {
     let mut store = RefStore::new();
-    let value = window::list_windows(&mut store, None)?;
-    Ok(roots_array(&value).into_iter().map(|root| (root_identity(&root), root)).collect())
+    let value = window::list_windows(&mut store, Some(pid))?;
+    Ok(RootSnapshot {
+        roots: roots_array(&value).into_iter().map(|root| (root_identity(&root), root)).collect(),
+        foreground_pid: window::foreground_pid(),
+    })
 }
 
-fn root_signature(roots: &HashMap<String, Value>) -> Vec<String> {
-    let mut keys = roots.keys().cloned().collect::<Vec<_>>();
+fn root_signature(snapshot: &RootSnapshot) -> (Vec<String>, Option<u64>) {
+    let mut keys = snapshot.roots.keys().cloned().collect::<Vec<_>>();
     keys.sort();
-    keys
+    (keys, snapshot.foreground_pid)
 }
 
-fn await_delta_snapshot(before: &HashMap<String, Value>) -> Result<(HashMap<String, Value>, &'static str), ProtocolError> {
+fn await_delta_snapshot(pid: u64, before: &RootSnapshot) -> Result<(RootSnapshot, &'static str), ProtocolError> {
     let before_sig = root_signature(before);
     let deadline = Instant::now() + Duration::from_millis(300);
     let mut signaled = false;
-    let mut after = snapshot_roots()?;
+    let mut after = snapshot_roots(pid)?;
     while Instant::now() < deadline {
-        after = snapshot_roots()?;
+        after = snapshot_roots(pid)?;
         if root_signature(&after) != before_sig {
             signaled = true;
             break;
@@ -419,10 +429,10 @@ fn await_delta_snapshot(before: &HashMap<String, Value>) -> Result<(HashMap<Stri
     }
     if signaled {
         for _ in 0..3 {
-            let delta = root_delta(before, &after);
+            let delta = root_delta(before, &after, pid);
             if !delta.is_empty() { return Ok((after, "win-poll")); }
             sleep(Duration::from_millis(60));
-            after = snapshot_roots()?;
+            after = snapshot_roots(pid)?;
         }
         Ok((after, "win-poll"))
     } else {
@@ -430,14 +440,17 @@ fn await_delta_snapshot(before: &HashMap<String, Value>) -> Result<(HashMap<Stri
     }
 }
 
-fn root_delta(before: &HashMap<String, Value>, after: &HashMap<String, Value>) -> Vec<Value> {
+fn root_delta(before: &RootSnapshot, after: &RootSnapshot, target_pid: u64) -> Vec<Value> {
     let mut delta = Vec::new();
-    for (key, root) in after { if !before.contains_key(key) { delta.push(delta_item("appeared", root)); } }
-    for (key, root) in before { if !after.contains_key(key) { delta.push(delta_item("closed", root)); } }
-    for (key, root) in after {
-        if root.get("isFocused").and_then(Value::as_bool) == Some(true) && before.get(key).and_then(|r| r.get("isFocused")).and_then(Value::as_bool) != Some(true) {
+    for (key, root) in &after.roots { if !before.roots.contains_key(key) { delta.push(delta_item("appeared", root)); } }
+    for (key, root) in &before.roots { if !after.roots.contains_key(key) { delta.push(delta_item("closed", root)); } }
+    for (key, root) in &after.roots {
+        if root.get("isFocused").and_then(Value::as_bool) == Some(true) && before.roots.get(key).and_then(|r| r.get("isFocused")).and_then(Value::as_bool) != Some(true) {
             delta.push(delta_item("focused", root));
         }
+    }
+    if before.foreground_pid != after.foreground_pid && after.foreground_pid != Some(target_pid) {
+        delta.push(json!({ "change": "focused", "kind": "app", "title": "Foreground app", "pid": after.foreground_pid.unwrap_or(0) }));
     }
     delta
 }
@@ -501,8 +514,8 @@ fn wait_target_hwnd(args: &Value) -> Result<isize, ProtocolError> {
         }
     }
     if let Some(pid) = args.get("pid").and_then(Value::as_u64) {
-        let roots = snapshot_roots()?;
-        if let Some(root) = roots.values().find(|root| root.get("pid").and_then(Value::as_u64) == Some(pid)) {
+        let roots = snapshot_roots(pid)?;
+        if let Some(root) = roots.roots.values().find(|root| root.get("pid").and_then(Value::as_u64) == Some(pid)) {
             return Ok(root.get("windowId").and_then(Value::as_i64).unwrap_or(0) as isize);
         }
     }
@@ -547,26 +560,37 @@ fn emit_response(response: &Response) {
 mod tests {
     use super::*;
 
-    fn root(id: i64, title: &str, focused: bool) -> Value {
-        json!({ "windowId": id, "kind": "window", "title": title, "pid": 1, "rootRef": format!("@w{id}"), "isFocused": focused })
+    fn root(id: i64, pid: u64, title: &str, focused: bool) -> Value {
+        json!({ "windowId": id, "kind": "window", "title": title, "pid": pid, "rootRef": format!("@w{id}"), "isFocused": focused })
+    }
+
+    fn snap(roots: Vec<Value>, foreground_pid: Option<u64>) -> RootSnapshot {
+        RootSnapshot { roots: roots.into_iter().map(|root| (root_identity(&root), root)).collect(), foreground_pid }
     }
 
     #[test]
     fn root_delta_uses_act_time_baseline_for_two_acts_one_look() {
-        let look_time = HashMap::from([("window:1".to_owned(), root(1, "A", true))]);
-        let after_first = HashMap::from([
-            ("window:1".to_owned(), root(1, "A", false)),
-            ("window:2".to_owned(), root(2, "B", true)),
-        ]);
-        let after_second = HashMap::from([
-            ("window:1".to_owned(), root(1, "A", false)),
-            ("window:2".to_owned(), root(2, "B", false)),
-            ("window:3".to_owned(), root(3, "C", true)),
-        ]);
-        let first = root_delta(&look_time, &after_first);
+        let look_time = snap(vec![root(1, 1, "A", true)], Some(1));
+        let after_first = snap(vec![root(1, 1, "A", false), root(2, 1, "B", true)], Some(1));
+        let after_second = snap(vec![root(1, 1, "A", false), root(2, 1, "B", false), root(3, 1, "C", true)], Some(1));
+        let first = root_delta(&look_time, &after_first, 1);
         assert!(first.iter().any(|item| item["title"] == "B" && item["change"] == "appeared"));
-        let second = root_delta(&after_first, &after_second);
+        let second = root_delta(&after_first, &after_second, 1);
         assert!(!second.iter().any(|item| item["title"] == "B" && item["change"] == "appeared"), "second act must not re-report first act delta");
         assert!(second.iter().any(|item| item["title"] == "C" && item["change"] == "appeared"));
+    }
+
+    #[test]
+    fn root_delta_scopes_to_target_pid_and_foreground_flip() {
+        let before = snap(vec![root(1, 1, "Target", true)], Some(1));
+        let after_same_pid = snap(vec![root(1, 1, "Target", false), root(2, 1, "Dialog", true)], Some(1));
+        assert!(root_delta(&before, &after_same_pid, 1).iter().any(|item| item["title"] == "Dialog" && item["change"] == "appeared"));
+
+        let after_other_pid_filtered = snap(vec![root(1, 1, "Target", true)], Some(1));
+        assert!(root_delta(&before, &after_other_pid_filtered, 1).is_empty(), "other-pid window churn is excluded before diffing");
+
+        let foreground_flip = snap(vec![root(1, 1, "Target", true)], Some(2));
+        let delta = root_delta(&before, &foreground_flip, 1);
+        assert!(delta.iter().any(|item| item["change"] == "focused" && item["kind"] == "app" && item["pid"] == 2));
     }
 }
