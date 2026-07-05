@@ -8,8 +8,8 @@ The TypeScript Windows backend is intentionally stateless. It forwards root-fore
 
 - `listRoots({ pid? })`: cheap HWND metadata only. HWNDs are the pairing source of truth, so roots report `pairing: { confidence: "exact", score: 100 }`.
 - `look`: atomic observe result with `lookId`, outline, window payload (`rootRef`, `kind`, frame, scale), and optional image. Menu/outline-only roots omit `image`; coordinate acts against those roots fail with `coordinate_unavailable_for_root`.
-- `act`: forwards the typed `PlatformActRequest` whole. The helper validates `lookId`, resolves refs from helper-owned look state, applies policy (`ax_only` blocks raw/coordinate input), executes, and returns outcome/evidence plus `performed.deltaSource` and shallow `rootDelta`.
-- `uiaReadText` / `uiaWaitFor`: helper-side text access/waiting. No TypeScript screenshot polling or module-level element state is used.
+- `act`: forwards the typed `PlatformActRequest` whole. The helper validates `lookId`, resolves refs from helper-owned look state, applies policy, executes, and returns honest outcome/evidence plus `performed.deltaSource` and shallow `rootDelta`.
+- `uiaReadText` / `uiaWaitFor`: helper-side live UIA reads/polls. No TypeScript screenshot polling or module-level element state is used.
 
 ## Root metadata
 
@@ -22,16 +22,18 @@ Windows roots are top-level HWNDs:
 
 The helper declares per-monitor-v2 DPI awareness at startup and reports `scaleFactor = GetDpiForWindow(hwnd) / 96`.
 
-## Actions and deltas
+## Refs, actions, and deltas
 
-Implemented action path:
+Observed `@e` refs store UIA RuntimeId and AutomationId metadata. Ref-targeted actions resolve a live `IUIAutomationElement` first:
 
-- `press`/`click`: resolved UIA ref center or image coordinate, then `SendInput` click fallback.
-- `setText`: text input fallback with value evidence.
-- `typeText`/`keypress`: `SendInput`; blocked under `ax_only`.
-- `scroll`, `drag`, `moveMouse`: `SendInput`/cursor APIs; coordinate usage blocked under `ax_only` where applicable.
+- `press`/`click`: `InvokePattern`, then `TogglePattern`, then `SelectionItemPattern`; successful pattern grounding reports `grounding: "description"`, `delivery: "ax"`. Coordinate fallback is blocked by `ax_only` and preflights occlusion with `ElementFromPoint`.
+- `setText`: `ValuePattern.SetValue`, then `CurrentValue` read-back. `evidence.value` is the value actually read.
+- `scroll`: `ScrollPattern` where exposed; wheel fallback is raw input and policy-gated.
+- `typeText`, `keypress`, `drag`, `moveMouse`, and coordinate targets remain raw input and report `unknown` unless verified.
 
-Root deltas are currently snapshot-diffed after a bounded helper-side settle, with `performed.deltaSource: "snapshot"`.
+`readText` resolves the live element and reads TextPattern → ValuePattern → CurrentName. `waitFor` polls the live UIA subtree at about 150ms intervals.
+
+Root deltas are baselined at act time. The helper polls a cheap top-level HWND signature for early exit (`deltaSource: "win-poll"`) and falls back to a full snapshot timeout path (`"snapshot"`).
 
 ## Protocol
 
