@@ -423,7 +423,20 @@ mod native {
         let hit = unsafe { uia.ElementFromPoint(POINT { x: x.round() as i32, y: y.round() as i32 }).map_err(|e| format!("ElementFromPoint: {e}"))? };
         let target_id = runtime_id(&target).unwrap_or_default();
         let hit_id = runtime_id(&hit).unwrap_or_default();
-        Ok(!target_id.is_empty() && target_id == hit_id)
+        if !target_id.is_empty() && target_id == hit_id { return Ok(true); }
+        let walker = unsafe { uia.ControlViewWalker().map_err(|e| format!("ControlViewWalker: {e}"))? };
+        Ok(is_ancestor(&walker, &target_id, hit) || is_ancestor(&walker, &hit_id, target))
+    }
+
+    fn is_ancestor(walker: &IUIAutomationTreeWalker, ancestor_id: &[i32], mut element: IUIAutomationElement) -> bool {
+        if ancestor_id.is_empty() { return false; }
+        for _ in 0..64 {
+            let Some(parent) = (unsafe { walker.GetParentElement(&element).ok() }) else { return false; };
+            let parent_id = runtime_id(&parent).unwrap_or_default();
+            if parent_id == ancestor_id { return true; }
+            element = parent;
+        }
+        false
     }
 
     fn resolve(hwnd: isize, runtime_id_target: &[i32], automation_id: &str) -> Result<(ComGuard, IUIAutomation, IUIAutomationElement), String> {
