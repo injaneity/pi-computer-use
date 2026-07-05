@@ -1,153 +1,45 @@
-# Manual Benchmark: Notepad Discovery and Screenshot
+# Manual Acceptance: Windows Notepad on root-forest tools
 
-Verify that `pi-computer-use` can discover Notepad windows via the
-Windows bridge and produce state IDs, window refs, element refs, and
-a screenshot.  Also verify that action and CDP commands correctly
-return `capability_deferred`.
+Run on a Windows machine with `windows-bridge.exe` installed or buildable.
 
-## Prerequisites
-
-- Windows 10 or later
-- Rust toolchain (to build the helper, or a prebuilt
-  `windows-bridge.exe`)
-- `pi-computer-use` Node.js package installed
-- Notepad accessible via `notepad` (comes with Windows)
-
----
-
-## Checklist
-
-### 1. Build the Windows helper
+## Setup
 
 ```powershell
-cargo build --manifest-path native/windows/bridge-rs/Cargo.toml --release
+node scripts/setup-helper.mjs --platform windows --allow-build
+notepad
 ```
 
-Expected: a binary at
-`native/windows/bridge-rs/target/release/windows-bridge.exe`.
+## Checks
 
-If prebuilt, copy it to
-`%USERPROFILE%\.pi\agent\helpers\pi-computer-use\windows-bridge.exe`.
+1. **Find roots**
+   - Use the public root listing/find flow (`find` / root discovery), not legacy `list_windows`.
+   - Expected: a Notepad root with an `@r` ref, `kind: window`, exact pairing, non-zero `framePoints`, real `scaleFactor`, and `isFocused` matching the foreground window.
 
----
+2. **Observe Notepad**
+   - Observe the Notepad `@r` root.
+   - Expected: `lookId`, `window.rootRef`, `window.kind`, outline nodes with `@e` refs, and an image for the window root.
 
-### 2. Open Notepad
+3. **Grounding rungs**
+   - `setText` on the editor `@e` ref: expect `worked` or `unknown` with `evidence.value`.
+   - `typeText` on the editor: expect raw input unless `policy: ax_only` is used.
+   - `keypress` (`Ctrl+A`, `Delete`, `Enter`): expect SendInput behavior; `ax_only` must fail.
+   - `click`/`press` a semantic ref and then a coordinate in the latest image-bearing look.
+   - `scroll` a scrollable ref or coordinate if available.
 
-Open Notepad (Start → type "Notepad" → Enter).
+4. **Policy and stale state**
+   - Reuse an old `lookId` after enough new observes to evict it: expect `stale_look` and no execution.
+   - Use an invalid `@e` ref: expect `stale_ref`.
+   - Coordinate act against an outline-only root: expect `coordinate_unavailable_for_root`.
 
----
+5. **Root deltas**
+   - Right-click in Notepad: expect a `menu` root to appear and an act result with `performed.deltaSource` plus a menu `rootDelta`.
+   - Open Save As / confirmation dialog: expect a `dialog` root delta.
+   - Close the dialog/menu: expect `closed` delta.
 
-### 3. Discover windows
+6. **DPI**
+   - On a display scaled above 100%, verify `scaleFactor` equals approximately `GetDpiForWindow/96` and coordinate clicks land correctly.
 
-Call `list_windows` from the pi-computer-use toolchain.
+7. **Elevated window**
+   - Target an elevated app from non-elevated Pi: expect a clear error, not a permission prompt loop.
 
-Expected output:
-
-- A `stateId` prefixed with `w-` (e.g. `w-0`)
-- At least one window entry for Notepad with:
-  - `ref`: `@w1` (or the first window ref)
-  - `title`: `"Untitled - Notepad"`
-  - `processName`: `"notepad.exe"`
-  - `isBrowser`: `false`
-  - `bounds`: non-zero width and height
-
-Note the window ref (e.g. `@w1`) for the next step.
-
----
-
-### 4. Screenshot the Notepad window
-
-Call `screenshot({ window: "@w1" })` using the ref from Step 3.
-
-Expected output:
-
-- A `stateId` prefixed with `s-` (e.g. `s-0`)
-- `width` and `height` matching the Notepad window (at least 200×100)
-- A base64-encoded PNG image in `imageBase64`
-- `scaleFactor`: `1`
-- `axTargets` array (when `includeElements` is enabled by default)
-  containing element refs (e.g. `@e1`, `@e2`, …)
-
----
-
-### 5. Verify UIA element refs
-
-If element extraction was included, check that the `axTargets` array
-contains at least one element with:
-
-- A `ref` string in `@eN` format (e.g. `@e1`)
-- A non-empty `role` string
-- Valid `bounds`
-
-Typical Notepad elements: `edit` (text area), `menuItem` (menu bar),
-`button` (minimise/maximise/close).
-
----
-
-### 6. Open a browser (Edge or Chrome)
-
-Open Microsoft Edge or Google Chrome to a blank or default page.
-Do not navigate away from the default page.
-
----
-
-### 7. Discover the browser window
-
-Call `list_windows` again.
-
-Expected: At least one new entry for the browser with:
-
-- `isBrowser`: `true`
-- `browserFamily`: `"edge"` or `"chrome"`
-- A process name ending in `msedge.exe` or `chrome.exe`
-
----
-
-### 8. Screenshot the browser window
-
-Using the browser's window ref, call `screenshot`.
-
-Expected: A valid screenshot of the browser window (same shape as
-Step 4).  Windows that use hardware acceleration may show partial or
-blank content via GDI — this is a known limitation.
-
----
-
-### 9. Verify a deferred action
-
-Call any action command (e.g. `click`, `type_text`, `keypress`).
-
-Expected: The command returns `capability_deferred` with a message
-similar to:
-
-> Windows ref-backed actions are deferred in PR #1. This PR supports
-> window discovery, screenshots, state IDs, and read-only UIA element
-> discovery.
-
-Do NOT verify that the action executes — verify that it refuses with
-the deferred error.
-
----
-
-### 10. Verify a deferred CDP command
-
-Call any CDP-requiring command (e.g. `navigate_browser`,
-`evaluate_browser`, `launch_browser_context`).
-
-Expected: Same `capability_deferred` response as Step 9.
-
----
-
-## Pass / Fail
-
-All checks pass if:
-
-1. `list_windows` returns a valid Notepad entry with a `@wN` ref and
-   a `stateId`
-2. `screenshot({ window: "@wN" })` returns a valid image and state ID
-3. `axTargets` contains at least one `@eN` ref with valid properties
-4. Browser window is reported with `isBrowser: true`
-5. Action command returns `capability_deferred`
-6. CDP-requiring command returns `capability_deferred`
-
-Record the `stateId` and ref count for traceability.
+Record: Windows version, display scale, helper diagnostics protocol version, root refs, look IDs, and all act results including `rootDelta`.

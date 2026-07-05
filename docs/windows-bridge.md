@@ -1,188 +1,56 @@
 # Windows Bridge
 
-This document describes the Windows-native helper that enables
-`pi-computer-use` to interact with Windows applications.  It is a
-separate binary (`windows-bridge.exe`) that communicates with the
-TypeScript host over stdin/stdout JSON lines.
+`windows-bridge.exe` is the native helper for the root-forest Windows backend. It is spawned by the TypeScript helper client and speaks stdin/stdout JSON-lines protocol version **2**.
 
----
+## Backend contract
 
-## Scope
+The TypeScript Windows backend is intentionally stateless. It forwards root-forest seam calls to the Rust helper:
 
-The Windows bridge provides the native pieces used by the shared backend:
+- `listRoots({ pid? })`: cheap HWND metadata only. HWNDs are the pairing source of truth, so roots report `pairing: { confidence: "exact", score: 100 }`.
+- `look`: atomic observe result with `lookId`, outline, window payload (`rootRef`, `kind`, frame, scale), and optional image. Menu/outline-only roots omit `image`; coordinate acts against those roots fail with `coordinate_unavailable_for_root`.
+- `act`: forwards the typed `PlatformActRequest` whole. The helper validates `lookId`, resolves refs from helper-owned look state, applies policy (`ax_only` blocks raw/coordinate input), executes, and returns outcome/evidence plus `performed.deltaSource` and shallow `rootDelta`.
+- `uiaReadText` / `uiaWaitFor`: helper-side text access/waiting. No TypeScript screenshot polling or module-level element state is used.
 
-| Capability | Status |
-|---|---|
-| Window discovery (`listWindows`) | Implemented |
-| Window focus (`focusWindow`) | Implemented |
-| Screenshot capture (`screenshot`) | Implemented |
-| UIA element extraction | Implemented |
-| Input actions (`act`: click, type, keys, scroll, drag, move) | Implemented |
+## Root metadata
 
-Higher-level model tools such as `list_apps`, `get_frontmost`, `read_text`,
-`wait_for`, and browser navigation are composed in the TypeScript Windows
-backend from these native commands.
+Windows roots are top-level HWNDs:
 
----
+- `#32768` class => `kind: "menu"`
+- `#32770` class => `kind: "dialog"`
+- owned popups => `kind: "popover"`
+- other HWNDs => `kind: "window"`
 
-## Supported Commands
+The helper declares per-monitor-v2 DPI awareness at startup and reports `scaleFactor = GetDpiForWindow(hwnd) / 96`.
 
-### `listWindows`
+## Actions and deltas
 
-Enumerates visible top-level windows, assigns each a scoped `@wN`
-reference, and returns metadata:
+Implemented action path:
 
-- `ref`: window reference (e.g. `@w1`)
-- `title`: window title text
-- `pid`: process ID of the owning process
-- `processName`: executable name (e.g. `notepad.exe`)
-- `bounds`: `{ x, y, width, height }` in screen coordinates
-- `isFocused`: whether the window has foreground focus
-- `isBrowser`: whether the process is a known browser
-- `browserFamily`: `"chrome"`, `"edge"`, or `"brave"` for recognized
-  browsers; `null` otherwise
+- `press`/`click`: resolved UIA ref center or image coordinate, then `SendInput` click fallback.
+- `setText`: text input fallback with value evidence.
+- `typeText`/`keypress`: `SendInput`; blocked under `ax_only`.
+- `scroll`, `drag`, `moveMouse`: `SendInput`/cursor APIs; coordinate usage blocked under `ax_only` where applicable.
 
-A `stateId` is returned alongside the window list.  This ID scopes
-the `@wN` references so that subsequent screenshot calls can look up
-the correct native window handle.
-
-### `screenshot`
-
-Captures the content of a previously discovered window using GDI
-(PrintWindow).  The full image is returned as a base64-encoded PNG.
-
-When called with `includeElements: true`, the response also includes
-an `axTargets` array containing read-only UIA accessibility elements
-discovered within the captured window.  Each element has:
-
-- `ref`: element reference (e.g. `@e1`)
-- `role`: semantic role derived from the UIA control type
-  (`edit`, `button`, `listItem`, `tab`, `link`, etc.)
-- `label`: the element's accessible name (CurrentName)
-- `automationId`: the element's automation ID
-- `className`: the element's class name
-- `bounds`: `{ x, y, width, height }` in screen coordinates
-- `capabilities`: `{ isEnabled, isOffscreen, isKeyboardFocusable }`
-
-UIA extraction is used for model-visible outline nodes and for text/capability
-metadata. Actions are routed through the backend-level `act` command so the
-model-facing tool contract remains OS-agnostic.
-
-### `focusWindow`
-
-Focuses a discovered `@wN` window reference and reports whether focus changed.
-
-### `act`
-
-Executes input through native Windows `SendInput`/cursor APIs. Supported actions:
-
-- `click` / `press`
-- `moveMouse`
-- `drag`
-- `scroll`
-- `typeText`
-- `setText`
-- `keypress`
-
----
-
-## State and Reference Behavior
-
-### Window Refs (`@wN`)
-
-- Created by `listWindows`
-- Scoped to a single `stateId` session
-- Passed to `screenshot({ ref: "@w1", stateId: "..." })`
-- Stored in-memory on the Rust side; lost when the helper process exits
-
-### Element Refs (`@eN`)
-
-- Created by `screenshot` when `includeElements: true`
-- Scoped to the same `stateId` as the window ref
-- Referenced only within the helper memory — not persisted
-- The TypeScript backend maps them to screen coordinates for `act`
-
-### State IDs
-
-- Fresh per `listWindows` (prefix `w-`) and per `screenshot` (prefix
-  `s-`)
-- Generated by an atomic counter within the helper process
-- Used to look up the matching ref store on subsequent commands
-
----
-
-## Local-Only Constraints
-
-- The helper runs as a local child process spawned by the TypeScript
-  host
-- Communication is over stdin/stdout — no TCP, HTTP, or named pipes
-- No background service, system tray icon, or MSI installer
-- No administrator elevation is required for the read-only
-  capabilities
-- The helper binary is expected at
-  `%USERPROFILE%\.pi\agent\helpers\pi-computer-use\windows-bridge.exe`
-
----
-
-## UIA and Capture Limitations
-
-### GDI Screenshot Capture
-
-- Uses `PrintWindow` (WM_PRINT) with GDI — no DXGI, Windows Graphics
-  Capture, or DirectComposition
-- Selected-window capture only; desktop-wide capture is not
-  implemented
-- Minimised windows produce a warning and a zero-size capture
-- Windows with hardware-accelerated content may render as a blank or
-  partial capture via GDI
-
-### UIA Element Extraction
-
-- Read-only: no focus, press, value-set, or scroll
-- Max 200 elements per window
-- Offscreen and zero-sized elements are skipped
-- Uses the `windows` crate's IUIAutomation bindings
-- Initialises COM with `COINIT_APARTMENTTHREADED` per extraction call
-
----
-
-## No Service / No Network
-
-The Windows bridge is a plain command-line process.  It does not:
-
-- Install or run as a Windows service
-- Register with the Windows registry
-- Listen on any TCP/UDP port
-- Make outbound network connections
-- Upload screenshots or window metadata
-- Write logs to disk
-- Communicate with any cloud or remote endpoint
-
-All data stays within the helper process and the TypeScript host's
-memory for the duration of the session.
-
----
+Root deltas are currently snapshot-diffed after a bounded helper-side settle, with `performed.deltaSource: "snapshot"`.
 
 ## Protocol
 
-Requests use a JSON envelope:
+Request envelope:
 
 ```json
-{ "protocolVersion": 1, "id": "req_1", "cmd": "listWindows", "args": {} }
+{ "protocolVersion": 2, "id": "req_1", "cmd": "listRoots", "args": {} }
 ```
 
-Responses use:
+Response envelope:
 
 ```json
-{ "protocolVersion": 1, "id": "req_1", "ok": true, "result": { … } }
+{ "protocolVersion": 2, "id": "req_1", "ok": true, "result": { } }
 ```
 
-Error responses include a `code` field for programmatic handling:
+Diagnostics (`cmd: "diagnostics"`) returns the protocol version and helper process metadata. The TypeScript backend rejects a mismatched version with a “Restart Pi …” error.
 
-```json
-{ "protocolVersion": 1, "id": "req_1", "ok": false, "error": { "message": "…", "code": "capability_deferred" } }
-```
+## Local constraints
 
-Error codes: `capability_deferred`, `unsupported_command`,
-`unsupported_platform`, `invalid_request`, `target_not_found`,
-`capture_failed`, `internal_error`.
+- Local child process only; no service, socket, or network listener.
+- Helper path: `%USERPROFILE%\.pi\agent\helpers\pi-computer-use\windows-bridge.exe`.
+- UIAccess/elevated-window limitations are reported as errors; there is no interactive permission grant loop.
