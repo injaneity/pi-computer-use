@@ -1,7 +1,7 @@
 use serde_json::json;
 
 /// The protocol types under test are expected to be exported from the library crate.
-use windows_bridge::{ErrorCode, ProtocolError, Request, Response};
+use windows_bridge::{protocol::PROTOCOL_VERSION, ErrorCode, ProtocolError, Request, Response};
 
 // ---------------------------------------------------------------------------
 // Request parsing
@@ -10,13 +10,13 @@ use windows_bridge::{ErrorCode, ProtocolError, Request, Response};
 #[test]
 fn test_parse_valid_request() {
     let raw = json!({
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "id": "req-001",
         "cmd": "checkPermissions",
         "args": {}
     });
     let req: Request = serde_json::from_value(raw).expect("valid request");
-    assert_eq!(req.protocol_version, 1);
+    assert_eq!(req.protocol_version, PROTOCOL_VERSION);
     assert_eq!(req.id, "req-001");
     assert_eq!(req.cmd, "checkPermissions");
 }
@@ -24,13 +24,13 @@ fn test_parse_valid_request() {
 #[test]
 fn test_parse_request_with_args() {
     let raw = json!({
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "id": "req-002",
         "cmd": "listWindows",
         "args": { "pid": 1234 }
     });
     let req: Request = serde_json::from_value(raw).expect("valid request with args");
-    assert_eq!(req.protocol_version, 1);
+    assert_eq!(req.protocol_version, PROTOCOL_VERSION);
     assert_eq!(req.id, "req-002");
     assert_eq!(req.cmd, "listWindows");
     assert!(req.args.is_object());
@@ -40,7 +40,7 @@ fn test_parse_request_with_args() {
 #[test]
 fn test_parse_request_missing_id() {
     let raw = json!({
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "cmd": "checkPermissions",
         "args": {}
     });
@@ -51,7 +51,7 @@ fn test_parse_request_missing_id() {
 #[test]
 fn test_parse_request_missing_cmd() {
     let raw = json!({
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "id": "req-003",
         "args": {}
     });
@@ -63,7 +63,7 @@ fn test_parse_request_missing_cmd() {
 fn test_parse_request_wrong_types() {
     // id must be a string
     let raw = json!({
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "id": 42,
         "cmd": "test",
         "args": {}
@@ -82,7 +82,7 @@ fn test_serialize_success_response() {
     let json_str = serde_json::to_string(&resp).expect("serialize success");
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "req-001");
     assert_eq!(parsed["ok"], true);
     assert_eq!(parsed["result"]["ready"], true);
@@ -94,7 +94,7 @@ fn test_serialize_success_with_null_result() {
     let json_str = serde_json::to_string(&resp).expect("serialize success null");
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "req-002");
     assert_eq!(parsed["ok"], true);
     assert_eq!(parsed["result"], serde_json::Value::Null);
@@ -116,7 +116,7 @@ fn test_serialize_capability_deferred_error() {
     let json_str = serde_json::to_string(&resp).expect("serialize error");
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "req-003");
     assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["error"]["code"], "capability_deferred");
@@ -133,7 +133,7 @@ fn test_serialize_unsupported_command_error() {
     let json_str = serde_json::to_string(&resp).expect("serialize error");
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "req-004");
     assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["error"]["code"], "unsupported_command");
@@ -150,7 +150,7 @@ fn test_serialize_invalid_request_error() {
     let json_str = serde_json::to_string(&resp).expect("serialize error");
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "req-005");
     assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["error"]["code"], "invalid_request");
@@ -163,7 +163,7 @@ fn test_serialize_internal_error() {
     let json_str = serde_json::to_string(&resp).expect("serialize error");
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "req-006");
     assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["error"]["code"], "internal_error");
@@ -176,7 +176,7 @@ fn test_serialize_target_not_found_error() {
     let json_str = serde_json::to_string(&resp).expect("serialize error");
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "req-007");
     assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["error"]["code"], "target_not_found");
@@ -209,7 +209,7 @@ fn test_error_code_display() {
 fn test_round_trip_request_response() {
     // Simulate: parse a request, produce a success response, serialize it
     let raw = json!({
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "id": "rt-001",
         "cmd": "checkPermissions",
         "args": {}
@@ -220,7 +220,7 @@ fn test_round_trip_request_response() {
     let resp = Response::ok(req.id.as_str(), json!({ "accessibility": false }));
     let out = serde_json::to_string(&resp).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "rt-001");
     assert_eq!(parsed["ok"], true);
     assert_eq!(parsed["result"]["accessibility"], false);
@@ -230,7 +230,7 @@ fn test_round_trip_request_response() {
 fn test_round_trip_request_error() {
     // Simulate: parse request, produce an error response, serialize it
     let raw = json!({
-        "protocolVersion": 1,
+        "protocolVersion": PROTOCOL_VERSION,
         "id": "rt-002",
         "cmd": "mouseClick",
         "args": {}
@@ -245,7 +245,7 @@ fn test_round_trip_request_error() {
     let resp = Response::err(req.id.as_str(), err);
     let out = serde_json::to_string(&resp).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(parsed["protocolVersion"], 1);
+    assert_eq!(parsed["protocolVersion"], PROTOCOL_VERSION);
     assert_eq!(parsed["id"], "rt-002");
     assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["error"]["code"], "capability_deferred");

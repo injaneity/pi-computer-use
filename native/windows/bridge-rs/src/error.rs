@@ -18,6 +18,16 @@ pub enum ErrorCode {
     UnsupportedPlatform,
     #[serde(rename = "capture_failed")]
     CaptureFailed,
+    #[serde(rename = "stale_look")]
+    StaleLook,
+    #[serde(rename = "stale_ref")]
+    StaleRef,
+    #[serde(rename = "coordinate_unavailable_for_root")]
+    CoordinateUnavailableForRoot,
+    #[serde(rename = "coordinate_blocked")]
+    CoordinateBlocked,
+    #[serde(rename = "occluded_target")]
+    OccludedTarget,
 }
 
 impl fmt::Display for ErrorCode {
@@ -30,6 +40,11 @@ impl fmt::Display for ErrorCode {
             ErrorCode::InternalError => "internal_error",
             ErrorCode::UnsupportedPlatform => "unsupported_platform",
             ErrorCode::CaptureFailed => "capture_failed",
+            ErrorCode::StaleLook => "stale_look",
+            ErrorCode::StaleRef => "stale_ref",
+            ErrorCode::CoordinateUnavailableForRoot => "coordinate_unavailable_for_root",
+            ErrorCode::CoordinateBlocked => "coordinate_blocked",
+            ErrorCode::OccludedTarget => "occluded_target",
         };
         write!(f, "{s}")
     }

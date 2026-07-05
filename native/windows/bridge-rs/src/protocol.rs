@@ -3,6 +3,8 @@ use serde_json::Value;
 
 use crate::error::ProtocolError;
 
+pub const PROTOCOL_VERSION: u32 = 2;
+
 /// A request envelope received from the TypeScript host.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Request {
@@ -30,7 +32,7 @@ impl Response {
     /// Build a success response.
     pub fn ok(id: &str, result: Value) -> Self {
         Self {
-            protocol_version: 1,
+            protocol_version: PROTOCOL_VERSION,
             id: id.to_owned(),
             ok: true,
             result: Some(result),
@@ -41,7 +43,7 @@ impl Response {
     /// Build an error response.
     pub fn err(id: &str, error: ProtocolError) -> Self {
         Self {
-            protocol_version: 1,
+            protocol_version: PROTOCOL_VERSION,
             id: id.to_owned(),
             ok: false,
             result: None,

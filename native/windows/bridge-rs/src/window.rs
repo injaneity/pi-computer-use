@@ -86,9 +86,11 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 #[cfg(windows)]
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
-    IsWindowVisible, SetForegroundWindow,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, GW_OWNER,
 };
 
 #[cfg(windows)]
@@ -102,6 +104,17 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL 
 unsafe fn get_window_title(hwnd: HWND) -> String {
     let mut buf = [0u16; 512];
     let len = GetWindowTextW(hwnd, &mut buf);
+    if len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(windows)]
+unsafe fn get_window_class(hwnd: HWND) -> String {
+    let mut buf = [0u16; 256];
+    let len = GetClassNameW(hwnd, &mut buf);
     if len > 0 {
         String::from_utf16_lossy(&buf[..len as usize])
     } else {
@@ -194,17 +207,48 @@ fn list_windows_impl(
             String::new()
         };
         let bounds = unsafe { get_window_bounds_json(hwnd) };
+        let class_name = unsafe { get_window_class(hwnd) };
         let (is_browser, browser_family) = classify_browser(&process_name);
         let wref = store.insert_window(NativeHandle::new(hwnd.0 as isize));
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        let scale_factor = if dpi > 0 { f64::from(dpi) / 96.0 } else { 1.0 };
+        let owner = unsafe { GetWindow(hwnd, GW_OWNER).ok() };
+        let is_minimized = unsafe { IsIconic(hwnd).as_bool() };
+        let kind = if class_name == "#32768" {
+            "menu"
+        } else if class_name == "#32770" {
+            "dialog"
+        } else if owner.map(|hwnd| !hwnd.0.is_null()).unwrap_or(false) {
+            "popover"
+        } else {
+            "window"
+        };
+        let role = if kind == "menu" { "Menu" } else { "Window" };
 
         windows_info.push(json!({
+            "kind": kind,
+            "rootRef": wref.to_string(),
+            "windowRef": wref.to_string(),
             "ref": wref.to_string(),
             "windowId": hwnd.0 as isize,
             "title": title,
             "pid": pid,
+            "appName": process_name.trim_end_matches(".exe"),
             "processName": process_name,
+            "role": role,
+            "subrole": class_name,
+            "zOrder": windows_info.len(),
+            "framePoints": bounds,
             "bounds": bounds,
+            "scaleFactor": scale_factor,
             "isFocused": hwnd == foreground,
+            "isMain": hwnd == foreground,
+            "isMinimized": is_minimized,
+            "isOnscreen": !is_minimized,
+            "isModal": kind == "dialog",
+            "sheetCount": 0,
+            "pairing": { "confidence": "exact", "score": 100 },
+            "metadata": { "className": class_name, "isBrowser": is_browser, "browserFamily": browser_family },
             "isBrowser": is_browser,
             "browserFamily": browser_family,
         }));
@@ -213,6 +257,7 @@ fn list_windows_impl(
     Ok(json!({
         "stateId": StateId::fresh("w"),
         "windows": windows_info,
+        "roots": windows_info,
     }))
 }
 
