@@ -11,6 +11,7 @@ pub enum ActTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedActRequest {
     pub look_id: String,
+    pub pid: Option<u64>,
     pub action: String,
     pub policy: String,
     pub target: ActTarget,
@@ -50,6 +51,7 @@ pub fn parse_act_request(args: &Value) -> Result<ParsedActRequest, ProtocolError
     };
     Ok(ParsedActRequest {
         look_id,
+        pid: args.get("pid").and_then(Value::as_u64),
         action,
         policy,
         target,
