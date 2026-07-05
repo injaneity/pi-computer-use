@@ -11,6 +11,7 @@ const SETUP_HELPER_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "setup-helper.mjs
 const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const COMMAND_TIMEOUT_MS = 15_000;
 
+export const WINDOWS_HELPER_PROTOCOL_VERSION = 2;
 export const WINDOWS_HELPER_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
 
 interface Pending<T> {
@@ -29,9 +30,9 @@ async function runProcess(command: string, args: string[], timeoutMs: number, si
 		const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
 		let stdout = "";
 		let stderr = "";
+		const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
 		const timer = setTimeout(() => { child.kill("SIGTERM"); cleanup(); reject(new Error(`Command timed out after ${timeoutMs}ms: ${command} ${args.join(" ")}`)); }, timeoutMs);
 		const onAbort = () => { child.kill("SIGTERM"); cleanup(); reject(new Error("Operation aborted.")); };
-		const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
 		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
 		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
 		child.on("error", (error) => { cleanup(); reject(error); });
@@ -81,13 +82,21 @@ export class WindowsHelperClient {
 			const line = this.buffer.slice(0, newline).trim();
 			this.buffer = this.buffer.slice(newline + 1);
 			if (!line) continue;
-			const parsed = JSON.parse(line);
+			let parsed: any;
+			try { parsed = JSON.parse(line); } catch { continue; }
 			const pending = this.pending.get(parsed.id);
 			if (!pending) continue;
 			this.pending.delete(parsed.id);
 			clearTimeout(pending.timer);
-			if (parsed.ok === true) pending.resolve(parsed.result);
-			else pending.reject(new Error(parsed.error?.message ?? "Windows helper command failed."));
+			if (parsed.protocolVersion !== WINDOWS_HELPER_PROTOCOL_VERSION) {
+				pending.reject(new Error(`Windows helper protocol mismatch: expected ${WINDOWS_HELPER_PROTOCOL_VERSION}, got ${parsed.protocolVersion ?? "unknown"}. Restart Pi to use the installed helper.`));
+			} else if (parsed.ok === true) {
+				pending.resolve(parsed.result);
+			} else {
+				const error = new Error(parsed.error?.message ?? "Windows helper command failed.") as Error & { code?: string };
+				error.code = parsed.error?.code;
+				pending.reject(error);
+			}
 		}
 	}
 
@@ -98,7 +107,7 @@ export class WindowsHelperClient {
 		return await new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Helper command '${cmd}' timed out after ${timeoutMs}ms.`)); }, timeoutMs);
 			this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
-			child.stdin.write(`${JSON.stringify({ protocolVersion: 1, id, cmd, args })}\n`, (error) => {
+			child.stdin.write(`${JSON.stringify({ protocolVersion: WINDOWS_HELPER_PROTOCOL_VERSION, id, cmd, args })}\n`, (error) => {
 				if (!error) return;
 				this.pending.delete(id);
 				clearTimeout(timer);
