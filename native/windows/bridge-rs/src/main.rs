@@ -12,12 +12,13 @@ use windows_bridge::{
 
 #[derive(Clone, Debug)]
 struct ElementRecord {
+    hwnd: isize,
     x: f64,
     y: f64,
     w: f64,
     h: f64,
-    text: String,
-    role: String,
+    automation_id: String,
+    runtime_id: Vec<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,7 +30,6 @@ struct LookRecord {
     image_w: f64,
     image_h: f64,
     has_image: bool,
-    roots_before: HashMap<String, Value>,
     elements: HashMap<String, ElementRecord>,
 }
 
@@ -195,7 +195,7 @@ fn handle_look(args: &Value) -> Result<Value, ProtocolError> {
     let look_id = format!("look_{}", state.next_look);
     state.next_look += 1;
     let (outline, element_records) = outline_from_elements(&root_ref, kind, &root, &elements, fx, fy, image_w, image_h, fw, fh);
-    let record = LookRecord { frame_x: fx, frame_y: fy, frame_w: fw, frame_h: fh, image_w, image_h, has_image: image_payload.is_some(), roots_before: state.roots.clone(), elements: element_records };
+    let record = LookRecord { frame_x: fx, frame_y: fy, frame_w: fw, frame_h: fh, image_w, image_h, has_image: image_payload.is_some(), elements: element_records };
     state.looks.insert(look_id.clone(), record);
 
     let mut response = json!({
@@ -238,7 +238,10 @@ fn outline_from_elements(root_ref: &str, kind: &str, root: &Value, elements: &[V
         let reference = raw.get("ref").and_then(Value::as_str).unwrap_or("").to_owned();
         let role = raw.get("role").and_then(Value::as_str).unwrap_or("unknown").to_owned();
         let text = raw.get("value").or_else(|| raw.get("label")).and_then(Value::as_str).unwrap_or("").to_owned();
-        if !reference.is_empty() { records.insert(reference.clone(), ElementRecord { x: screen_x, y: screen_y, w: screen_w, h: screen_h, text: text.clone(), role: role.clone() }); }
+        let automation_id = raw.get("automationId").and_then(Value::as_str).unwrap_or("").to_owned();
+        let runtime_id = raw.get("runtimeId").and_then(Value::as_array).map(|items| items.iter().filter_map(|item| item.as_i64().map(|n| n as i32)).collect()).unwrap_or_default();
+        let hwnd = root.get("windowId").and_then(Value::as_i64).unwrap_or(0) as isize;
+        if !reference.is_empty() { records.insert(reference.clone(), ElementRecord { hwnd, x: screen_x, y: screen_y, w: screen_w, h: screen_h, automation_id: automation_id.clone(), runtime_id }); }
         let caps = raw.get("capabilities").unwrap_or(&Value::Null);
         json!({
             "ref": reference,
@@ -293,35 +296,93 @@ fn outline_from_elements(root_ref: &str, kind: &str, root: &Value, elements: &[V
 
 fn handle_act(args: &Value) -> Result<Value, ProtocolError> {
     let parsed = input::parse_act_request(args)?;
-    let (record, before) = {
+    let before = snapshot_roots()?;
+    let record = {
         let state = helper_state().lock().map_err(|_| internal("helper state lock poisoned"))?;
-        let record = state.looks.get(&parsed.look_id).cloned().ok_or_else(|| ProtocolError::new(format!("Look id '{}' is no longer available", parsed.look_id), ErrorCode::StaleLook))?;
-        (record.clone(), record.roots_before.clone())
+        state.looks.get(&parsed.look_id).cloned().ok_or_else(|| ProtocolError::new(format!("Look id '{}' is no longer available", parsed.look_id), ErrorCode::StaleLook))?
     };
 
-    let mut executable = args.clone();
-    match &parsed.target {
-        input::ActTarget::Ref(reference) => {
-            let element = record.elements.get(reference).ok_or_else(|| ProtocolError::new("Element reference is stale", ErrorCode::StaleRef))?;
-            executable["resolvedPoint"] = json!({ "x": element.x + element.w / 2.0, "y": element.y + element.h / 2.0 });
-        }
+    let mut response = match &parsed.target {
+        input::ActTarget::Ref(reference) => act_on_ref(args, &parsed, &record, reference)?,
         input::ActTarget::Point { x, y } => {
             if !record.has_image { return Err(ProtocolError::new("Coordinate targeting is unavailable for this outline-only root", ErrorCode::CoordinateUnavailableForRoot)); }
+            let mut executable = args.clone();
             executable["resolvedPoint"] = json!(screen_point(&record, *x, *y));
+            if parsed.action == "drag" {
+                if let Some(path) = parsed.params.get("path").and_then(Value::as_array) {
+                    executable["resolvedPath"] = Value::Array(path.iter().filter_map(|point| Some(json!(screen_point(&record, point.get("x")?.as_f64()?, point.get("y")?.as_f64()?)))).collect());
+                }
+            }
+            input::act(&executable)?
         }
-    }
-    if parsed.action == "drag" {
-        if let Some(path) = parsed.params.get("path").and_then(Value::as_array) {
-            executable["resolvedPath"] = Value::Array(path.iter().filter_map(|point| Some(json!(screen_point(&record, point.get("x")?.as_f64()?, point.get("y")?.as_f64()?)))).collect());
-        }
-    }
+    };
 
-    let mut response = input::act(&executable)?;
-    sleep(Duration::from_millis(150));
-    let after = snapshot_roots()?;
-    let delta = root_delta(&before, &after);
-    response = input::response_with_delta(response, "snapshot", delta);
+    let (after, source) = await_delta_snapshot(&before)?;
+    response = input::response_with_delta(response, source, root_delta(&before, &after));
     Ok(response)
+}
+
+fn act_on_ref(args: &Value, parsed: &input::ParsedActRequest, _record: &LookRecord, reference: &str) -> Result<Value, ProtocolError> {
+    let element = {
+        let state = helper_state().lock().map_err(|_| internal("helper state lock poisoned"))?;
+        state.looks.values().find_map(|look| look.elements.get(reference).cloned()).ok_or_else(|| ProtocolError::new("Element reference is stale", ErrorCode::StaleRef))?
+    };
+    match parsed.action.as_str() {
+        "press" | "click" => match windows_bridge::uia::press(element.hwnd, &element.runtime_id, &element.automation_id).map_err(stale_ref_from_uia)? {
+            windows_bridge::uia::PressResult::Invoked => Ok(json!({ "outcome": "worked", "performed": { "grounding": "description", "delivery": "ax" } })),
+            windows_bridge::uia::PressResult::Toggled(state) => Ok(json!({ "outcome": "worked", "performed": { "grounding": "description", "delivery": "ax" }, "evidence": { "toggleState": state } })),
+            windows_bridge::uia::PressResult::Selected(selected) => Ok(json!({ "outcome": if selected { "worked" } else { "didnt" }, "performed": { "grounding": "description", "delivery": "ax" }, "evidence": { "selected": selected } })),
+            windows_bridge::uia::PressResult::NoPattern => coordinate_fallback(args, parsed, &element),
+        },
+        "setText" => {
+            let text = parsed.params.get("text").and_then(Value::as_str).unwrap_or("");
+            match windows_bridge::uia::set_text(element.hwnd, &element.runtime_id, &element.automation_id, text).map_err(stale_ref_from_uia)? {
+                windows_bridge::uia::SetTextResult::Set { value } => Ok(json!({ "outcome": if value == text { "worked" } else { "didnt" }, "performed": { "grounding": "description", "delivery": "ax" }, "evidence": { "value": value } })),
+                windows_bridge::uia::SetTextResult::NoPattern => {
+                    input::policy_allows_raw_input(parsed)?;
+                    let _ = windows_bridge::uia::focus(element.hwnd, &element.runtime_id, &element.automation_id);
+                    coordinate_fallback(args, parsed, &element)
+                }
+            }
+        }
+        "scroll" => {
+            let sx = parsed.params.get("scrollX").and_then(Value::as_f64).unwrap_or(0.0);
+            let sy = parsed.params.get("scrollY").and_then(Value::as_f64).unwrap_or(0.0);
+            match windows_bridge::uia::scroll(element.hwnd, &element.runtime_id, &element.automation_id, sx, sy).map_err(stale_ref_from_uia)? {
+                windows_bridge::uia::ScrollResult::Scrolled => Ok(json!({ "outcome": "unknown", "performed": { "grounding": "description", "delivery": "ax" } })),
+                windows_bridge::uia::ScrollResult::NoPattern => coordinate_fallback(args, parsed, &element),
+            }
+        }
+        _ => coordinate_fallback(args, parsed, &element),
+    }
+}
+
+fn coordinate_fallback(args: &Value, parsed: &input::ParsedActRequest, element: &ElementRecord) -> Result<Value, ProtocolError> {
+    input::policy_allows_raw_input(parsed)?;
+    let snapshot = windows_bridge::uia::snapshot(element.hwnd, &element.runtime_id, &element.automation_id).map_err(stale_ref_from_uia).unwrap_or(windows_bridge::uia::ElementSnapshot { rect: (element.x, element.y, element.w, element.h), runtime_id: element.runtime_id.clone() });
+    let x = snapshot.rect.0 + snapshot.rect.2 / 2.0;
+    let y = snapshot.rect.1 + snapshot.rect.3 / 2.0;
+    let occlusion_unknown = match windows_bridge::uia::occlusion_ok(element.hwnd, &snapshot.runtime_id, &element.automation_id, x, y) {
+        Ok(true) => false,
+        Ok(false) => return Err(ProtocolError::new("Target is occluded", ErrorCode::OccludedTarget)),
+        Err(_) => true,
+    };
+    let mut executable = args.clone();
+    executable["resolvedPoint"] = json!({ "x": x, "y": y });
+    let mut response = input::act(&executable)?;
+    if occlusion_unknown {
+        response["outcome"] = json!("unknown");
+        response["evidence"]["preflight"] = json!("unknown");
+    }
+    Ok(response)
+}
+
+fn stale_ref_from_uia(message: String) -> ProtocolError {
+    if message.contains("stale") || message.contains("Element reference") {
+        ProtocolError::new("Element reference is stale", ErrorCode::StaleRef)
+    } else {
+        ProtocolError::new(message, ErrorCode::InternalError)
+    }
 }
 
 fn screen_point(record: &LookRecord, x: f64, y: f64) -> Value {
@@ -335,6 +396,38 @@ fn snapshot_roots() -> Result<HashMap<String, Value>, ProtocolError> {
     let mut store = RefStore::new();
     let value = window::list_windows(&mut store, None)?;
     Ok(roots_array(&value).into_iter().map(|root| (root_identity(&root), root)).collect())
+}
+
+fn root_signature(roots: &HashMap<String, Value>) -> Vec<String> {
+    let mut keys = roots.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+fn await_delta_snapshot(before: &HashMap<String, Value>) -> Result<(HashMap<String, Value>, &'static str), ProtocolError> {
+    let before_sig = root_signature(before);
+    let deadline = Instant::now() + Duration::from_millis(300);
+    let mut signaled = false;
+    let mut after = snapshot_roots()?;
+    while Instant::now() < deadline {
+        after = snapshot_roots()?;
+        if root_signature(&after) != before_sig {
+            signaled = true;
+            break;
+        }
+        sleep(Duration::from_millis(30));
+    }
+    if signaled {
+        for _ in 0..3 {
+            let delta = root_delta(before, &after);
+            if !delta.is_empty() { return Ok((after, "win-poll")); }
+            sleep(Duration::from_millis(60));
+            after = snapshot_roots()?;
+        }
+        Ok((after, "win-poll"))
+    } else {
+        Ok((after, "snapshot"))
+    }
 }
 
 fn root_delta(before: &HashMap<String, Value>, after: &HashMap<String, Value>) -> Vec<Value> {
@@ -363,8 +456,11 @@ fn handle_read_text(args: &Value) -> Result<Value, ProtocolError> {
     let element_ref = args.get("elementRef").and_then(Value::as_str).ok_or_else(|| invalid("uiaReadText requires elementRef"))?;
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(4096) as usize;
-    let state = helper_state().lock().map_err(|_| internal("helper state lock poisoned"))?;
-    let text = state.looks.values().find_map(|look| look.elements.get(element_ref).map(|element| element.text.clone())).unwrap_or_default();
+    let element = {
+        let state = helper_state().lock().map_err(|_| internal("helper state lock poisoned"))?;
+        state.looks.values().find_map(|look| look.elements.get(element_ref).cloned()).ok_or_else(|| ProtocolError::new("Element reference is stale", ErrorCode::StaleRef))?
+    };
+    let text = windows_bridge::uia::read_live_text(element.hwnd, &element.runtime_id, &element.automation_id).map_err(stale_ref_from_uia)?;
     let end = (offset + limit).min(text.len());
     Ok(json!({ "text": text.get(offset..end).unwrap_or(""), "offset": offset, "limit": limit, "totalChars": text.len(), "hasMore": end < text.len() }))
 }
@@ -375,19 +471,42 @@ fn handle_wait_for(args: &Value) -> Result<Value, ProtocolError> {
     let role = args.get("role").and_then(Value::as_str).map(str::to_owned);
     let gone = args.get("gone").and_then(Value::as_bool).unwrap_or(false);
     if text.is_none() && role.is_none() { return Err(invalid("uiaWaitFor requires text or role")); }
+    let hwnd = wait_target_hwnd(args)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut node_count = 0;
     while Instant::now() < deadline {
-        let state = helper_state().lock().map_err(|_| internal("helper state lock poisoned"))?;
-        node_count = state.looks.values().map(|look| look.elements.len()).sum::<usize>();
-        let found = state.looks.values().flat_map(|look| look.elements.values()).any(|element| {
-            text.as_ref().map(|needle| element.text.to_lowercase().contains(needle)).unwrap_or(true) && role.as_ref().map(|r| &element.role == r).unwrap_or(true)
+        let elements = windows_bridge::uia::live_elements(hwnd).map_err(internal)?;
+        node_count = elements.len();
+        let found = elements.iter().any(|element| {
+            let candidate_text = ["value", "label", "name", "title"].iter().filter_map(|key| element.get(*key).and_then(Value::as_str)).collect::<Vec<_>>().join(" ").to_lowercase();
+            let candidate_role = element.get("role").and_then(Value::as_str).unwrap_or("");
+            text.as_ref().map(|needle| candidate_text.contains(needle)).unwrap_or(true) && role.as_ref().map(|r| candidate_role == r).unwrap_or(true)
         });
-        drop(state);
         if found != gone { return Ok(json!({ "found": found, "gone": if gone { Some(true) } else { None::<bool> }, "nodeCount": node_count })); }
-        sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(150));
     }
     Ok(json!({ "found": false, "timedOut": true, "nodeCount": node_count }))
+}
+
+fn wait_target_hwnd(args: &Value) -> Result<isize, ProtocolError> {
+    if let Some(window_id) = args.get("windowId").and_then(Value::as_i64) {
+        return Ok(window_id as isize);
+    }
+    if let Some(root_ref) = args.get("rootRef").or_else(|| args.get("windowRef")).and_then(Value::as_str) {
+        let state = helper_state().lock().map_err(|_| internal("helper state lock poisoned"))?;
+        for root in state.roots.values() {
+            if root.get("rootRef").and_then(Value::as_str) == Some(root_ref) || root.get("windowRef").and_then(Value::as_str) == Some(root_ref) {
+                return Ok(root.get("windowId").and_then(Value::as_i64).unwrap_or(0) as isize);
+            }
+        }
+    }
+    if let Some(pid) = args.get("pid").and_then(Value::as_u64) {
+        let roots = snapshot_roots()?;
+        if let Some(root) = roots.values().find(|root| root.get("pid").and_then(Value::as_u64) == Some(pid)) {
+            return Ok(root.get("windowId").and_then(Value::as_i64).unwrap_or(0) as isize);
+        }
+    }
+    Err(ProtocolError::new("waitFor target root was not found", ErrorCode::TargetNotFound))
 }
 
 fn handle_open_browser_location(args: &Value) -> Result<Value, ProtocolError> {
@@ -422,4 +541,32 @@ fn emit_response(response: &Response) {
     let json = serde_json::to_string(response).expect("Response serialization should not fail");
     let mut out = io::stdout().lock();
     let _ = writeln!(out, "{json}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root(id: i64, title: &str, focused: bool) -> Value {
+        json!({ "windowId": id, "kind": "window", "title": title, "pid": 1, "rootRef": format!("@w{id}"), "isFocused": focused })
+    }
+
+    #[test]
+    fn root_delta_uses_act_time_baseline_for_two_acts_one_look() {
+        let look_time = HashMap::from([("window:1".to_owned(), root(1, "A", true))]);
+        let after_first = HashMap::from([
+            ("window:1".to_owned(), root(1, "A", false)),
+            ("window:2".to_owned(), root(2, "B", true)),
+        ]);
+        let after_second = HashMap::from([
+            ("window:1".to_owned(), root(1, "A", false)),
+            ("window:2".to_owned(), root(2, "B", false)),
+            ("window:3".to_owned(), root(3, "C", true)),
+        ]);
+        let first = root_delta(&look_time, &after_first);
+        assert!(first.iter().any(|item| item["title"] == "B" && item["change"] == "appeared"));
+        let second = root_delta(&after_first, &after_second);
+        assert!(!second.iter().any(|item| item["title"] == "B" && item["change"] == "appeared"), "second act must not re-report first act delta");
+        assert!(second.iter().any(|item| item["title"] == "C" && item["change"] == "appeared"));
+    }
 }

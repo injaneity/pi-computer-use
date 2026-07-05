@@ -169,8 +169,10 @@ mod native {
     use super::control_type_to_role;
     use crate::refs::{NativeHandle, RefStore};
 
+    use windows::core::BSTR;
     use windows::Win32::Foundation::*;
     use windows::Win32::System::Com::*;
+    use windows::Win32::System::Ole::{SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound};
     use windows::Win32::UI::Accessibility::*;
 
     const MAX_ELEMENTS: usize = 200;
@@ -222,6 +224,20 @@ mod native {
         Ok(elements)
     }
 
+    fn runtime_id(element: &IUIAutomationElement) -> Option<Vec<i32>> {
+        let array = unsafe { element.GetRuntimeId().ok()? };
+        if array.is_null() { return None; }
+        let lower = unsafe { SafeArrayGetLBound(array, 1).ok()? };
+        let upper = unsafe { SafeArrayGetUBound(array, 1).ok()? };
+        let mut values = Vec::with_capacity((upper - lower + 1).max(0) as usize);
+        for index in lower..=upper {
+            let mut value = 0i32;
+            unsafe { SafeArrayGetElement(array, &index, &mut value as *mut i32 as *mut core::ffi::c_void).ok()?; }
+            values.push(value);
+        }
+        Some(values)
+    }
+
     /// Convert a single UIA element to its JSON representation.
     ///
     /// Returns `None` for elements that are offscreen, zero-sized, or
@@ -237,6 +253,7 @@ mod native {
                 .unwrap_or_default()
                 .to_string()
         };
+        let runtime_id = runtime_id(element).unwrap_or_default();
         let class_name = unsafe { element.CurrentClassName().unwrap_or_default().to_string() };
 
         // Bounding rectangle.
@@ -297,6 +314,7 @@ mod native {
             "role": role,
             "label": name,
             "automationId": automation_id,
+            "runtimeId": runtime_id,
             "className": class_name,
             "value": value,
             "bounds": {
@@ -314,6 +332,145 @@ mod native {
                 "canScroll": can_scroll,
             },
         }))
+    }
+
+    pub fn read_live_text(hwnd: isize, runtime_id_target: &[i32], automation_id: &str) -> Result<String, String> {
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        Ok(read_text_from_element(&element))
+    }
+
+    pub fn live_elements(hwnd: isize) -> Result<Vec<Value>, String> {
+        let mut store = RefStore::new();
+        uia_extract(&mut store, hwnd)
+    }
+
+    pub struct ElementSnapshot {
+        pub rect: (f64, f64, f64, f64),
+        pub runtime_id: Vec<i32>,
+    }
+
+    pub enum PressResult {
+        Invoked,
+        Toggled(bool),
+        Selected(bool),
+        NoPattern,
+    }
+
+    pub enum SetTextResult {
+        Set { value: String },
+        NoPattern,
+    }
+
+    pub enum ScrollResult {
+        Scrolled,
+        NoPattern,
+    }
+
+    pub fn snapshot(hwnd: isize, runtime_id_target: &[i32], automation_id: &str) -> Result<ElementSnapshot, String> {
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let rect = unsafe { element.CurrentBoundingRectangle().map_err(|e| format!("CurrentBoundingRectangle: {e}"))? };
+        Ok(ElementSnapshot { rect: (f64::from(rect.left), f64::from(rect.top), f64::from(rect.right - rect.left), f64::from(rect.bottom - rect.top)), runtime_id: runtime_id(&element).unwrap_or_default() })
+    }
+
+    pub fn press(hwnd: isize, runtime_id_target: &[i32], automation_id: &str) -> Result<PressResult, String> {
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        if let Ok(pattern) = unsafe { element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) } {
+            unsafe { pattern.Invoke().map_err(|e| format!("Invoke: {e}"))?; }
+            return Ok(PressResult::Invoked);
+        }
+        if let Ok(pattern) = unsafe { element.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId) } {
+            unsafe { pattern.Toggle().map_err(|e| format!("Toggle: {e}"))?; }
+            let state = unsafe { pattern.CurrentToggleState().map(|s| s.0 != 0).unwrap_or(false) };
+            return Ok(PressResult::Toggled(state));
+        }
+        if let Ok(pattern) = unsafe { element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId) } {
+            unsafe { pattern.Select().map_err(|e| format!("Select: {e}"))?; }
+            let selected = unsafe { pattern.CurrentIsSelected().map(|b| b.as_bool()).unwrap_or(false) };
+            return Ok(PressResult::Selected(selected));
+        }
+        Ok(PressResult::NoPattern)
+    }
+
+    pub fn set_text(hwnd: isize, runtime_id_target: &[i32], automation_id: &str, text: &str) -> Result<SetTextResult, String> {
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        if let Ok(pattern) = unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) } {
+            let value = BSTR::from(text);
+            unsafe { pattern.SetValue(&value).map_err(|e| format!("SetValue: {e}"))?; }
+            let value = unsafe { pattern.CurrentValue().map(|s| s.to_string()).unwrap_or_default() };
+            return Ok(SetTextResult::Set { value });
+        }
+        Ok(SetTextResult::NoPattern)
+    }
+
+    pub fn focus(hwnd: isize, runtime_id_target: &[i32], automation_id: &str) -> Result<(), String> {
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        unsafe { element.SetFocus().map_err(|e| format!("SetFocus: {e}")) }
+    }
+
+    pub fn scroll(hwnd: isize, runtime_id_target: &[i32], automation_id: &str, x: f64, y: f64) -> Result<ScrollResult, String> {
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        if let Ok(pattern) = unsafe { element.GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId) } {
+            let horizontal = if x > 0.0 { ScrollAmount_SmallIncrement } else if x < 0.0 { ScrollAmount_SmallDecrement } else { ScrollAmount_NoAmount };
+            let vertical = if y > 0.0 { ScrollAmount_SmallIncrement } else if y < 0.0 { ScrollAmount_SmallDecrement } else { ScrollAmount_NoAmount };
+            unsafe { pattern.Scroll(horizontal, vertical).map_err(|e| format!("Scroll: {e}"))?; }
+            return Ok(ScrollResult::Scrolled);
+        }
+        Ok(ScrollResult::NoPattern)
+    }
+
+    pub fn occlusion_ok(hwnd: isize, runtime_id_target: &[i32], automation_id: &str, x: f64, y: f64) -> Result<bool, String> {
+        let (_com, uia, target) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let hit = unsafe { uia.ElementFromPoint(POINT { x: x.round() as i32, y: y.round() as i32 }).map_err(|e| format!("ElementFromPoint: {e}"))? };
+        let target_id = runtime_id(&target).unwrap_or_default();
+        let hit_id = runtime_id(&hit).unwrap_or_default();
+        Ok(!target_id.is_empty() && target_id == hit_id)
+    }
+
+    fn resolve(hwnd: isize, runtime_id_target: &[i32], automation_id: &str) -> Result<(ComGuard, IUIAutomation, IUIAutomationElement), String> {
+        let com = ComGuard::new()?;
+        let uia: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).map_err(|e| format!("CoCreateInstance IUIAutomation: {e}"))? };
+        let root = unsafe { uia.ElementFromHandle(HWND(hwnd as *mut _)).map_err(|e| format!("ElementFromHandle: {e}"))? };
+        if runtime_id(&root).as_deref() == Some(runtime_id_target) {
+            return Ok((com, uia, root));
+        }
+        let condition = unsafe { uia.CreateTrueCondition().map_err(|e| format!("CreateTrueCondition: {e}"))? };
+        let found = unsafe { root.FindAll(TreeScope_Subtree, &condition).map_err(|e| format!("FindAll: {e}"))? };
+        let count = unsafe { found.Length().map_err(|e| format!("ElementArray.Length: {e}"))? };
+        let mut automation_fallback = None;
+        for i in 0..count {
+            let element = unsafe { found.GetElement(i).map_err(|e| format!("GetElement({i}): {e}"))? };
+            if runtime_id(&element).as_deref() == Some(runtime_id_target) {
+                return Ok((com, uia, element));
+            }
+            if !automation_id.is_empty() {
+                let candidate_id = unsafe { element.CurrentAutomationId().unwrap_or_default().to_string() };
+                if candidate_id == automation_id && automation_fallback.is_none() {
+                    automation_fallback = Some(element);
+                }
+            }
+        }
+        if let Some(element) = automation_fallback {
+            return Ok((com, uia, element));
+        }
+        Err("Element reference is stale".to_owned())
+    }
+
+    fn read_text_from_element(element: &IUIAutomationElement) -> String {
+        if let Ok(pattern) = unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) } {
+            if let Ok(range) = unsafe { pattern.DocumentRange() } {
+                if let Ok(value) = unsafe { range.GetText(-1) } {
+                    let text = value.to_string();
+                    if !text.is_empty() { return text; }
+                }
+            }
+        }
+        if let Ok(pattern) = unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) } {
+            if let Ok(value) = unsafe { pattern.CurrentValue() } {
+                let text = value.to_string();
+                if !text.is_empty() { return text; }
+            }
+        }
+        unsafe { element.CurrentName().unwrap_or_default().to_string() }
     }
 
     // -----------------------------------------------------------------------
@@ -348,7 +505,33 @@ mod native {
 }
 
 #[cfg(windows)]
-use native::uia_extract;
+pub use native::{focus, live_elements, occlusion_ok, press, read_live_text, scroll, set_text, snapshot, ElementSnapshot, PressResult, ScrollResult, SetTextResult, uia_extract};
+
+#[cfg(not(windows))]
+#[derive(Clone, Debug)]
+pub struct ElementSnapshot { pub rect: (f64, f64, f64, f64), pub runtime_id: Vec<i32> }
+#[cfg(not(windows))]
+pub enum PressResult { Invoked, Toggled(bool), Selected(bool), NoPattern }
+#[cfg(not(windows))]
+pub enum SetTextResult { Set { value: String }, NoPattern }
+#[cfg(not(windows))]
+pub enum ScrollResult { Scrolled, NoPattern }
+#[cfg(not(windows))]
+pub fn read_live_text(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str) -> Result<String, String> { Err("UIA is only supported on Windows".to_owned()) }
+#[cfg(not(windows))]
+pub fn live_elements(_hwnd: isize) -> Result<Vec<Value>, String> { Ok(Vec::new()) }
+#[cfg(not(windows))]
+pub fn snapshot(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str) -> Result<ElementSnapshot, String> { Err("UIA is only supported on Windows".to_owned()) }
+#[cfg(not(windows))]
+pub fn press(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str) -> Result<PressResult, String> { Err("UIA is only supported on Windows".to_owned()) }
+#[cfg(not(windows))]
+pub fn set_text(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str, _text: &str) -> Result<SetTextResult, String> { Err("UIA is only supported on Windows".to_owned()) }
+#[cfg(not(windows))]
+pub fn focus(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str) -> Result<(), String> { Err("UIA is only supported on Windows".to_owned()) }
+#[cfg(not(windows))]
+pub fn scroll(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str, _x: f64, _y: f64) -> Result<ScrollResult, String> { Err("UIA is only supported on Windows".to_owned()) }
+#[cfg(not(windows))]
+pub fn occlusion_ok(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str, _x: f64, _y: f64) -> Result<bool, String> { Err("UIA is only supported on Windows".to_owned()) }
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -436,6 +619,7 @@ mod unit_tests {
             "role": "edit",
             "label": "Test Label",
             "automationId": "1001",
+            "runtimeId": [42, 7, 9],
             "className": "Edit",
             "bounds": {
                 "x": 10,
@@ -454,6 +638,8 @@ mod unit_tests {
         assert_eq!(element["role"].as_str(), Some("edit"));
         assert_eq!(element["label"].as_str(), Some("Test Label"));
         assert_eq!(element["automationId"].as_str(), Some("1001"));
+        let runtime_id = element["runtimeId"].as_array().unwrap().iter().map(|value| value.as_i64().unwrap() as i32).collect::<Vec<_>>();
+        assert_eq!(runtime_id, vec![42, 7, 9]);
         assert_eq!(element["className"].as_str(), Some("Edit"));
         assert!(element["bounds"].is_object());
         assert_eq!(element["bounds"]["x"], 10);

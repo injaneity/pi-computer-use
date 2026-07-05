@@ -146,12 +146,12 @@ mod native {
             "press" | "click" => {
                 let (x, y) = point.ok_or_else(|| invalid("click requires resolvedPoint"))?;
                 click(x, y, request.params.get("button").and_then(Value::as_str).unwrap_or("left"))?;
-                ok("worked", grounding, "hid")
+                ok("unknown", grounding, "hid")
             }
             "moveMouse" => {
                 let (x, y) = point.ok_or_else(|| invalid("moveMouse requires resolvedPoint"))?;
                 unsafe { SetCursorPos(x, y) }.map_err(input_failed)?;
-                ok("worked", "coordinates", "hid")
+                ok("unknown", "coordinates", "hid")
             }
             "drag" => {
                 let path = args
@@ -329,4 +329,20 @@ mod tests {
         assert_eq!(out["performed"]["deltaSource"], "snapshot");
         assert_eq!(out["rootDelta"].as_array().unwrap().len(), 1);
     }
+
+    #[test]
+    fn raw_coordinate_actions_do_not_claim_worked() {
+        let actions = ["click", "moveMouse", "scroll", "typeText", "keypress"];
+        for action in actions {
+            let params = match action {
+                "typeText" => json!({"text":"abc"}),
+                "keypress" => json!({"keys":["enter"]}),
+                "scroll" => json!({"scrollY":1,"scrollX":0}),
+                _ => json!({}),
+            };
+            let result = act(&json!({"lookId":"look_1","action":action,"policy":"default","target":{"x":1,"y":1},"params":params,"resolvedPoint":{"x":1,"y":1}})).unwrap();
+            assert_ne!(result["outcome"], "worked", "{action} must not report worked without verification");
+        }
+    }
 }
+
