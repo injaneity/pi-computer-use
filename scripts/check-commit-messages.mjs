@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 
-const pattern = /^(?:(feat|chore|refactor|fix|ci)\([^)\s:]+\)|ci):\s?\S.+$/;
+const pattern = /^(?:(feat|chore|refactor|fix|perf|docs|ci)\([^)\s:]+\)|ci):\s?\S.+$/;
 const ignoredPrefixes = ["Merge ", "Revert "];
 
 function git(args) {
@@ -31,7 +31,7 @@ const invalid = subjects.filter((subject) => !ignoredPrefixes.some((prefix) => s
 if (invalid.length > 0) {
 	console.error("Invalid commit message(s):");
 	for (const subject of invalid) console.error(`- ${subject}`);
-	console.error("\nExpected format: feat|chore|refactor|fix|ci(<scope>): <summary> (or ci: <summary>)");
+	console.error("\nExpected format: feat|chore|refactor|fix|perf|docs|ci(<scope>): <summary> (or ci: <summary>)");
 	console.error("Example: fix(browser): stabilize window targeting");
 	process.exit(1);
 }
