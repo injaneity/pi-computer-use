@@ -41,8 +41,6 @@ function parseRoots(result: unknown): PlatformRoot[] {
 	const array = Array.isArray(result) ? result : (result as any)?.roots;
 	if (!Array.isArray(array)) return [];
 	return array.map((raw: any, index): PlatformRoot => {
-		const pairing = raw?.pairing;
-		const confidence = pairing?.confidence === "exact" || pairing?.confidence === "high" || pairing?.confidence === "low" ? pairing.confidence : "exact";
 		return {
 			kind: parseRootKind(raw?.kind),
 			rootRef: toOptionalString(raw?.rootRef ?? raw?.windowRef ?? raw?.ref),
@@ -55,7 +53,6 @@ function parseRoots(result: unknown): PlatformRoot[] {
 			role: toOptionalString(raw?.role),
 			subrole: toOptionalString(raw?.subrole),
 			zOrder: Math.trunc(toFiniteNumber(raw?.zOrder, index)),
-			pairing: { confidence, score: toFiniteNumber(pairing?.score, 100) },
 			framePoints: parseFramePoints(raw),
 			scaleFactor: Math.max(1, toFiniteNumber(raw?.scaleFactor, 1)),
 			isOnscreen: raw?.isOnscreen === undefined ? true : toBoolean(raw?.isOnscreen),
@@ -63,7 +60,6 @@ function parseRoots(result: unknown): PlatformRoot[] {
 			isMinimized: toBoolean(raw?.isMinimized),
 			isMain: toBoolean(raw?.isMain ?? raw?.isFocused),
 			isModal: toBoolean(raw?.isModal),
-			sheetCount: 0,
 			metadata: raw?.metadata,
 		};
 	});

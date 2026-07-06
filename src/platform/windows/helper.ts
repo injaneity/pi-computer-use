@@ -11,7 +11,7 @@ const SETUP_HELPER_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "setup-helper.mjs
 const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const COMMAND_TIMEOUT_MS = 15_000;
 
-export const WINDOWS_HELPER_PROTOCOL_VERSION = 2;
+export const WINDOWS_HELPER_PROTOCOL_VERSION = 3;
 export const WINDOWS_HELPER_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
 
 interface Pending<T> {

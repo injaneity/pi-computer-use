@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::error::ProtocolError;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// A request envelope received from the TypeScript host.
 #[derive(Debug, Clone, Deserialize)]
