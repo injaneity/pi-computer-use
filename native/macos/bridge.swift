@@ -356,7 +356,7 @@ final class InputSuppressionGuard {
 }
 
 final class Bridge {
-	private let protocolVersion = 4
+	private let protocolVersion = 5
 	private let refStore = AXRefStore()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let browserBundleIds: Set<String> = [
@@ -1044,6 +1044,17 @@ final class Bridge {
 		return "window"
 	}
 
+	private func isDialogLikeRoot(role: String, subrole: String) -> Bool {
+		let text = "\(role) \(subrole)"
+		return text.range(of: "dialog", options: [.caseInsensitive]) != nil
+			|| text.range(of: "modal", options: [.caseInsensitive]) != nil
+			|| text.range(of: "sheet", options: [.caseInsensitive]) != nil
+	}
+
+	private func rootMetadata(pairing: WindowPairing, sheetCount: Int) -> [String: Any] {
+		["pairing": ["confidence": pairing.confidence, "score": pairing.score], "sheetCount": sheetCount]
+	}
+
 	private func listRoots(pid: Int32?) throws -> [String: Any] {
 		let apps = pid.map { [["pid": Int($0)]] } ?? listApps()
 		var roots: [[String: Any]] = []
@@ -1072,14 +1083,13 @@ final class Bridge {
 					"role": "AXMenu",
 					"subrole": "",
 					"isModal": false,
-					"sheetCount": 0,
 					"framePoints": ["x": candidate.bounds.origin.x, "y": candidate.bounds.origin.y, "w": candidate.bounds.width, "h": candidate.bounds.height],
 					"scaleFactor": displayScaleFactor(for: candidate.bounds),
 					"isMinimized": false,
 					"isOnscreen": candidate.isOnscreen,
 					"isMain": false,
 					"isFocused": true,
-					"pairing": ["confidence": menuElement == nil ? "low" : "high", "score": menuElement == nil ? 0 : 100],
+					"metadata": ["pairing": ["confidence": menuElement == nil ? "low" : "high", "score": menuElement == nil ? 0 : 100], "sheetCount": 0],
 					"pid": rawPid,
 					"appName": appName,
 				]
@@ -1116,8 +1126,8 @@ final class Bridge {
 			let isMinimized = boolAttribute(window, attribute: kAXMinimizedAttribute as CFString) ?? false
 			let isMain = boolAttribute(window, attribute: kAXMainAttribute as CFString) ?? false
 			let isFocused = boolAttribute(window, attribute: kAXFocusedAttribute as CFString) ?? false
-			let isModal = boolAttribute(window, attribute: "AXModal" as CFString) ?? false
 			let sheetCount = sheetElements(of: window).count
+			let isModal = (boolAttribute(window, attribute: "AXModal" as CFString) ?? false) || sheetCount > 0 || isDialogLikeRoot(role: axRole, subrole: axSubrole)
 			let scale = displayScaleFactor(for: effectiveFrame)
 
 			var item: [String: Any] = [
@@ -1129,7 +1139,6 @@ final class Bridge {
 				"role": axRole,
 				"subrole": axSubrole,
 				"isModal": isModal,
-				"sheetCount": sheetCount,
 				"framePoints": [
 					"x": effectiveFrame.origin.x,
 					"y": effectiveFrame.origin.y,
@@ -1141,7 +1150,7 @@ final class Bridge {
 				"isOnscreen": candidate?.isOnscreen ?? !isMinimized,
 				"isMain": isMain,
 				"isFocused": isFocused,
-				"pairing": ["confidence": pairing.confidence, "score": pairing.score],
+				"metadata": rootMetadata(pairing: pairing, sheetCount: sheetCount),
 			]
 			if let candidate {
 				item["windowId"] = Int(candidate.windowId)
@@ -1167,7 +1176,7 @@ final class Bridge {
 					"isOnscreen": sheetCandidate?.isOnscreen ?? candidate?.isOnscreen ?? !isMinimized,
 					"isMain": false,
 					"isFocused": isFocused,
-					"pairing": ["confidence": sheetCandidate == nil ? pairing.confidence : "high", "score": sheetCandidate == nil ? pairing.score : 100],
+					"metadata": ["pairing": ["confidence": sheetCandidate == nil ? pairing.confidence : "high", "score": sheetCandidate == nil ? pairing.score : 100], "sheetCount": 0],
 				]
 				if let sheetCandidate { sheetItem["windowId"] = Int(sheetCandidate.windowId) }
 				output.append(sheetItem)
@@ -1210,7 +1219,7 @@ final class Bridge {
 			return [
 				"lookId": lookId,
 				"capturedAt": captureStart.timeIntervalSince1970,
-				"window": ["windowId": Int(windowId ?? 0), "rootRef": windowRef, "kind": "menu", "framePoints": ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height], "scaleFactor": displayScaleFactor(for: frame), "pairing": ["confidence": "low", "score": 0], "isModal": false, "sheetCount": 0, "role": "AXMenu", "subrole": ""],
+				"window": ["windowId": Int(windowId ?? 0), "rootRef": windowRef, "kind": "menu", "framePoints": ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height], "scaleFactor": displayScaleFactor(for: frame), "isModal": false, "metadata": ["pairing": ["confidence": "low", "score": 0], "sheetCount": 0], "role": "AXMenu", "subrole": ""],
 				"outline": outline.payload(),
 				"timings": ["captureMs": 0, "describeMs": 0, "readTextMs": 0],
 			]
@@ -1267,6 +1276,7 @@ final class Bridge {
 		let pairing = pairingForWindow(window, pid: pid)
 		let role = stringAttribute(window, attribute: kAXRoleAttribute as CFString) ?? ""
 		let subrole = stringAttribute(window, attribute: kAXSubroleAttribute as CFString) ?? ""
+		let sheetCount = sheetElements(of: window).count
 		var response: [String: Any] = [
 			"lookId": lookId,
 			"capturedAt": captureStart.timeIntervalSince1970,
@@ -1276,9 +1286,8 @@ final class Bridge {
 				"kind": rootKind(role: role, subrole: subrole),
 				"framePoints": ["x": (capture?.frame ?? rootFrame).origin.x, "y": (capture?.frame ?? rootFrame).origin.y, "w": (capture?.frame ?? rootFrame).width, "h": (capture?.frame ?? rootFrame).height],
 				"scaleFactor": scale,
-				"pairing": ["confidence": pairing.confidence, "score": pairing.score],
-				"isModal": boolAttribute(window, attribute: "AXModal" as CFString) ?? false,
-				"sheetCount": sheetElements(of: window).count,
+				"isModal": (boolAttribute(window, attribute: "AXModal" as CFString) ?? false) || sheetCount > 0 || isDialogLikeRoot(role: role, subrole: subrole),
+				"metadata": rootMetadata(pairing: pairing, sheetCount: sheetCount),
 				"role": role,
 				"subrole": subrole,
 			],
@@ -1864,6 +1873,8 @@ final class Bridge {
 
 	private func rootDeltaItem(change: String, root: [String: Any], pid: Int32) -> [String: Any] {
 		var item: [String: Any] = ["change": change, "kind": root["kind"] as? String ?? "window", "title": root["title"] as? String ?? "", "pid": root["pid"] as? Int ?? Int(pid)]
+		if let isModal = root["isModal"] as? Bool { item["isModal"] = isModal }
+		if let metadata = root["metadata"] as? [String: Any] { item["metadata"] = metadata }
 		if let ref = root["rootRef"] as? String ?? root["windowRef"] as? String { item["ref"] = ref }
 		return item
 	}

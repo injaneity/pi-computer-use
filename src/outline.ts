@@ -64,9 +64,8 @@ export interface LookWindow {
 	kind?: string;
 	framePoints: OutlineRect;
 	scaleFactor: number;
-	pairing: { confidence: "exact" | "high" | "low"; score: number };
 	isModal: boolean;
-	sheetCount: number;
+	metadata?: Record<string, unknown>;
 	role: string;
 	subrole: string;
 }
@@ -194,8 +193,7 @@ export function parseLookResponse(raw: unknown): LookResponse {
 	const record = isRecord(raw) ? raw : {};
 	const image = isRecord(record.image) ? record.image : undefined;
 	const window = isRecord(record.window) ? record.window : {};
-	const pairing = isRecord(window.pairing) ? window.pairing : {};
-	const confidence = pairing.confidence === "exact" || pairing.confidence === "high" || pairing.confidence === "low" ? pairing.confidence : "low";
+	const metadata = isRecord(window.metadata) ? window.metadata : undefined;
 	const outline = buildOutline(toString(record.lookId), parseNode(record.outline));
 	const look: LookResponse = {
 		lookId: toString(record.lookId),
@@ -206,9 +204,8 @@ export function parseLookResponse(raw: unknown): LookResponse {
 			kind: toString(window.kind) || undefined,
 			framePoints: parseRect(window.framePoints),
 			scaleFactor: Math.max(1, toNumber(window.scaleFactor, 1)),
-			pairing: { confidence, score: toNumber(pairing.score, Number.NEGATIVE_INFINITY) },
 			isModal: toBoolean(window.isModal),
-			sheetCount: Math.max(0, Math.trunc(toNumber(window.sheetCount))),
+			metadata,
 			role: toString(window.role),
 			subrole: toString(window.subrole),
 		},

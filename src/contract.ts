@@ -16,6 +16,7 @@ export interface FindParams {
 	app?: string;
 	bundleId?: string;
 	pid?: number;
+	/** Filters on the platform's best-effort presentation hint; only window vs transient is guaranteed. */
 	kind?: "window" | "menu" | "sheet" | "popover" | "dialog";
 }
 

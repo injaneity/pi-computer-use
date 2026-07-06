@@ -139,10 +139,10 @@ export interface ListWindowsDetails {
 		isMain: boolean;
 		isFocused: boolean;
 		isModal: boolean;
-		sheetCount: number;
+		sheetCount?: number;
 		role?: string;
 		subrole?: string;
-		pairing: { confidence: "exact" | "high" | "low"; score: number };
+		pairing?: { confidence: "exact" | "high" | "low"; score: number };
 		zOrder: number;
 		browserUseAllowed: boolean;
 		score: number;
@@ -629,12 +629,25 @@ function appMatchesWindowQuery(app: HelperApp, query: FindParams): boolean {
 	return true;
 }
 
+function platformRootSheetCount(window: Pick<HelperWindow, "metadata">): number | undefined {
+	const value = window.metadata?.sheetCount;
+	return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : undefined;
+}
+
+function platformRootPairing(window: Pick<HelperWindow, "metadata">): { confidence: "exact" | "high" | "low"; score: number } | undefined {
+	const value = window.metadata?.pairing;
+	if (!value || typeof value !== "object") return undefined;
+	const pairing = value as { confidence?: unknown; score?: unknown };
+	if (pairing.confidence !== "exact" && pairing.confidence !== "high" && pairing.confidence !== "low") return undefined;
+	return { confidence: pairing.confidence, score: typeof pairing.score === "number" && Number.isFinite(pairing.score) ? pairing.score : Number.NEGATIVE_INFINITY };
+}
+
 function formatWindowLine(window: ListWindowsDetails["windows"][number]): string {
 	const flags = [
 		window.isFocused ? "focused" : undefined,
 		window.isMain ? "main" : undefined,
 		window.isModal ? "modal" : undefined,
-		window.sheetCount > 0 ? `sheets=${window.sheetCount}` : undefined,
+		window.sheetCount ? `sheets=${window.sheetCount}` : undefined,
 		window.isOnscreen ? "onscreen" : undefined,
 		window.isMinimized ? "minimized" : undefined,
 		window.browserUseAllowed ? undefined : "browser_use_disabled",
@@ -643,7 +656,8 @@ function formatWindowLine(window: ListWindowsDetails["windows"][number]): string
 		.join(", ");
 	const frame = `${Math.round(window.framePoints.x)},${Math.round(window.framePoints.y)} ${Math.round(window.framePoints.w)}x${Math.round(window.framePoints.h)}`;
 	const id = window.windowId ? `windowId ${window.windowId}` : window.nativeWindowRef ? `nativeRootRef ${window.nativeWindowRef}` : "unstable root id";
-	return `- ${window.windowRef} ${window.kind} ${window.app} pid ${window.pid} — ${window.windowTitle || "(untitled)"} (z ${window.zOrder}, ${id}, frame ${frame}, pairing ${window.pairing.confidence}/${Math.round(window.pairing.score)}${flags ? `, ${flags}` : ""})`;
+	const pairing = window.pairing ? `, pairing ${window.pairing.confidence}/${Math.round(window.pairing.score)}` : "";
+	return `- ${window.windowRef} ${window.kind} ${window.app} pid ${window.pid} — ${window.windowTitle || "(untitled)"} (z ${window.zOrder}, ${id}, frame ${frame}${pairing}${flags ? `, ${flags}` : ""})`;
 }
 
 async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
@@ -756,14 +770,9 @@ function choosePreferredWindow(windows: HelperWindow[], appName: string): Helper
 	return scored[0];
 }
 
-function isDialogLikeWindow(window: Pick<HelperWindow, "subrole" | "role">): boolean {
-	return /dialog|modal|sheet/i.test(`${window.role ?? ""} ${window.subrole ?? ""}`);
-}
-
 function scoreWindow(window: HelperWindow): number {
 	let score = 0;
-	if (window.isModal || isDialogLikeWindow(window)) score += 180;
-	if (window.sheetCount > 0) score += 160;
+	if (window.isModal) score += 180;
 	if (window.isFocused) score += 100;
 	if (window.isMain) score += 80;
 	if (!window.isMinimized) score += 40;
@@ -973,7 +982,7 @@ async function selectWindowIfProvided(selector: WindowSelector | undefined, sign
 function shouldPreferForegroundModalWindow(current: HelperWindow, candidate: HelperWindow): boolean {
 	if (candidate.windowId === current.windowId && candidate.windowRef === current.windowRef) return false;
 	if (!candidate.isOnscreen || candidate.isMinimized) return false;
-	if (candidate.isModal || candidate.sheetCount > 0 || isDialogLikeWindow(candidate)) return scoreWindow(candidate) >= scoreWindow(current);
+	if (candidate.isModal) return scoreWindow(candidate) >= scoreWindow(current);
 	return false;
 }
 
@@ -1195,8 +1204,8 @@ function noteWindowForTarget(target: ResolvedTarget | CurrentTarget, look?: Look
 	return {
 		windowRef: target.windowRef,
 		title: target.windowTitle,
-		pairing: look?.window.pairing.confidence,
-		pairingScore: look?.window.pairing.score,
+		pairing: look?.window.metadata?.pairing && typeof look.window.metadata.pairing === "object" ? (look.window.metadata.pairing as { confidence?: "exact" | "high" | "low" }).confidence : undefined,
+		pairingScore: look?.window.metadata?.pairing && typeof look.window.metadata.pairing === "object" ? (look.window.metadata.pairing as { score?: number }).score : undefined,
 	};
 }
 
@@ -1462,9 +1471,12 @@ function rootDeltaLines(execution: ExecutionTrace): string[] {
 	return (execution.rootDelta ?? []).map((delta) => {
 		const quotedTitle = delta.title ? ` ${JSON.stringify(delta.title)}` : "";
 		const ref = delta.ref ? ` (${delta.ref.startsWith("@") ? delta.ref : `@${delta.ref}`})` : "";
-		if (delta.change === "appeared") return `New root: ${delta.kind}${quotedTitle}${ref}`;
-		if (delta.change === "closed") return `Root closed: ${delta.kind}${quotedTitle}${ref}`;
-		return `Root focused: ${delta.kind}${quotedTitle}${ref}`;
+		const sheetCount = typeof delta.metadata?.sheetCount === "number" && Number.isFinite(delta.metadata.sheetCount) ? Math.max(0, Math.trunc(delta.metadata.sheetCount)) : undefined;
+		const flags = [delta.isModal ? "modal" : undefined, sheetCount ? `sheets=${sheetCount}` : undefined].filter(Boolean).join(", ");
+		const suffix = `${quotedTitle}${flags ? ` (${flags})` : ""}${ref}`;
+		if (delta.change === "appeared") return `New root: ${delta.kind}${suffix}`;
+		if (delta.change === "closed") return `Root closed: ${delta.kind}${suffix}`;
+		return `Root focused: ${delta.kind}${suffix}`;
 	});
 }
 
@@ -1557,10 +1569,10 @@ async function collectWindowDetails(apps: HelperApp[], config: ReturnType<typeof
 				isMain: window.isMain,
 				isFocused: window.isFocused,
 				isModal: window.isModal,
-				sheetCount: window.sheetCount,
+				sheetCount: platformRootSheetCount(window),
 				role: window.role,
 				subrole: window.subrole,
-				pairing: window.pairing,
+				pairing: platformRootPairing(window),
 				zOrder: window.zOrder,
 				browserUseAllowed: config.browser_use || !currentPlatformBackend.isBrowserApp(app.appName, app.bundleId),
 				score: scoreWindow(window),
@@ -2405,9 +2417,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 					windowId: Math.trunc(details.target.windowId),
 					framePoints: { x: 0, y: 0, w: details.capture.width, h: details.capture.height },
 					scaleFactor: details.capture.scaleFactor,
-					pairing: { confidence: "low", score: Number.NEGATIVE_INFINITY },
 					isModal: false,
-					sheetCount: 0,
 					role: "",
 					subrole: "",
 				},

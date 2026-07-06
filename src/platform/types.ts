@@ -5,6 +5,12 @@ import type { PermissionStatus } from "../permissions.ts";
 export type PlatformName = "macos" | "windows" | "linux";
 export type NativeInputDelivery = "hid" | "pid";
 export type ActOutcome = "worked" | "didnt" | "unknown";
+/**
+ * Best-effort presentation hint for a root. The seam guarantees only the
+ * `window` vs transient distinction; specific transient kinds are display hints
+ * and must never drive behavior in shared code. Platforms that need precise
+ * distinctions internally should use native signals.
+ */
 export type PlatformRootKind = "window" | "menu" | "sheet" | "popover" | "dialog";
 
 export interface PlatformDiagnostics {
@@ -57,15 +63,15 @@ export interface PlatformRoot {
 	role?: string;
 	subrole?: string;
 	zOrder: number;
-	pairing: { confidence: "exact" | "high" | "low"; score: number };
 	framePoints: FramePoints;
 	scaleFactor: number;
 	isOnscreen: boolean;
 	isFocused: boolean;
 	isMinimized: boolean;
+	/** Best-effort; platforms without a main-window concept may mirror `isFocused`. */
 	isMain: boolean;
+	/** Platform-reported modality fact, including platform-specific modal/dialog/sheet signals. */
 	isModal: boolean;
-	sheetCount: number;
 	metadata?: Record<string, unknown>;
 }
 
@@ -86,9 +92,11 @@ export interface PlatformFocusWindowResult {
 
 export interface HelperActPerformed {
 	grounding?: "description" | "coordinates";
+	/** `ax` means the platform accessibility API (AX on macOS, UIA on Windows). */
 	delivery?: "ax" | NativeInputDelivery;
 	refound?: boolean;
-	deltaSource?: "events" | "cg-poll" | "snapshot";
+	/** Free-form diagnostic naming the platform's delta mechanism. */
+	deltaSource?: string;
 }
 
 export interface PlatformRootDelta {
@@ -97,6 +105,8 @@ export interface PlatformRootDelta {
 	ref?: string;
 	title?: string;
 	pid: number;
+	isModal?: boolean;
+	metadata?: Record<string, unknown>;
 }
 
 export interface HelperActResult {
@@ -113,14 +123,8 @@ export interface PlatformTarget {
 	rootRef?: string;
 }
 
-export interface PlatformObserveTarget {
-	pid?: number;
-	windowId?: number;
-	rootRef?: string;
-}
-
 export interface PlatformObserveRequest {
-	target: PlatformObserveTarget;
+	target: PlatformTarget;
 	readText: "auto" | "always" | "never";
 	scopeRef?: string;
 	maxDimension?: number;

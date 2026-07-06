@@ -37,8 +37,7 @@ function parseRoots(result: unknown): PlatformRoot[] {
 	if (!Array.isArray(array)) return [];
 
 	return array.map((raw) => {
-		const pairing = (raw as any)?.pairing;
-		const confidence = pairing?.confidence === "exact" || pairing?.confidence === "high" || pairing?.confidence === "low" ? pairing.confidence : "low";
+		const metadata = typeof (raw as any)?.metadata === "object" && (raw as any).metadata !== null ? (raw as any).metadata as Record<string, unknown> : {};
 		const kind = ["window", "menu", "sheet", "popover", "dialog"].includes((raw as any)?.kind) ? (raw as any).kind as PlatformRootKind : "window";
 		return {
 			kind,
@@ -51,7 +50,6 @@ function parseRoots(result: unknown): PlatformRoot[] {
 			title: toOptionalString((raw as any)?.title) ?? "",
 			role: toOptionalString((raw as any)?.role),
 			subrole: toOptionalString((raw as any)?.subrole),
-			pairing: { confidence, score: toFiniteNumber(pairing?.score, Number.NEGATIVE_INFINITY) },
 			framePoints: parseFramePoints(raw),
 			scaleFactor: Math.max(1, toFiniteNumber((raw as any)?.scaleFactor, 1)),
 			zOrder: Math.trunc(toFiniteNumber((raw as any)?.zOrder, 0)),
@@ -60,7 +58,7 @@ function parseRoots(result: unknown): PlatformRoot[] {
 			isMain: toBoolean((raw as any)?.isMain),
 			isFocused: toBoolean((raw as any)?.isFocused),
 			isModal: toBoolean((raw as any)?.isModal),
-			sheetCount: Math.max(0, Math.trunc(toFiniteNumber((raw as any)?.sheetCount, 0))),
+			metadata,
 		};
 	});
 }

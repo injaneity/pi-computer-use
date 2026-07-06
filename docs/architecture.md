@@ -8,7 +8,7 @@ The core loop is:
 find roots → observe root → search/expand/inspect → act → refresh state
 ```
 
-A root is a top-level controllable UI surface such as a window, sheet, dialog, popover, or menu. Public root refs use `@rN`; element refs inside the current observation still use `@eN`.
+A root is a top-level controllable UI surface. The platform seam guarantees only the split between ordinary windows and transients; specific root kinds such as sheet, dialog, popover, or menu are best-effort presentation hints and never drive shared behavior. Public root refs use `@rN`; element refs inside the current observation still use `@eN`.
 
 ## Layers
 
@@ -24,15 +24,17 @@ A root is a top-level controllable UI surface such as a window, sheet, dialog, p
 
 `observe` asks the backend for one atomic look at a root. A look includes:
 
-- root identity and pairing metadata
-- AX-derived UI structure
+- platform-neutral root identity and facts
+- platform accessibility API-derived UI structure (AX on macOS, UIA on Windows)
 - optional image evidence for image-bearing roots
 - text boxes when OCR/vision is needed
 - timing and capture metadata
 
 The bridge converts that look into a folded outline. Every visible outline node gets a stable tool ref such as `@e12` for the current state. Large subtrees are summarized until the agent calls `expand_ui` or `search_ui`.
 
-Sheet/dialog roots may be semantic-only when the OS does not expose a capturable window image. Coordinate actions clearly reject those looks; use semantic `@e` refs instead.
+Transient roots may be semantic-only when the OS does not expose a capturable window image. Coordinate actions clearly reject those looks; use semantic `@e` refs instead.
+
+Modality is a platform-reported fact. On macOS, the backend folds AX modal state, attached-sheet presence, and AX dialog/sheet/modal role vocabulary into `isModal`; shared scoring and displacement consume only that fact.
 
 ## Acting
 
@@ -45,7 +47,9 @@ Sheet/dialog roots may be semantic-only when the OS does not expose a capturable
 5. verify what happened when possible
 6. return `worked`, `didnt`, or `unknown` with evidence and any shallow `rootDelta`
 
-Refs from `observe`, `search_ui`, and `expand_ui` are preferred. Coordinate actions are available as fallback, but they are tied to the latest observed image-bearing root.
+Refs from `observe`, `search_ui`, and `expand_ui` are preferred. Coordinate actions are available as fallback, but they are tied to the latest observed image-bearing root. If a root appears in a delta, agent guidance is uniform across platforms: observe it.
+
+`deltaSource` is a free-form diagnostic string naming the backend's delta mechanism. It is not part of the behavioral contract; shared code only treats its presence as evidence that the backend already awaited UI quiescence.
 
 ## Running note
 
@@ -63,5 +67,6 @@ Browser roots can be controlled through the same desktop tools. When CDP is enab
 - Keep the default observation compact.
 - Expand locally instead of dumping entire trees.
 - Let the backend/helper own action execution and verification.
+- Keep the seam platform-neutral: platform mechanisms belong in backend internals or free-form diagnostics, not shared contract types.
 - Keep stale refs and coordinates scoped to the state that produced them.
 - Avoid compatibility shims for removed public tools.
