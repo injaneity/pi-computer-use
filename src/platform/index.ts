@@ -22,8 +22,10 @@ const macosPlatformBackend: ComputerUsePlatformBackend = {
 
 class UnsupportedPlatformBackend implements ComputerUsePlatformBackend {
 	readonly name: PlatformName;
+	private readonly platform: NodeJS.Platform;
 
-	constructor(private readonly platform: NodeJS.Platform) {
+	constructor(platform: NodeJS.Platform) {
+		this.platform = platform;
 		this.name = platform === "win32" ? "windows" : "linux";
 	}
 
