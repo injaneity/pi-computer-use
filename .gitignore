@@ -14,4 +14,4 @@ results/
 scripts/cubench-results.json
 
 # Rust build artifacts
-target/
+native/windows/bridge-rs/target/
