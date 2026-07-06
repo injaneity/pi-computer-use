@@ -89,8 +89,9 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, GW_OWNER,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
+    GWL_EXSTYLE, GW_OWNER, WS_EX_DLGMODALFRAME,
 };
 
 #[cfg(windows)]
@@ -224,6 +225,8 @@ fn list_windows_impl(
             "window"
         };
         let role = if kind == "menu" { "Menu" } else { "Window" };
+        let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        let is_modal = class_name == "#32770" || (ex_style & WS_EX_DLGMODALFRAME.0) != 0;
 
         windows_info.push(json!({
             "kind": kind,
@@ -245,10 +248,8 @@ fn list_windows_impl(
             "isMain": hwnd == foreground,
             "isMinimized": is_minimized,
             "isOnscreen": !is_minimized,
-            "isModal": kind == "dialog",
-            "sheetCount": 0,
-            "pairing": { "confidence": "exact", "score": 100 },
-            "metadata": { "className": class_name, "isBrowser": is_browser, "browserFamily": browser_family },
+            "isModal": is_modal,
+            "metadata": { "className": class_name, "exStyle": ex_style, "isBrowser": is_browser, "browserFamily": browser_family },
             "isBrowser": is_browser,
             "browserFamily": browser_family,
         }));
@@ -269,9 +270,13 @@ pub fn foreground_pid() -> Option<u64> {
     #[cfg(windows)]
     {
         let hwnd = unsafe { GetForegroundWindow() };
-        if hwnd.0.is_null() { return None; }
+        if hwnd.0.is_null() {
+            return None;
+        }
         let mut pid = 0u32;
-        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)); }
+        unsafe {
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        }
         (pid != 0).then_some(u64::from(pid))
     }
 }
