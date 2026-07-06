@@ -137,16 +137,21 @@ export interface WaitForParams extends WindowTargetParams {
 	timeoutMs?: number;
 }
 
+// Includes legacy names ("find", "observe", "act", "snapshot") so branch
+// reconstruction still recognizes tool results from pre-rename sessions.
 export const AGENT_TOOL_NAMES = new Set([
+	"find_roots",
 	"find",
 	"list_contexts",
 	"snapshot",
 	"read_text",
 	"wait_for",
+	"observe_ui",
 	"observe",
 	"search_ui",
 	"expand_ui",
 	"inspect_ui",
+	"act_ui",
 	"act",
 	"navigate_browser",
 	"evaluate_browser",

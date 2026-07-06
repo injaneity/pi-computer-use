@@ -22,7 +22,7 @@ A root is a top-level controllable UI surface. The platform seam guarantees only
 
 ## Observation
 
-`observe` asks the backend for one atomic look at a root. A look includes:
+`observe_ui` asks the backend for one atomic look at a root. A look includes:
 
 - platform-neutral root identity and facts
 - platform accessibility API-derived UI structure (AX on macOS, UIA on Windows)
@@ -38,7 +38,7 @@ Modality is a platform-reported fact. On macOS, the backend folds AX modal state
 
 ## Acting
 
-`act` performs one action transaction. The backend/helper owns the actual input decision:
+`act_ui` performs one action transaction. The backend/helper owns the actual input decision:
 
 1. resolve the target ref or coordinate
 2. ground it to AX or coordinates
@@ -47,7 +47,7 @@ Modality is a platform-reported fact. On macOS, the backend folds AX modal state
 5. verify what happened when possible
 6. return `worked`, `didnt`, or `unknown` with evidence and any shallow `rootDelta`
 
-Refs from `observe`, `search_ui`, and `expand_ui` are preferred. Coordinate actions are available as fallback, but they are tied to the latest observed image-bearing root. If a root appears in a delta, agent guidance is uniform across platforms: observe it.
+Refs from `observe_ui`, `search_ui`, and `expand_ui` are preferred. Coordinate actions are available as fallback, but they are tied to the latest observed image-bearing root. If a root appears in a delta, agent guidance is uniform across platforms: observe it.
 
 `deltaSource` is a free-form diagnostic string naming the backend's delta mechanism. It is not part of the behavioral contract; shared code only treats its presence as evidence that the backend already awaited UI quiescence.
 

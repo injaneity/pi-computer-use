@@ -19,16 +19,16 @@ import {
 import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
 
 const contextId = Type.Optional(Type.String({ description: "Optional context id from list_contexts, e.g. desktop:@r1 or browser:<targetId>" }));
-const stateId = Type.Optional(Type.String({ description: "Optional state id from the latest observe/snapshot" }));
-const root = Type.Optional(Type.Union([Type.String({ description: "Root ref from find, e.g. @r1, or shorthand query" }), Type.Number({ description: "Numeric windowId" })]));
+const stateId = Type.Optional(Type.String({ description: "Optional state id from the latest observe_ui/snapshot" }));
+const root = Type.Optional(Type.Union([Type.String({ description: "Root ref from find_roots, e.g. @r1, or shorthand query" }), Type.Number({ description: "Numeric windowId" })]));
 const image = Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("always"), Type.Literal("never")], { description: "Image attachment mode, default auto" }));
 const responseMode = Type.Optional(Type.Union([Type.Literal("state"), Type.Literal("confirmation")], { description: "Use confirmation to skip returned state." }));
 
 const findTool = defineTool({
-	name: "find",
+	name: "find_roots",
 	label: "Find Roots",
 	description: "Find controllable UI roots with refs, geometry, and focus state.",
-	promptSnippet: "Find a target root before observe when needed.",
+	promptSnippet: "Find a target root before observe_ui when needed.",
 	executionMode: "sequential",
 	parameters: Type.Object({
 		query: Type.Optional(Type.String({ description: "Optional app/title/menu label query; absent or unmatched returns all roots" })),
@@ -51,13 +51,13 @@ const listContextsTool = defineTool({
 });
 
 const observeTool = defineTool({
-	name: "observe",
+	name: "observe_ui",
 	label: "Observe UI",
 	description: "Capture one look and return the running note plus a folded UI outline with counts, ancestor refs, pictureOnly nodes, and optional image.",
-	promptSnippet: "Primary UI observation tool. Follow with search_ui, expand_ui, inspect_ui, or act.",
+	promptSnippet: "Primary UI observation tool. Follow with search_ui, expand_ui, inspect_ui, or act_ui.",
 	promptGuidelines: [
 		"Use mode=semantic to skip OCR text, visual to force OCR text, and fused for auto OCR.",
-		"Use @e outline refs from observe/search_ui for act; pictureOnly refs are coordinate-only and blocked by UI-tree-only policy.",
+		"Use @e outline refs from observe_ui/search_ui for act_ui; pictureOnly refs are coordinate-only and blocked by UI-tree-only policy.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
@@ -74,7 +74,7 @@ const searchUiTool = defineTool({
 	name: "search_ui",
 	label: "Search UI",
 	description: "Search the full cached outline by text, role, or action in document order and return ancestor paths with the current note header.",
-	promptSnippet: "Find targets not shown in the compact observe output.",
+	promptSnippet: "Find targets not shown in the compact observe_ui output.",
 	executionMode: "sequential",
 	parameters: Type.Object({
 		text: Type.Optional(Type.String({ description: "Text/label query" })),
@@ -95,7 +95,7 @@ const expandUiTool = defineTool({
 	promptSnippet: "Expand a specific ref instead of dumping unrelated UI.",
 	executionMode: "sequential",
 	parameters: Type.Object({
-		ref: Type.String({ description: "Outline ref from observe/search_ui, e.g. @e12" }),
+		ref: Type.String({ description: "Outline ref from observe_ui/search_ui, e.g. @e12" }),
 		depth: Type.Optional(Type.Number({ description: "Outline subtree depth, default 3" })),
 		root,
 		stateId,
@@ -110,7 +110,7 @@ const inspectUiTool = defineTool({
 	promptSnippet: "Use when a target's evidence or provenance matters.",
 	executionMode: "sequential",
 	parameters: Type.Object({
-		ref: Type.String({ description: "Outline ref from observe/search_ui, e.g. @e12" }),
+		ref: Type.String({ description: "Outline ref from observe_ui/search_ui, e.g. @e12" }),
 		includeRaw: Type.Optional(Type.Boolean({ description: "Include the serialized outline node in details" })),
 		root,
 		stateId,
@@ -119,7 +119,7 @@ const inspectUiTool = defineTool({
 });
 
 const actTool = defineTool({
-	name: "act",
+	name: "act_ui",
 	label: "Act",
 	description: "Perform one helper act transaction by outline @e ref or look image coordinates and return the helper outcome.",
 	promptSnippet: "Use @e outline refs when available; helper act chooses semantic or coordinate grounding and reports worked/didnt/unknown.",
@@ -150,7 +150,7 @@ const readTextTool = defineTool({
 	name: "read_text",
 	label: "Read Text",
 	description: "Read text from a text-bearing desktop UI ref or browser context, with pagination.",
-	promptSnippet: "Fetch full text when observe/inspect shows a truncated text-bearing ref.",
+	promptSnippet: "Fetch full text when observe_ui/inspect_ui shows a truncated text-bearing ref.",
 	executionMode: "sequential",
 	parameters: Type.Object({ ref: Type.Optional(Type.String()), contextId, offset: Type.Optional(Type.Number()), limit: Type.Optional(Type.Number()), root, stateId }),
 	execute: executeReadText,
@@ -160,7 +160,7 @@ const waitForTool = defineTool({
 	name: "wait_for",
 	label: "Wait For",
 	description: "Wait until desktop UI or browser context text/role appears or disappears.",
-	promptSnippet: "Use after async UI changes instead of polling observe.",
+	promptSnippet: "Use after async UI changes instead of polling observe_ui.",
 	executionMode: "sequential",
 	parameters: Type.Object({ text: Type.Optional(Type.String()), role: Type.Optional(Type.String()), gone: Type.Optional(Type.Boolean()), timeoutMs: Type.Optional(Type.Number()), contextId, root, stateId }),
 	execute: executeWaitFor,
@@ -209,17 +209,8 @@ function formatConfigStatus(): string {
 	].join("\n");
 }
 
-function isDuplicateToolConflict(error: unknown): boolean {
-	return error instanceof Error && /Tool ".*" conflicts with /.test(error.message);
-}
-
 export default function computerUseExtension(pi: ExtensionAPI): void {
-	try {
-		for (const tool of [findTool, listContextsTool, observeTool, searchUiTool, expandUiTool, inspectUiTool, actTool, readTextTool, waitForTool, launchBrowserContextTool, navigateBrowserTool, evaluateBrowserTool]) pi.registerTool(tool);
-	} catch (error) {
-		if (isDuplicateToolConflict(error)) return;
-		throw error;
-	}
+	for (const tool of [findTool, listContextsTool, observeTool, searchUiTool, expandUiTool, inspectUiTool, actTool, readTextTool, waitForTool, launchBrowserContextTool, navigateBrowserTool, evaluateBrowserTool]) pi.registerTool(tool);
 
 	pi.registerCommand("computer-use", {
 		description: "Show pi-computer-use configuration",

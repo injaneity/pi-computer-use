@@ -96,9 +96,11 @@ check("INV-8 deleted architecture-v1 identifiers absent", () => {
 	}
 });
 
-check("INV-5 listRoots pairing parsed", () => {
-	assert(srcFiles.some(([, text]) => /interface (HelperRoot|MacosRoot|PlatformRoot)[\s\S]*pairing:/.test(text)), "PlatformRoot lacks required pairing field");
-	assert(srcFiles.some(([, text]) => /function parseRoots[\s\S]*pairing[\s\S]*confidence[\s\S]*score/.test(text)), "listRoots parser does not parse pairing");
+check("INV-5 listRoots seam stays platform-neutral", () => {
+	assert(srcFiles.some(([, text]) => /interface PlatformRoot[\s\S]*isModal: boolean/.test(text)), "PlatformRoot lacks required isModal fact");
+	assert(srcFiles.some(([, text]) => /interface PlatformRoot[\s\S]*metadata\?: Record<string, unknown>/.test(text)), "PlatformRoot lacks metadata escape hatch");
+	assert(!srcFiles.some(([, text]) => /interface PlatformRoot[\s\S]*\bpairing:/.test(text)), "PlatformRoot must not require pairing");
+	assert(!srcFiles.some(([, text]) => /interface PlatformRoot[\s\S]*\bsheetCount:/.test(text)), "PlatformRoot must not require sheetCount");
 });
 
 function enclosingFunctionName(text, index) {

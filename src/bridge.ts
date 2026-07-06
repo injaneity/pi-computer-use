@@ -121,7 +121,7 @@ export interface ComputerUseDetails {
 }
 
 export interface ListWindowsDetails {
-	tool: "find";
+	tool: "find_roots";
 	query: FindParams;
 	windows: Array<{
 		app: string;
@@ -294,9 +294,9 @@ interface RuntimeState {
 }
 
 
-const MISSING_TARGET_ERROR = "No current controlled window. Call observe first to choose a target window.";
+const MISSING_TARGET_ERROR = "No current controlled window. Call observe_ui first to choose a target window.";
 const CURRENT_TARGET_GONE_ERROR =
-	"The current controlled window is no longer available. Call observe to choose a new target window.";
+	"The current controlled window is no longer available. Call observe_ui to choose a new target window.";
 
 const COMMAND_TIMEOUT_MS = 15_000;
 const LOOK_TIMEOUT_MS = 33_000;
@@ -376,7 +376,7 @@ function settleMsForExecution(execution: ExecutionTrace): number {
 function addRefreshHint(error: unknown): Error {
 	const message = normalizeError(error).message;
 	if (/call (screenshot|observe)/i.test(message)) return new Error(message);
-	return new Error(`${message} Call observe again to refresh the current window state.`);
+	return new Error(`${message} Call observe_ui again to refresh the current window state.`);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -502,12 +502,12 @@ function validateStateId(stateId?: string): CurrentCapture {
 	const supplied = stateId;
 	if (supplied && runtimeState.currentCapture.stateId !== supplied) {
 		throw new Error(
-			`Stale state '${supplied}'. The latest state is '${runtimeState.currentCapture.stateId}' for ${runtimeState.currentTarget.windowRef ?? "the current window"}. Call observe${runtimeState.currentTarget.windowRef ? `({ root: "${runtimeState.currentTarget.windowRef}" })` : ""} again and retry.`,
+			`Stale state '${supplied}'. The latest state is '${runtimeState.currentCapture.stateId}' for ${runtimeState.currentTarget.windowRef ?? "the current window"}. Call observe_ui${runtimeState.currentTarget.windowRef ? `({ root: "${runtimeState.currentTarget.windowRef}" })` : ""} again and retry.`,
 		);
 	}
 	const stateTarget = runtimeState.currentStateTarget;
 	if (stateTarget && (stateTarget.pid !== runtimeState.currentTarget.pid || stateTarget.windowId !== runtimeState.currentTarget.windowId)) {
-		throw new Error("The latest state belongs to a different window. Call observe for the target window and retry.");
+		throw new Error("The latest state belongs to a different window. Call observe_ui for the target window and retry.");
 	}
 	return runtimeState.currentCapture;
 }
@@ -535,7 +535,7 @@ function outlineNodeByRef(ref: string): OutlineNode {
 	const node = outline ? nodeByRef(outline, ref) : undefined;
 	if (!node) {
 		const windowHint = runtimeState.currentTarget?.windowRef ? `({ root: "${runtimeState.currentTarget.windowRef}" })` : "";
-		throw new Error(`Outline ref '${ref}' is stale or not available for the latest state. Call observe${windowHint} again and choose a current @e ref.`);
+		throw new Error(`Outline ref '${ref}' is stale or not available for the latest state. Call observe_ui${windowHint} again and choose a current @e ref.`);
 	}
 	return node;
 }
@@ -921,7 +921,7 @@ async function resolveTargetByWindowSelector(selector: WindowSelector, signal?: 
 			(fromRef.nativeWindowRef ? windows.find((window) => window.windowRef === fromRef.nativeWindowRef) : undefined) ??
 			windows.find((window) => normalizeText(window.title || "(untitled)") === normalizeText(fromRef.windowTitle));
 		if (!match) {
-			throw new Error(`Root ref '${normalized}' is stale. Call find again and choose a current window.`);
+			throw new Error(`Root ref '${normalized}' is stale. Call find_roots again and choose a current window.`);
 		}
 		const resolved = toResolvedTarget(app, match);
 		setCurrentTarget(resolved);
@@ -941,11 +941,11 @@ async function resolveTargetByWindowSelector(selector: WindowSelector, signal?: 
 				return resolved;
 			}
 		}
-		throw new Error(`Window id '${numericWindowId}' was not found. Call find again and choose a current window.`);
+		throw new Error(`Window id '${numericWindowId}' was not found. Call find_roots again and choose a current window.`);
 	}
 
 	if (normalized.startsWith("@r")) {
-		throw new Error(`Root ref '${normalized}' is not available in this session. Call find first.`);
+		throw new Error(`Root ref '${normalized}' is not available in this session. Call find_roots first.`);
 	}
 
 	const config = getComputerUseConfig();
@@ -954,7 +954,7 @@ async function resolveTargetByWindowSelector(selector: WindowSelector, signal?: 
 	const exact = candidates.filter((candidate) => normalizeText(candidate.app) === query || normalizeText(candidate.windowTitle) === query);
 	const fuzzy = exact.length > 0 ? exact : candidates.filter((candidate) => `${normalizeText(candidate.app)} ${normalizeText(candidate.windowTitle)}`.includes(query));
 	const match = fuzzy.sort((a, b) => Number(b.isFocused) - Number(a.isFocused) || a.zOrder - b.zOrder)[0];
-	if (!match) throw new Error(`Root query '${normalized}' did not match any current root. Call find to inspect roots.`);
+	if (!match) throw new Error(`Root query '${normalized}' did not match any current root. Call find_roots to inspect roots.`);
 	const app: HelperApp = { appName: match.app, bundleId: match.bundleId, pid: match.pid };
 	const roots = await listWindows(match.pid, signal);
 	const helperRoot = roots.find((root) => root.rootRef === match.nativeWindowRef || root.windowRef === match.nativeWindowRef || root.windowId === match.windowId) ?? roots[0];
@@ -1046,7 +1046,7 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 
 	const windows = await listWindows(frontmost.pid, signal);
 	if (!windows.length) {
-		throw new Error("No frontmost controllable root was found. Open an app window and call observe again.");
+		throw new Error("No frontmost controllable root was found. Open an app window and call observe_ui again.");
 	}
 
 	if (currentPlatformBackend.isBrowserApp(app.appName, app.bundleId)) {
@@ -1191,7 +1191,7 @@ function captureForLook(look: LookResponse): CurrentCapture {
 }
 
 async function performLook(target: ResolvedTarget, options: { readText: "auto" | "always" | "never"; scopeRef?: string; maxDimension?: number }, signal?: AbortSignal): Promise<LookResponse> {
-	if ((!Number.isFinite(target.windowId) || target.windowId <= 0) && !target.nativeWindowRef) throw new Error(`Current platform requires a stable root id to observe '${target.windowTitle}'. Call find and select a root with a stable id.`);
+	if ((!Number.isFinite(target.windowId) || target.windowId <= 0) && !target.nativeWindowRef) throw new Error(`Current platform requires a stable root id to observe '${target.windowTitle}'. Call find_roots and select a root with a stable id.`);
 	return await currentPlatformBackend.observe({
 		target: nativeWindowRequest(target),
 		readText: options.readText,
@@ -1341,7 +1341,7 @@ type HelperActInput =
 
 function currentLookOrThrow(): LookResponse {
 	if (!runtimeState.currentLook || !runtimeState.currentCapture) {
-		throw new Error("No current look. Call observe first, then act using refs or coordinates from that look.");
+		throw new Error("No current look. Call observe_ui first, then act using refs or coordinates from that look.");
 	}
 	return runtimeState.currentLook;
 }
@@ -1354,7 +1354,7 @@ function ensurePointIsInLookImage(x: number, y: number, look: LookResponse, erro
 		throw new Error(`${errorPrefix} must be finite numbers.`);
 	}
 	if (x < 0 || y < 0 || x >= look.image.width || y >= look.image.height) {
-		throw new Error(`${errorPrefix} (${Math.round(x)},${Math.round(y)}) are outside the latest look image bounds (${look.image.width}x${look.image.height}). Call observe again and retry.`);
+		throw new Error(`${errorPrefix} (${Math.round(x)},${Math.round(y)}) are outside the latest look image bounds (${look.image.width}x${look.image.height}). Call observe_ui again and retry.`);
 	}
 }
 
@@ -1602,7 +1602,7 @@ async function performListWindows(params: FindParams, signal?: AbortSignal): Pro
 		: [];
 	const windows = (exact.length > 0 ? exact : fuzzy.length > 0 ? fuzzy : forest)
 		.sort((a, b) => Number(b.isFocused) - Number(a.isFocused) || a.zOrder - b.zOrder || a.app.localeCompare(b.app));
-	const details: ListWindowsDetails = { tool: "find", query, windows, config };
+	const details: ListWindowsDetails = { tool: "find_roots", query, windows, config };
 	const lines = windows.map(formatWindowLine);
 	const text = lines.length
 		? `Found ${lines.length} root${lines.length === 1 ? "" : "s"}${query.query ? ` for ${JSON.stringify(query.query)}` : ""}. Use @r refs with observe({ root: "@rN" }).\n${lines.join("\n")}`
@@ -1638,14 +1638,14 @@ async function performListContexts(signal?: AbortSignal): Promise<AgentToolResul
 		pid: window.pid,
 		windowRef: window.windowRef,
 		windowId: window.windowId,
-		availableActions: ["observe", "search_ui", "expand_ui", "inspect_ui", "act", "read_text", "wait_for"],
+		availableActions: ["observe_ui", "search_ui", "expand_ui", "inspect_ui", "act_ui", "read_text", "wait_for"],
 	}));
 	const browserContexts: ContextDetails["contexts"] = (await listCdpPageContexts().catch(() => [])).map((page) => ({
 		contextId: page.contextId,
 		kind: "browser_page",
 		title: page.title,
 		url: page.url,
-		availableActions: ["observe", "read_text", "wait_for", "act", "navigate_browser", "evaluate_browser"],
+		availableActions: ["observe_ui", "read_text", "wait_for", "act_ui", "navigate_browser", "evaluate_browser"],
 	}));
 	const contexts = [...browserContexts, ...desktopContexts];
 	const details: ContextDetails = { tool: "list_contexts", contexts, config };
@@ -1654,7 +1654,7 @@ async function performListContexts(signal?: AbortSignal): Promise<AgentToolResul
 		return `- ${context.contextId} ${context.kind} ${label}`;
 	});
 	const text = lines.length
-		? `Found ${lines.length} controllable context${lines.length === 1 ? "" : "s"}. Use observe before acting.\n${lines.join("\n")}`
+		? `Found ${lines.length} controllable context${lines.length === 1 ? "" : "s"}. Use observe_ui before acting.\n${lines.join("\n")}`
 		: "No controllable contexts were found.";
 	return { content: [{ type: "text", text }], details };
 }
@@ -1727,7 +1727,7 @@ async function performReadText(params: ReadTextParams, signal?: AbortSignal): Pr
 	const desktopWindowRef = contextId ? desktopWindowRefFromContext(contextId) : undefined;
 	await selectWindowIfProvided((params.root ?? params.window) ?? desktopWindowRef, signal);
 	validateStateId(params.stateId);
-	if (!ref) throw new Error("read_text requires ref for desktop contexts. Call observe/inspect_ui and use a text-bearing outline ref.");
+	if (!ref) throw new Error("read_text requires ref for desktop contexts. Call observe_ui/inspect_ui and use a text-bearing outline ref.");
 	const node = outlineNodeByRef(ref);
 	const raw = await currentPlatformBackend.readText({
 		elementRef: wireRefForNode(node),
@@ -1824,7 +1824,7 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 			contextId,
 			kind: "browser_page",
 			snapshotId: browser.snapshotId,
-			availableActions: ["observe", "read_text", "wait_for", "act", "navigate_browser", "evaluate_browser"],
+			availableActions: ["observe_ui", "read_text", "wait_for", "act_ui", "navigate_browser", "evaluate_browser"],
 			browser: { ...browser, text: browserTextPreview },
 		};
 		return { content: [{ type: "text", text: `Captured browser context ${contextId}: ${browser.title}.${targetText}${pageText}` }], details };
@@ -1862,7 +1862,7 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 		contextId,
 		kind: "desktop_window",
 		snapshotId: result.capture.stateId,
-		availableActions: ["observe", "search_ui", "expand_ui", "inspect_ui", "act", "read_text", "wait_for"],
+		availableActions: ["observe_ui", "search_ui", "expand_ui", "inspect_ui", "act_ui", "read_text", "wait_for"],
 		desktop,
 	};
 	const scope = scopeRef ? ` scoped to ${scopeRef}` : "";
@@ -1896,16 +1896,16 @@ async function performObserve(params: ObserveParams, signal?: AbortSignal): Prom
 	// identity against the resolved request too.
 	if (!matchesObserveSelection(captureResult.target, selection) && !sameRootIdentity(captureResult.target, requestedTarget)) {
 		throw new Error(
-			`Observation target drifted from the requested selection. Requested ${requestedTarget.appName} — ${requestedTarget.windowTitle}, captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Call observe again or specify a more exact window title.`,
+			`Observation target drifted from the requested selection. Requested ${requestedTarget.appName} — ${requestedTarget.windowTitle}, captured ${captureResult.target.appName} — ${captureResult.target.windowTitle}. Call observe_ui again or specify a more exact window title.`,
 		);
 	}
 	const summary = `Observed ${mode} ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest outline state.`;
-	return await buildToolResult("observe", summary, captureResult, executionTrace("look", "stealth"), signal, normalizeImageMode(image));
+	return await buildToolResult("observe_ui", summary, captureResult, executionTrace("look", "stealth"), signal, normalizeImageMode(image));
 }
 
 function currentOutlineOrThrow(stateId?: string): Outline {
 	validateStateId(stateId);
-	if (!runtimeState.currentOutline) throw new Error("No current outline. Call observe first.");
+	if (!runtimeState.currentOutline) throw new Error("No current outline. Call observe_ui first.");
 	return runtimeState.currentOutline;
 }
 
@@ -2017,7 +2017,7 @@ async function performHelperAct(
 				clickCount: normalizeClickCount(params.clickCount),
 			},
 		}, signal),
-		(target, returnedState, execution) => `${tool.replace(/_/g, " ")} ${label} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		(target, returnedState, execution) => `${tool.replace(/_/g, " ")} ${label} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe_ui if you need updated state."}`,
 		{ responseMode: params.responseMode, targetRef: actTargetPublicRef(params) },
 	);
 }
@@ -2036,7 +2036,7 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 		"type_text",
 		signal,
 		async (target) => await helperAct(target, actTarget, { action: "typeText", params: { text } }, signal),
-		(target, returnedState, execution) => `Inserted text in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		(target, returnedState, execution) => `Inserted text in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe_ui if you need updated state."}`,
 		{ responseMode: params.responseMode },
 	);
 }
@@ -2054,7 +2054,7 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 		"set_text",
 		signal,
 		async (target) => await helperAct(target, actTarget, { action: "setText", params: { text } }, signal),
-		(target, returnedState, execution) => `Set text value in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		(target, returnedState, execution) => `Set text value in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe_ui if you need updated state."}`,
 		{ responseMode: params.responseMode, targetRef: actTargetPublicRef(params) },
 	);
 }
@@ -2075,7 +2075,7 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 		"keypress",
 		signal,
 		async (target) => await helperAct(target, actTarget, { action: "keypress", params: { keys } }, signal),
-		(target, returnedState, execution) => `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		(target, returnedState, execution) => `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe_ui if you need updated state."}`,
 		{ responseMode: params.responseMode },
 	);
 }
@@ -2097,7 +2097,7 @@ async function performScroll(params: ScrollParams, signal?: AbortSignal): Promis
 		signal,
 		async (target) => await helperAct(target, actTarget, { action: "scroll", params: { scrollX, scrollY } }, signal),
 		(target, returnedState, execution) => {
-			const suffix = returnedState ? " Returned the latest outline state." : " Call observe if you need updated state.";
+			const suffix = returnedState ? " Returned the latest outline state." : " Call observe_ui if you need updated state.";
 			return ref
 				? `Scrolled ${ref} in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${suffix}`
 				: `Scrolled in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${suffix}`;
@@ -2117,7 +2117,7 @@ async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): 
 		signal,
 		async (target) => await helperAct(target, actTarget, { action: "moveMouse", params: {} }, signal),
 		(target, returnedState, execution) =>
-			`Moved mouse in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+			`Moved mouse in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe_ui if you need updated state."}`,
 		{ responseMode: params.responseMode },
 	);
 }
@@ -2133,7 +2133,7 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 		"drag",
 		signal,
 		async (target) => await helperAct(target, actTarget, { action: "drag", params: { path } }, signal),
-		(target, returnedState, execution) => `Dragged in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe if you need updated state."}`,
+		(target, returnedState, execution) => `Dragged in ${target.appName} — ${target.windowTitle}.${actOutcomeText(execution)}${returnedState ? " Returned the latest outline state." : " Call observe_ui if you need updated state."}`,
 		{ responseMode: params.responseMode, targetRef: actTargetPublicRef(params) },
 	);
 }
@@ -2344,7 +2344,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 		if (!AGENT_TOOL_NAMES.has(message.toolName)) continue;
 
 		const rawDetails = message.details as any;
-		if (rawDetails?.tool === "find" && Array.isArray(rawDetails.windows)) {
+		if ((rawDetails?.tool === "find_roots" || rawDetails?.tool === "find") && Array.isArray(rawDetails.windows)) {
 			for (const window of rawDetails.windows) {
 				if (typeof window?.windowRef !== "string" || !Number.isFinite(window?.pid)) continue;
 				const record: WindowRefRecord = {

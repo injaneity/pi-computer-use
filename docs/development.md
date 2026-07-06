@@ -35,9 +35,9 @@ npm run build:native
 
 The runtime is outline-first:
 
-- `observe` returns a folded UI outline and running note.
+- `observe_ui` returns a folded UI outline and running note.
 - `search_ui`, `expand_ui`, and `inspect_ui` provide progressive disclosure.
-- `act` is the only public desktop action entrypoint.
+- `act_ui` is the only public desktop action entrypoint.
 - The helper owns grounding, preflight, execution, and verification.
 - Removed direct tools such as `screenshot`, `click`, `set_text`, and `computer_actions` should not reappear as public extension tools.
 

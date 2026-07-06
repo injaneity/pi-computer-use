@@ -97,11 +97,11 @@ If `browser_use` is disabled, enable it in either config file:
 
 Strict AX mode blocks raw pointer events, raw keyboard events, foreground focus fallback, and cursor takeover.
 
-Use refs from the latest `observe` result. If the workflow needs raw events, disable strict AX mode.
+Use refs from the latest `observe_ui` result. If the workflow needs raw events, disable strict AX mode.
 
 ## State or refs are stale
 
-Refs and coordinates belong to the latest observed state. Call `observe` again and retry with the new `stateId`.
+Refs and coordinates belong to the latest observed state. Call `observe_ui` again and retry with the new `stateId`.
 
 The bridge can sometimes reacquire stale AX refs by role, label, capability, and position, but this is not guaranteed.
 
@@ -114,7 +114,7 @@ Coordinates are image pixels from the latest observed window. They are invalid i
 - a new observation was captured
 - the coordinate is outside the captured bounds
 
-Call `observe` again and retry.
+Call `observe_ui` again and retry.
 
 ## Capture fails
 
@@ -122,13 +122,13 @@ Check that:
 
 - Screen Recording is granted.
 - The target app has an open window.
-- The window was not closed between `observe` and `act`.
+- The window was not closed between `observe_ui` and `act_ui`.
 - The app is running on macOS.
 
 If the target is ambiguous, specify the app and window title:
 
 ```ts
-observe({ app: "TextEdit", windowTitle: "Untitled" })
+observe_ui({ app: "TextEdit", windowTitle: "Untitled" })
 ```
 
 ## Apple Events JavaScript is disabled

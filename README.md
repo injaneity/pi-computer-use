@@ -52,16 +52,18 @@ Use `/computer-use` inside Pi to show the active configuration and where it came
 
 ## Main tools
 
-- `find`
-- `observe`
+- `find_roots`
+- `observe_ui`
 - `search_ui`
 - `expand_ui`
 - `inspect_ui`
-- `act`
+- `act_ui`
 - `read_text`
 - `wait_for`
 
 See [docs/usage.md](./docs/usage.md) for the full tool reference.
+
+> Renamed from the 0.4.x names `find`, `observe`, and `act` so the generic names no longer collide with tools from other extensions (see issue #19).
 
 ## Documentation
 
@@ -74,7 +76,7 @@ See [docs/usage.md](./docs/usage.md) for the full tool reference.
 
 ## Development status
 
-The current architecture is centered on `observe` and `act`: first inspect the current UI state, then ask the helper to perform one grounded action transaction. Older direct tools such as `screenshot`, `click`, `set_text`, and `computer_actions` are no longer part of the public extension surface.
+The current architecture is centered on `observe_ui` and `act_ui`: first inspect the current UI state, then ask the helper to perform one grounded action transaction. Older direct tools such as `screenshot`, `click`, `set_text`, and `computer_actions` are no longer part of the public extension surface.
 
 Behavioral benchmarking should use `cubench-runner` with `./bin/pi-cubench-client.mjs`; `node scripts/cubench.mjs` is only the local measurement harness.
 

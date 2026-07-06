@@ -1336,6 +1336,10 @@ final class Bridge {
 	private func buildLookOutline(root: AXUIElement, transform: @escaping (CGRect) -> CGRect) -> LookNode {
 		let rootNode = lookNode(element: root, transform: transform, offscreen: false)
 		let nodeLimit = 2000
+		// Apps with slow AX servers (e.g. Outlook) can take >30s to describe; the
+		// client aborts at 33s, so stop walking well before that and return a
+		// truncated outline instead.
+		let deadline = Date().addingTimeInterval(20.0)
 		var walked = 1
 		var seen = Set<ObjectIdentifier>([ObjectIdentifier(root)])
 		var queue: [(AXUIElement, LookNode)] = [(root, rootNode)]
@@ -1345,13 +1349,13 @@ final class Bridge {
 			index += 1
 			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
 			if children.isEmpty { continue }
-			if walked >= nodeLimit {
+			if walked >= nodeLimit || Date() >= deadline {
 				node.truncated = true
 				continue
 			}
 			let visibleByKind = visibleChildrenByKind(element)
 			for child in children {
-				if walked >= nodeLimit {
+				if walked >= nodeLimit || Date() >= deadline {
 					node.truncated = true
 					break
 				}
