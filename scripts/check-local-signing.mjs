@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ensureIdentityOnce, parseCodeSigningIdentities, withDirectoryLock } from "./setup-helper.mjs";
+import { ensureIdentityOnce, parseCodeSigningIdentities, shouldResetTccForSigningChange, withDirectoryLock } from "./setup-helper.mjs";
 
 const sample = `
 Policy: Code Signing
@@ -19,6 +19,12 @@ assert.deepEqual(parseCodeSigningIdentities(sample), [
 	"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 	"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
 ]);
+
+assert.equal(shouldResetTccForSigningChange("adhoc", "cert:aaaa"), true);
+assert.equal(shouldResetTccForSigningChange("cert:bbbb", "cert:aaaa"), true);
+assert.equal(shouldResetTccForSigningChange("cert:aaaa", "cert:aaaa"), false);
+assert.equal(shouldResetTccForSigningChange(undefined, "cert:aaaa"), false);
+assert.equal(shouldResetTccForSigningChange("unknown", "cert:aaaa"), false);
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-computer-use-signing-test-"));
 const lockPath = path.join(tempDir, "identity.lock");

@@ -411,6 +411,12 @@ async function currentSigningRequirementKey(appPath) {
 	return output.trim() || "unknown";
 }
 
+export function shouldResetTccForSigningChange(oldIdentity, newIdentity) {
+	if (!newIdentity?.startsWith("cert:")) return false;
+	if (newIdentity === oldIdentity) return false;
+	return oldIdentity === "adhoc" || oldIdentity?.startsWith("cert:") === true;
+}
+
 // The previous installed app's signature is the source of truth for whether
 // the signing identity changed. An unknown/unreadable old identity must NOT
 // trigger a reset: wiping TCC rows when the identity is in fact unchanged is
@@ -418,8 +424,7 @@ async function currentSigningRequirementKey(appPath) {
 async function resetTccIfSigningIdentityChanged(appPath, oldIdentity) {
 	if (process.platform !== "darwin") return;
 	const newIdentity = await currentSigningRequirementKey(appPath).catch(() => undefined);
-	if (!newIdentity || !newIdentity.startsWith("cert:")) return;
-	if (!oldIdentity || !oldIdentity.startsWith("cert:") || newIdentity === oldIdentity) return;
+	if (!shouldResetTccForSigningChange(oldIdentity, newIdentity)) return;
 	await execFile("tccutil", ["reset", "Accessibility", helperBundleId]).catch(() => undefined);
 	await execFile("tccutil", ["reset", "ScreenCapture", helperBundleId]).catch(() => undefined);
 	console.log("[pi-computer-use] cleared stale Accessibility / Screen Recording grants pinned to a previous signing identity. Grant once more and future stable-signed rebuilds should keep working.");
