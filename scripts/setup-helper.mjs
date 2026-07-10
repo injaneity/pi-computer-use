@@ -23,6 +23,9 @@ const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 const packageJsonPath = path.join(rootDir, "package.json");
 const releaseRepo = "injaneity/pi-computer-use";
 const localCodeSignCommonName = "pi-computer-use Local Signing";
+const localSigningLockPath = path.join(os.tmpdir(), `pi-computer-use-local-signing-${typeof process.getuid === "function" ? process.getuid() : "user"}.lock`);
+const localSigningLockWaitMs = 15_000;
+const localSigningLockStaleMs = 5 * 60_000;
 
 const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
@@ -254,6 +257,71 @@ async function findDeveloperIdIdentity() {
 	return line?.trim().split(/\s+/)[1];
 }
 
+export function parseCodeSigningIdentities(output, commonName = localCodeSignCommonName) {
+	const identities = [];
+	for (const line of output.split("\n")) {
+		const match = line.match(/^\s*\d+\)\s+([0-9a-fA-F]{40})\s+"([^"]+)"/);
+		if (match?.[2] === commonName) identities.push(match[1].toUpperCase());
+	}
+	return identities;
+}
+
+async function findLocalSigningIdentity() {
+	// Do not pass `-v`: self-signed identities are intentionally untrusted and
+	// macOS omits them from the "valid only" view even though codesign can use
+	// them. find-identity also proves the certificate has a matching private key.
+	const output = await commandOutput("security", ["find-identity", "-p", "codesigning"]).catch(() => "");
+	const identities = parseCodeSigningIdentities(output);
+	if (identities.length === 0) return undefined;
+
+	const installedIdentity = await currentSigningRequirementKey(helperAppPath).catch(() => undefined);
+	const installedFingerprint = installedIdentity?.startsWith("cert:") ? installedIdentity.slice("cert:".length).toUpperCase() : undefined;
+	const selected = installedFingerprint && identities.includes(installedFingerprint) ? installedFingerprint : identities[0];
+	if (identities.length > 1) {
+		console.warn(`[pi-computer-use] warning: found ${identities.length} local signing identities named '${localCodeSignCommonName}'; using fingerprint ${selected}. Remove stale duplicates from Keychain Access when convenient.`);
+	}
+	return selected;
+}
+
+function delay(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function withDirectoryLock(lockPath, callback, options = {}) {
+	const waitMs = options.waitMs ?? localSigningLockWaitMs;
+	const staleMs = options.staleMs ?? localSigningLockStaleMs;
+	const retryMs = options.retryMs ?? 50;
+	const deadline = Date.now() + waitMs;
+
+	while (true) {
+		try {
+			await fs.mkdir(lockPath);
+			break;
+		} catch (error) {
+			if (error?.code !== "EEXIST") throw error;
+			const stat = await fs.stat(lockPath).catch(() => undefined);
+			if (stat && Date.now() - stat.mtimeMs > staleMs) {
+				await fs.rm(lockPath, { force: true, recursive: true }).catch(() => undefined);
+				continue;
+			}
+			if (Date.now() >= deadline) throw new Error(`Timed out waiting for local signing identity lock at ${lockPath}.`);
+			await delay(retryMs);
+		}
+	}
+
+	try {
+		return await callback();
+	} finally {
+		await fs.rm(lockPath, { force: true, recursive: true }).catch(() => undefined);
+	}
+}
+
+export async function ensureIdentityOnce(findIdentity, createIdentity, withLock) {
+	const existing = await findIdentity();
+	if (existing) return existing;
+	return await withLock(async () => (await findIdentity()) ?? await createIdentity());
+}
+
 async function loginKeychainPath() {
 	for (const candidate of [
 		path.join(os.homedir(), "Library", "Keychains", "login.keychain-db"),
@@ -267,45 +335,51 @@ async function loginKeychainPath() {
 async function ensureLocalSigningIdentity() {
 	if (process.platform !== "darwin") return undefined;
 	if (!(await commandOutput("which", ["codesign"]).catch(() => ""))) return undefined;
-	if (await execFile("security", ["find-certificate", "-c", localCodeSignCommonName]).then(() => true, () => false)) {
-		return localCodeSignCommonName;
-	}
+	const existingIdentity = await findLocalSigningIdentity();
+	if (existingIdentity) return existingIdentity;
 	if (!(await commandOutput("which", ["openssl"]).catch(() => ""))) return undefined;
 	const keychain = await loginKeychainPath();
 	if (!keychain) return undefined;
 
-	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-computer-use-signing-"));
-	const password = `pi-computer-use-local-${process.pid}-${Date.now()}`;
-	try {
-		const configPath = path.join(tempDir, "req.cnf");
-		await fs.writeFile(configPath, [
-			"[req]",
-			"distinguished_name=dn",
-			"x509_extensions=ext",
-			"prompt=no",
-			"[dn]",
-			`CN=${localCodeSignCommonName}`,
-			"[ext]",
-			"basicConstraints=critical,CA:FALSE",
-			"keyUsage=critical,digitalSignature",
-			"extendedKeyUsage=critical,codeSigning",
-			"",
-		].join("\n"));
-		const keyPath = path.join(tempDir, "key.pem");
-		const certPath = path.join(tempDir, "cert.pem");
-		const p12Path = path.join(tempDir, "id.p12");
-		await execFile("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-keyout", keyPath, "-out", certPath, "-days", "3650", "-nodes", "-config", configPath]);
-		await execFile("openssl", ["pkcs12", "-export", "-legacy", "-inkey", keyPath, "-in", certPath, "-out", p12Path, "-passout", `pass:${password}`, "-name", localCodeSignCommonName])
-			.catch(async () => {
-				await execFile("openssl", ["pkcs12", "-export", "-inkey", keyPath, "-in", certPath, "-out", p12Path, "-passout", `pass:${password}`, "-name", localCodeSignCommonName]);
-			});
-		await execFile("security", ["import", p12Path, "-k", keychain, "-P", password, "-A", "-T", "/usr/bin/codesign"]);
-		return localCodeSignCommonName;
-	} catch {
-		return undefined;
-	} finally {
-		await fs.rm(tempDir, { force: true, recursive: true }).catch(() => {});
-	}
+	return await ensureIdentityOnce(
+		findLocalSigningIdentity,
+		async () => {
+			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-computer-use-signing-"));
+			const password = `pi-computer-use-local-${process.pid}-${Date.now()}`;
+			try {
+				const configPath = path.join(tempDir, "req.cnf");
+				await fs.writeFile(configPath, [
+					"[req]",
+					"distinguished_name=dn",
+					"x509_extensions=ext",
+					"prompt=no",
+					"[dn]",
+					`CN=${localCodeSignCommonName}`,
+					"[ext]",
+					"basicConstraints=critical,CA:FALSE",
+					"keyUsage=critical,digitalSignature",
+					"extendedKeyUsage=critical,codeSigning",
+					"",
+				].join("\n"));
+				const keyPath = path.join(tempDir, "key.pem");
+				const certPath = path.join(tempDir, "cert.pem");
+				const p12Path = path.join(tempDir, "id.p12");
+				await execFile("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-keyout", keyPath, "-out", certPath, "-days", "3650", "-nodes", "-config", configPath]);
+				await execFile("openssl", ["pkcs12", "-export", "-legacy", "-inkey", keyPath, "-in", certPath, "-out", p12Path, "-passout", `pass:${password}`, "-name", localCodeSignCommonName])
+					.catch(async () => {
+						await execFile("openssl", ["pkcs12", "-export", "-inkey", keyPath, "-in", certPath, "-out", p12Path, "-passout", `pass:${password}`, "-name", localCodeSignCommonName]);
+					});
+				await execFile("security", ["import", p12Path, "-k", keychain, "-P", password, "-A", "-T", "/usr/bin/codesign"]);
+				return await findLocalSigningIdentity();
+			} catch (error) {
+				console.warn(`[pi-computer-use] could not create a local signing identity: ${error instanceof Error ? error.message : String(error)}`);
+				return undefined;
+			} finally {
+				await fs.rm(tempDir, { force: true, recursive: true }).catch(() => {});
+			}
+		},
+		(callback) => withDirectoryLock(localSigningLockPath, callback),
+	);
 }
 
 async function resolveCodeSignIdentity() {
@@ -323,8 +397,8 @@ async function signHelper(outputPath, identifier = defaultCodeSignIdentifier) {
 	await run("codesign", commandArgs);
 	if (identity === "-") {
 		console.warn("[pi-computer-use] warning: signed helper ad-hoc; dev permission grants may need review after native helper changes. Release installs should use a pre-signed helper app or a stable local signing identity.");
-	} else if (identity === localCodeSignCommonName) {
-		console.log(`[pi-computer-use] signed ${outputPath} with stable local identity '${localCodeSignCommonName}' so TCC grants survive local rebuilds.`);
+	} else if (/^[0-9A-F]{40}$/i.test(identity)) {
+		console.log(`[pi-computer-use] signed ${outputPath} with stable identity fingerprint ${identity} so TCC grants survive local rebuilds.`);
 	}
 	return identity;
 }
@@ -590,7 +664,8 @@ async function setup() {
 	);
 }
 
-setup().catch((error) => {
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) setup().catch((error) => {
 	if (isPostinstall) {
 		console.warn(`[pi-computer-use] postinstall helper setup skipped: ${error instanceof Error ? error.message : String(error)}`);
 		process.exit(0);

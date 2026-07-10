@@ -55,7 +55,8 @@
 		"test:commits": "node scripts/check-commit-messages.mjs",
 		"test:platform": "node --experimental-strip-types scripts/check-platform-windows.mjs",
 		"test:windows-scripts": "node scripts/check-windows-build-scripts.mjs",
-		"test": "npm run typecheck && npm run test:schema && npm run test:lifecycle && npm run test:invariants",
+		"test:signing": "node scripts/check-local-signing.mjs",
+		"test": "npm run typecheck && npm run test:schema && npm run test:lifecycle && npm run test:invariants && npm run test:signing",
 		"build:native": "node scripts/build-native.mjs",
 		"build:windows": "node scripts/build-native.mjs --platform windows"
 	},
