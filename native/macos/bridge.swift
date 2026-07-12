@@ -1883,6 +1883,15 @@ final class Bridge {
 			throw BridgeFailure(message: "No coordinate grounding is available", code: "coordinate_unavailable")
 		}
 
+		func animateCursor(at point: CGPoint) {
+			guard supportsAgentCursor,
+				(request["cursorOverlay"] as? Bool ?? true),
+				policy != "ax_only",
+				["press", "click", "moveMouse", "scroll", "drag"].contains(action)
+			else { return }
+			Task { @MainActor in AgentCursor.shared.animate(to: point, above: record.windowId) }
+		}
+
 		func focusTargetForPhysicalInput() {
 			guard delivery == "hid" else { return }
 			if let app = NSRunningApplication(processIdentifier: pid), !app.isActive {
@@ -1923,10 +1932,13 @@ final class Bridge {
 			if delivery == "hid" { try preflight(point) }
 			switch action {
 			case "press", "click":
+				animateCursor(at: point)
 				try postMouseClick(at: point, pid: pid, button: mouseButton(params["button"] as? String ?? "left"), clickCount: max(1, min(3, (params["clickCount"] as? NSNumber)?.intValue ?? 1)), delivery: delivery)
 			case "moveMouse":
+				animateCursor(at: point)
 				try postMouseMove(to: point, pid: pid, delivery: delivery)
 			case "scroll":
+				animateCursor(at: point)
 				try postScrollWheel(at: point, deltaX: (params["scrollX"] as? NSNumber)?.intValue ?? 0, deltaY: (params["scrollY"] as? NSNumber)?.intValue ?? 0, pid: pid, delivery: delivery)
 			case "drag":
 				guard let rawPath = params["path"] as? [[String: Any]], rawPath.count >= 2 else {
@@ -1938,6 +1950,7 @@ final class Bridge {
 					}
 					return lookPoint(record: record, x: x, y: y)
 				}
+				animateCursor(at: point)
 				try postMouseDrag(points: points, pid: pid, delivery: delivery)
 			default:
 				throw BridgeFailure(message: "Action \(action) cannot use coordinate grounding", code: "invalid_args")
@@ -1953,14 +1966,11 @@ final class Bridge {
 			return refreshed
 		}
 
-		if supportsAgentCursor, (request["cursorOverlay"] as? Bool ?? true), policy != "ax_only", ["press", "click", "moveMouse", "scroll", "drag"].contains(action), let point = try? coordinatePoint() {
-			Task { @MainActor in AgentCursor.shared.animate(to: point, above: record.windowId) }
-		}
-
 		if let element, action == "press" || action == "click" {
 			if policy == "foreground" && hasAncestorRole(element, role: "AXWebArea") {
 				try executeCoordinates(coordinatePoint())
 			} else if supportsAction(element, action: kAXPressAction as CFString) {
+				let cursorPoint = try? coordinatePoint()
 				var status = AXUIElementPerformAction(element, kAXPressAction as CFString)
 				if status != .success, let refreshed = refreshElement(), supportsAction(refreshed, action: kAXPressAction as CFString) {
 					status = AXUIElementPerformAction(refreshed, kAXPressAction as CFString)
@@ -1968,6 +1978,7 @@ final class Bridge {
 				if status == .success {
 					performed["grounding"] = "description"
 					performed["delivery"] = "ax"
+					if let cursorPoint { animateCursor(at: cursorPoint) }
 				} else {
 					try executeCoordinates(coordinatePoint())
 				}
@@ -2053,11 +2064,13 @@ final class Bridge {
 			try postKeyPress(keys: keys, pid: pid, delivery: delivery)
 			performed["grounding"] = "coordinates"
 		} else if let element, action == "scroll" {
+			let cursorPoint = try? coordinatePoint()
 			let before = scrollPositionSignature(element)
 			let result = performScrollActionOrAncestor(startingAt: element, targetPid: pid, scrollX: (params["scrollX"] as? NSNumber)?.intValue ?? 0, scrollY: (params["scrollY"] as? NSNumber)?.intValue ?? 0, steps: 1)
 			if (result["scrolled"] as? Bool) == true {
 				performed["grounding"] = "description"
 				performed["delivery"] = "ax"
+				if let cursorPoint { animateCursor(at: cursorPoint) }
 				let after = scrollPositionSignature(element)
 				return finish(["outcome": before != after ? "worked" : "unknown", "performed": performed])
 			}
