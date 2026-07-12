@@ -5,140 +5,98 @@ import Observation
 /// Main-actor Dubins-path animation state consumed by the SwiftUI overlay.
 @Observable
 @MainActor
-public final class AgentCursorRenderer {
-    public static let shared = AgentCursorRenderer()
+final class AgentCursorRenderer {
+    static let shared = AgentCursorRenderer()
 
-    public var turnRadius: Double = 80
-
-    public var peakSpeed: Double = 900
-
-    public var minStartSpeed: Double = 300
-
-    public var minEndSpeed: Double = 200
-
-    public var clickOffset: Double = 16
-
-    public var easing: Easing = .smootherstep
-
-    public var springStiffness: Double = 400
-    public var springDamping: Double = 17
-    public var springOvershoot: Double = 0.8
-
-    private(set) public var position: CGPoint = .init(x: -200, y: -200)
-    private(set) public var heading: Double = .pi / 4  // ~NW, like the OS cursor
-    public var focusRect: CGRect? = nil
-
-    public var style: AgentCursorStyle = .default
+    private(set) var position = CGPoint(x: -200, y: -200)
+    private(set) var heading: Double = .pi / 4
 
     private var path: PlannedPath?
-    private var trip: Trip?
     private var spring: Spring?
     private var distanceSoFar: Double = 0
     private var lastFrameTime: CFTimeInterval?
     private var springTarget: (point: CGPoint, heading: Double)?
 
-    public init() {}
-
-    public func moveTo(point: CGPoint, endAngleDegrees: Double) {
-        moveTo(point: point, endAngleRadians: endAngleDegrees * .pi / 180)
-    }
-
-    public func moveTo(point clickPoint: CGPoint, endAngleRadians endAngle: Double) {
-        let R = max(1, turnRadius)
-        let tx = clickPoint.x + CGFloat(cos(endAngle)) * CGFloat(clickOffset)
-        let ty = clickPoint.y + CGFloat(sin(endAngle)) * CGFloat(clickOffset)
-        let targetPoint = CGPoint(x: tx, y: ty)
-        let sMotion = heading + .pi
-        let tMotion = endAngle + .pi
+    func moveTo(point clickPoint: CGPoint) {
+        let endAngle = Double.pi / 4
+        let targetPoint = CGPoint(
+            x: clickPoint.x + CGFloat(cos(endAngle) * 16),
+            y: clickPoint.y + CGFloat(sin(endAngle) * 16)
+        )
         path = planPath(
-            x0: Double(position.x), y0: Double(position.y), th0: sMotion,
-            x1: Double(targetPoint.x), y1: Double(targetPoint.y), th1: tMotion,
-            R: R, endVisualHeading: endAngle, targetPoint: targetPoint)
-        trip = Trip(peak: peakSpeed,
-                    minStart: min(minStartSpeed, peakSpeed),
-                    minEnd: min(minEndSpeed, peakSpeed),
-                    easing: easing)
-        spring = nil; springTarget = nil; distanceSoFar = 0
+            x0: Double(position.x), y0: Double(position.y), th0: heading + .pi,
+            x1: Double(targetPoint.x), y1: Double(targetPoint.y), th1: endAngle + .pi,
+            R: 80, endVisualHeading: endAngle, targetPoint: targetPoint)
+        spring = nil
+        springTarget = nil
+        distanceSoFar = 0
     }
 
-    public func setInitialPosition(_ point: CGPoint, heading h: Double? = nil) {
+    func setInitialPosition(_ point: CGPoint) {
         position = point
-        heading = h ?? self.heading
-        path = nil; trip = nil; spring = nil; springTarget = nil
-        distanceSoFar = 0; lastFrameTime = nil
+        path = nil
+        spring = nil
+        springTarget = nil
+        distanceSoFar = 0
+        lastFrameTime = nil
     }
 
-    public func tick(now: CFTimeInterval) {
-        let prev = lastFrameTime ?? now
-        let dt = min(0.05, now - prev)
+    func tick(now: CFTimeInterval) {
+        let previous = lastFrameTime ?? now
+        let dt = min(0.05, now - previous)
         lastFrameTime = now
 
-        if let p = path, let t = trip {
-            let u = min(1.0, distanceSoFar / max(p.length, 1))
-            let profileValue = t.easing.profile(at: u)
-            let floorSpeed = (u < 0.5) ? t.minStart : t.minEnd
-            let currentSpeed = floorSpeed + (t.peak - floorSpeed) * profileValue
-            distanceSoFar += currentSpeed * dt
+        if let path {
+            let progress = min(1.0, distanceSoFar / max(path.length, 1))
+            let profile = 16 * progress * progress * (1 - progress) * (1 - progress)
+            let minimumSpeed = progress < 0.5 ? 300.0 : 200.0
+            let speed = minimumSpeed + (900 - minimumSpeed) * profile
+            distanceSoFar += speed * dt
 
-            if distanceSoFar >= p.length {
-                let endState = p.sample(at: p.length)
-                let vx = cos(endState.heading) * currentSpeed * springOvershoot
-                let vy = sin(endState.heading) * currentSpeed * springOvershoot
-                spring = Spring(ox: 0, oy: 0, vx: vx, vy: vy)
-                springTarget = (p.targetPoint, p.endVisualHeading)
-                position = p.targetPoint; heading = p.endVisualHeading
-                path = nil; trip = nil; distanceSoFar = 0
+            if distanceSoFar >= path.length {
+                let endState = path.sample(at: path.length)
+                spring = Spring(
+                    ox: 0,
+                    oy: 0,
+                    vx: cos(endState.heading) * speed * 0.8,
+                    vy: sin(endState.heading) * speed * 0.8
+                )
+                springTarget = (path.targetPoint, path.endVisualHeading)
+                position = path.targetPoint
+                heading = path.endVisualHeading
+                self.path = nil
+                distanceSoFar = 0
             } else {
-                let st = p.sample(at: distanceSoFar)
-                position = CGPoint(x: st.x, y: st.y)
-                heading = rotateToward(current: heading,
-                                       desired: st.heading + .pi,
-                                       maxStep: 14 * dt)
+                let state = path.sample(at: distanceSoFar)
+                position = CGPoint(x: state.x, y: state.y)
+                heading = rotateToward(current: heading, desired: state.heading + .pi, maxStep: 14 * dt)
             }
-        } else if var s = spring, let tgt = springTarget {
-            let k = springStiffness, c = springDamping
-            let substeps = 4; let sdt = dt / Double(substeps)
-            for _ in 0..<substeps {
-                s.vx += (-k * s.ox - c * s.vx) * sdt
-                s.vy += (-k * s.oy - c * s.vy) * sdt
-                s.ox += s.vx * sdt; s.oy += s.vy * sdt
+        } else if var spring, let target = springTarget {
+            let substep = dt / 4
+            for _ in 0..<4 {
+                spring.vx += (-400 * spring.ox - 17 * spring.vx) * substep
+                spring.vy += (-400 * spring.oy - 17 * spring.vy) * substep
+                spring.ox += spring.vx * substep
+                spring.oy += spring.vy * substep
             }
-            position = CGPoint(x: tgt.point.x + CGFloat(s.ox),
-                               y: tgt.point.y + CGFloat(s.oy))
-            heading = tgt.heading
-            if hypot(s.ox, s.oy) < 0.3 && hypot(s.vx, s.vy) < 2 {
-                position = tgt.point; spring = nil; springTarget = nil
-            } else { spring = s }
+            position = CGPoint(x: target.point.x + CGFloat(spring.ox), y: target.point.y + CGFloat(spring.oy))
+            heading = target.heading
+            if hypot(spring.ox, spring.oy) < 0.3 && hypot(spring.vx, spring.vy) < 2 {
+                position = target.point
+                self.spring = nil
+                springTarget = nil
+            } else {
+                self.spring = spring
+            }
         }
     }
 
     private func rotateToward(current: Double, desired: Double, maxStep: Double) -> Double {
-        var diff = desired - current
-        while diff > .pi  { diff -= 2 * .pi }
-        while diff < -.pi { diff += 2 * .pi }
-        return current + max(-maxStep, min(maxStep, diff))
+        var difference = desired - current
+        while difference > .pi { difference -= 2 * .pi }
+        while difference < -.pi { difference += 2 * .pi }
+        return current + max(-maxStep, min(maxStep, difference))
     }
-}
-
-public extension AgentCursorRenderer {
-    enum Easing: String, CaseIterable, Sendable {
-        case linear, smoothstep, smootherstep, cubic, quint
-
-        func profile(at u: Double) -> Double {
-            switch self {
-            case .linear:       return 1
-            case .smoothstep:   return (6 * u * (1 - u)) / 1.5
-            case .smootherstep: return (30 * u * u * (1 - u) * (1 - u)) / 1.875
-            case .cubic:        return ((u < 0.5) ? 12 * u * u : 12 * (1 - u) * (1 - u)) / 6
-            case .quint:        return ((u < 0.5) ? 80 * pow(u, 4) : 80 * pow(1 - u, 4)) / 5
-            }
-        }
-    }
-}
-
-private struct Trip {
-    let peak, minStart, minEnd: Double
-    let easing: AgentCursorRenderer.Easing
 }
 
 private struct Spring { var ox, oy, vx, vy: Double }

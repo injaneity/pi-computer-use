@@ -1806,14 +1806,6 @@ final class Bridge {
 		return payloadNode(element: element)
 	}
 
-	private func animateAgentCursor(to point: CGPoint, windowId: UInt32) {
-		Task { @MainActor in AgentCursor.shared.animate(to: point, above: windowId) }
-	}
-
-	private func finishAgentCursorAction() {
-		Task { @MainActor in AgentCursor.shared.finishAction() }
-	}
-
 	private func act(_ request: [String: Any]) throws -> [String: Any] {
 		let lookId = try stringArg(request, "lookId")
 		guard let record = lookRecord(for: lookId) else {
@@ -1962,8 +1954,7 @@ final class Bridge {
 		}
 
 		if supportsAgentCursor, (request["cursorOverlay"] as? Bool ?? true), policy != "ax_only", ["press", "click", "moveMouse", "scroll", "drag"].contains(action), let point = try? coordinatePoint() {
-			animateAgentCursor(to: point, windowId: record.windowId)
-			finishAgentCursorAction()
+			Task { @MainActor in AgentCursor.shared.animate(to: point, above: record.windowId) }
 		}
 
 		if let element, action == "press" || action == "click" {
