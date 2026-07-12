@@ -2,10 +2,13 @@
 # Create a stable self-signed code-signing certificate for release signing,
 # exported as a .p12 ready for the release workflow secrets.
 #
-# This certificate makes local signing repeatable, but macOS may still require
-# permission review after native code changes. Persistent update identity is a
-# property of Developer ID-signed release bundles, not a guarantee of this
-# self-signed development certificate.
+# Why self-signed is enough: TCC anchors an app's permission grants on the
+# signature's designated requirement (`identifier + certificate leaf`), not
+# on Apple's trust in the certificate. Reusing ONE cert for every release
+# keeps that requirement constant, so Accessibility / Screen Recording
+# grants survive updates. (Apple's blessing via notarization is only needed
+# to clear Gatekeeper on browser-downloaded apps — not for npm installs,
+# which carry no quarantine attribute.)
 #
 # Keep the generated key.pem + cert.pem somewhere safe and permanent: losing
 # them means the next release signs under a new leaf and every user

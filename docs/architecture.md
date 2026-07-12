@@ -89,7 +89,7 @@ One action is represented by an array of length one. A multi-action transaction 
 
 The backend/helper still owns grounding, preflight, execution, and verification. Raw coordinates are tied to the image-bearing state that produced them. A semantic ref may use its native accessibility frame without screenshot pixels; the helper still hit-tests that frame immediately before foreground delivery. Web-backed editable controls use atomic keyboard events and web-backed buttons use pointer events so application state receives normal input events rather than only a changed AX value. A helper result reports `worked`, `didnt`, or `unknown`, including evidence and shallow root changes where available.
 
-Every action attempts verified CDP or platform-accessibility semantics first. With `headless: true`, that background boundary is strict: Pi must never activate or raise an application, change the user's focused window, move the global cursor, or post raw input. With `headless: false` (the default), a typed `foreground_required` failure may start a separate foreground delivery attempt for the same action. Ambiguous or `unknown` background results are never replayed.
+Every action attempts verified CDP or platform-accessibility semantics first. With `headless: true`, that background boundary is strict: Pi must never activate or raise an application, change the user's focused window, move the global cursor, post raw input, or display the agent cursor. With `headless: false` (the default) and `cursor_overlay: true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point without moving the system pointer or delaying delivery; a typed `foreground_required` failure may then start a separate foreground delivery attempt for the same action. Ambiguous or `unknown` background results are never replayed.
 
 The agent-facing `act_ui.headless` flag determines whether foreground fallback is prohibited. When a semantic pattern is absent, or when an accepted accessibility value write is verified not to have taken effect, the backend fails with `foreground_required` before physical input. Fallback-capable multi-action calls execute one checked action at a time so a completed background prefix is never replayed; strict-headless calls retain native transactional batching.
 
@@ -113,7 +113,7 @@ Changes to a native backend should therefore include three layers of evidence:
 2. target-native compilation and deterministic native unit tests;
 3. the same black-box Cubench properties on an interactive host for that platform.
 
-OS-specific mechanisms can differ—AX and ScreenCaptureKit on macOS, UIA and Windows capture/input APIs on Windows—but state ownership, bounds, progressive disclosure, transaction boundaries, and honest outcomes may not.
+OS-specific mechanisms can differ—AX, ScreenCaptureKit, and the AppKit agent-cursor overlay on macOS; UIA and Windows capture/input APIs on Windows—but state ownership, bounds, progressive disclosure, transaction boundaries, and honest outcomes may not. The overlay lives inside the existing helper because native action grounding owns the final screen point; keeping it there avoids a second coordinate transform or public cursor tool surface. The helper's socket server runs off the main thread while AppKit owns the main run loop, and the helper excludes its click-through overlay from root discovery. Cursor animation is observational: newer actions may supersede an in-flight path, but rendering never blocks action delivery or verification.
 
 ## Design constraints
 

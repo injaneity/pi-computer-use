@@ -373,6 +373,7 @@ final class Bridge {
 	private let refStore = AXRefStore()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let physicalInputLock = NSRecursiveLock()
+	private let supportsAgentCursor = CommandLine.arguments.contains("serve")
 	private let browserBundleIds: Set<String> = [
 		"com.apple.Safari", "com.google.Chrome", "org.chromium.Chromium", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "net.imput.helium", "org.mozilla.firefox",
 	]
@@ -392,7 +393,9 @@ final class Bridge {
 
 	func run() {
 		if CommandLine.arguments.contains("serve") {
-			runServer(socketPath: argumentValue("--socket") ?? defaultSocketPath())
+			let socketPath = argumentValue("--socket") ?? defaultSocketPath()
+			Thread.detachNewThread { [self] in runServer(socketPath: socketPath) }
+			NSApp.run()
 			return
 		}
 		while true {
@@ -880,7 +883,7 @@ final class Bridge {
 			// windows while using an accessory/prohibited activation policy, so do not
 			// gate discovery on `.regular` here. `listWindows` and the higher-level
 			// window collector filter to actual controllable windows.
-			pidIsAlive(app.processIdentifier)
+			app.processIdentifier != getpid() && pidIsAlive(app.processIdentifier)
 		}
 		var seen = Set<Int32>()
 		var output = apps.map { app in
@@ -900,7 +903,7 @@ final class Bridge {
 		// even when their windows are visible and AX-controllable. Add CGWindow
 		// owners as acquisition candidates so callers can still resolve by pid/title
 		// and then build the normal AX scene through listWindows(pid:).
-		for owner in cgWindowOwners() where !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
+		for owner in cgWindowOwners() where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
 			seen.insert(owner.pid)
 			output.append([
 				"appName": owner.name,
@@ -1690,8 +1693,8 @@ final class Bridge {
 
 		let source = AXObserverGetRunLoopSource(observer)
 		Thread.detachNewThread {
-			// The socket server blocks the main thread in accept/read loops, so AXObserver
-			// sources live on this helper run loop and append into a locked ring buffer.
+			// Keep each AXObserver on its own run loop so its callbacks never compete
+			// with AppKit rendering on the helper's main thread.
 			CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
 			CFRunLoopRun()
 		}
@@ -1801,6 +1804,14 @@ final class Bridge {
 			throw BridgeFailure(message: "No element at point", code: "hit_test_failed")
 		}
 		return payloadNode(element: element)
+	}
+
+	private func animateAgentCursor(to point: CGPoint, windowId: UInt32) {
+		Task { @MainActor in AgentCursor.shared.animate(to: point, above: windowId) }
+	}
+
+	private func finishAgentCursorAction() {
+		Task { @MainActor in AgentCursor.shared.finishAction() }
 	}
 
 	private func act(_ request: [String: Any]) throws -> [String: Any] {
@@ -1948,6 +1959,11 @@ final class Bridge {
 			element = refreshed
 			performed["refound"] = true
 			return refreshed
+		}
+
+		if supportsAgentCursor, (request["cursorOverlay"] as? Bool ?? true), policy != "ax_only", ["press", "click", "moveMouse", "scroll", "drag"].contains(action), let point = try? coordinatePoint() {
+			animateAgentCursor(to: point, windowId: record.windowId)
+			finishAgentCursorAction()
 		}
 
 		if let element, action == "press" || action == "click" {
@@ -3477,8 +3493,11 @@ final class Bridge {
 
 }
 
-_ = NSApplication.shared
-NSApp.setActivationPolicy(.prohibited)
-
-let bridge = Bridge()
-bridge.run()
+@main
+struct PiComputerUseHelper {
+	static func main() {
+		_ = NSApplication.shared
+		NSApp.setActivationPolicy(CommandLine.arguments.contains("serve") ? .accessory : .prohibited)
+		Bridge().run()
+	}
+}

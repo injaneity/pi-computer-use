@@ -1,3 +1,4 @@
+import { getComputerUseConfig } from "../../config.ts";
 import { parseLookResponse, type LookResponse } from "../../outline.ts";
 import { toBoolean, toFiniteNumber, toOptionalString } from "../coerce.ts";
 import type { ComputerUsePlatformBackend, FramePoints, HelperActResult, PlatformActRequest, PlatformApp, PlatformFocusWindowResult, PlatformFrontmostResult, PlatformObserveRequest, PlatformReadTextRequest, PlatformReadTextResponse, PlatformRoot, PlatformRootKind, PlatformRootQuery, PlatformTarget, PlatformWaitForRequest, PlatformWaitForResponse } from "../types.ts";
@@ -107,11 +108,12 @@ export const macosBackend: Pick<ComputerUsePlatformBackend, "listApps" | "listRo
 	},
 
 	async act(request: PlatformActRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult> {
-		return await macosHelper.command<HelperActResult>("act", { ...request }, options);
+		return await macosHelper.command<HelperActResult>("act", { ...request, cursorOverlay: getComputerUseConfig().cursor_overlay }, options);
 	},
 
 	async actBatch(requests: PlatformActRequest[], options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult> {
-		return await macosHelper.command<HelperActResult>("actBatch", { actions: requests }, options);
+		const cursorOverlay = getComputerUseConfig().cursor_overlay;
+		return await macosHelper.command<HelperActResult>("actBatch", { actions: requests.map((request) => ({ ...request, cursorOverlay })) }, options);
 	},
 
 	async readText(args: PlatformReadTextRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<PlatformReadTextResponse> {

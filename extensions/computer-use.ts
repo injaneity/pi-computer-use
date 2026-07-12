@@ -184,6 +184,7 @@ function formatConfigStatus(): string {
 		"pi-computer-use configuration",
 		`browser_use: ${loaded.config.browser_use ? "enabled" : "disabled"}`,
 		`headless: ${loaded.config.headless ? "enabled" : "disabled"}`,
+		`cursor_overlay: ${loaded.config.cursor_overlay ? "enabled" : "disabled"}`,
 		"",
 		"Sources:",
 		...loaded.sources.map((source) => `- ${source.path}: ${source.error ? `error: ${source.error}` : source.exists ? "loaded" : "not found"}`),

@@ -13,13 +13,12 @@ import { fileURLToPath } from "node:url";
 
 const execFile = promisify(execFileCallback);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const defaultHelperAppPath = "/Applications/pi-computer-use.app";
-const helperAppPath = process.env.PI_COMPUTER_USE_HELPER_APP_PATH || defaultHelperAppPath;
+const helperAppPath = "/Applications/pi-computer-use.app";
 const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
 const helperSourceHashPath = path.join(helperAppPath, "Contents", "Resources", "source.sha256");
 const helperBundleId = "com.injaneity.pi-computer-use";
 const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
-const windowsHelperDestPath = process.env.PI_COMPUTER_USE_WINDOWS_HELPER_PATH || path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
+const windowsHelperDestPath = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
 const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 const packageJsonPath = path.join(rootDir, "package.json");
 const releaseRepo = "injaneity/pi-computer-use";
@@ -330,9 +329,9 @@ async function signHelper(outputPath, identifier = defaultCodeSignIdentifier) {
 	const commandArgs = ["--force", "--deep", "-i", identifier, "--timestamp=none", "--sign", identity, outputPath];
 	await run("codesign", commandArgs);
 	if (identity === "-") {
-		console.warn("[pi-computer-use] warning: signed helper ad-hoc; macOS may require permission review after native helper changes. Release installs should use a Developer ID-signed helper app.");
+		console.warn("[pi-computer-use] warning: signed helper ad-hoc; dev permission grants may need review after native helper changes. Release installs should use a pre-signed helper app or a stable local signing identity.");
 	} else if (identity === await findLocalSigningIdentity()) {
-		console.log(`[pi-computer-use] signed ${outputPath} with local identity '${localCodeSignCommonName}'. macOS may still require permission review after local rebuilds.`);
+		console.log(`[pi-computer-use] signed ${outputPath} with stable local identity '${localCodeSignCommonName}' so TCC grants survive local rebuilds.`);
 	}
 	return identity;
 }
@@ -346,7 +345,6 @@ async function helperHasAdhocSignature() {
 }
 
 async function registerHelperApp() {
-	if (helperAppPath !== defaultHelperAppPath) return;
 	const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 	if (!(await exists(lsregister))) return;
 	await run(lsregister, ["-f", helperAppPath]).catch(() => {});
@@ -371,7 +369,7 @@ async function installPrebuiltHelperApp(sourceAppPath) {
 	// ditto preserves the bundle byte-for-byte (signature + stapled
 	// notarization ticket). The sealed app is NEVER re-signed here: its
 	// Developer ID designated requirement (identifier + team) is exactly
-	// what gives release builds their best chance of retaining TCC grants.
+	// what lets TCC grant rows survive future updates.
 	await run("/usr/bin/ditto", [sourceAppPath, helperAppPath]);
 	await registerHelperApp();
 	return true;
@@ -401,8 +399,7 @@ async function installHelperApp(sourcePath) {
 	const existingInfoPlist = await fs.readFile(infoPlistPath, "utf8").catch(() => undefined);
 	if (existingSourceHash?.trim() === sourceHash && existingInfoPlist === infoPlist) {
 		// If a real signing identity is available, upgrade older ad-hoc installs
-		// in place so local builds have a consistent identity. macOS may still
-		// require permission review after native code changes.
+		// in place so TCC grants survive future native rebuilds.
 		const signingIdentity = process.env.PI_COMPUTER_USE_NO_SIGN === "1" ? "-" : await resolveCodeSignIdentity();
 		if (signingIdentity !== "-" && await helperHasAdhocSignature()) {
 			await signHelper(helperAppPath, helperBundleId);

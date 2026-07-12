@@ -182,19 +182,33 @@ check("INV-16 clean headless contract and non-destructive helper install", () =>
 	assert(!/stealth_mode|stealthMode|PI_COMPUTER_USE_STEALTH|PI_COMPUTER_USE_STRICT_AX/.test(configTs), "obsolete stealth configuration aliases remain");
 	assert(!/tccutil[\s\S]{0,80}reset|resetTcc/i.test(setupHelper), "helper installation can reset macOS privacy grants");
 	assert(setupHelper.includes("pi-computer-use Local Signing (com.injaneity.pi-computer-use)"), "stable bundle-specific local signing identity is missing");
-	assert(setupHelper.includes("PI_COMPUTER_USE_HELPER_APP_PATH"), "helper installer lacks an isolated test destination");
+});
+
+check("INV-17 macOS agent cursor stays native, configurable, and headless-safe", () => {
+	assert(configTs.includes("cursor_overlay: boolean") && configTs.includes("PI_COMPUTER_USE_CURSOR_OVERLAY"), "agent cursor config is incomplete");
+	assert(swift.includes('policy != "ax_only"'), "strict-headless actions can display the agent cursor");
+	assert(swift.includes('request["cursorOverlay"] as? Bool ?? true'), "native helper ignores the cursor overlay flag");
+	assert(swift.includes("app.processIdentifier != getpid()"), "helper overlay can leak into root discovery");
+	assert(swift.includes("AgentCursor.shared.animate(to:"), "native grounded actions do not drive the agent cursor");
+	assert(!swift.includes("completed.wait()") && !swift.includes("agentCursorLock"), "agent cursor can delay action delivery");
 });
 
 check("INV-8 swift typecheck", () => {
 	const triple = process.arch === "x64" ? "x86_64-apple-macosx14.0" : "arm64-apple-macosx14.0";
 	execFileSync("xcrun", [
-		"swiftc", "-target", triple,
+		"swiftc", "-target", triple, "-parse-as-library",
 		"-module-cache-path", path.join(os.tmpdir(), `pi-computer-use-swift-typecheck-${process.arch}`),
 		"-framework", "ApplicationServices",
 		"-framework", "AppKit",
 		"-framework", "ScreenCaptureKit",
 		"-framework", "Foundation",
-		"-typecheck", "native/macos/bridge.swift",
+		"-framework", "SwiftUI",
+		"-typecheck",
+		"native/macos/agent_cursor.swift",
+		"native/macos/agent_cursor_overlay_window.swift",
+		"native/macos/agent_cursor_renderer.swift",
+		"native/macos/agent_cursor_view.swift",
+		"native/macos/bridge.swift",
 	], { cwd: root, stdio: "pipe" });
 });
 

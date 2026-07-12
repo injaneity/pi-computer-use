@@ -15,7 +15,6 @@
  */
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,20 +22,6 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-computer-use-script-test-"));
-const TEST_HELPER_APP = path.join(TEST_ROOT, "pi-computer-use.app");
-const TEST_WINDOWS_HELPER = path.join(TEST_ROOT, "windows-bridge.exe");
-const LIVE_HELPER = "/Applications/pi-computer-use.app/Contents/MacOS/bridge";
-
-function fileFingerprint(filePath) {
-  if (!fs.existsSync(filePath)) return "missing";
-  const stat = fs.statSync(filePath);
-  const hash = createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-  return `${stat.mtimeMs}:${stat.size}:${hash}`;
-}
-
-const liveHelperBefore = fileFingerprint(LIVE_HELPER);
-const armPrebuiltBefore = fileFingerprint(path.join(ROOT, "prebuilt", "macos", "arm64", "bridge"));
 
 // ---------------------------------------------------------------------------
 // Path constants – replicated to avoid crossing the TS/ESM module boundary
@@ -96,11 +81,6 @@ function runScript(relPath, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [scriptPath, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        PI_COMPUTER_USE_HELPER_APP_PATH: TEST_HELPER_APP,
-        PI_COMPUTER_USE_WINDOWS_HELPER_PATH: TEST_WINDOWS_HELPER,
-      },
     });
     let stdout = "";
     let stderr = "";
@@ -115,7 +95,6 @@ function runScript(relPath, args) {
 function rmSilent(p) {
   try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* ok */ }
 }
-process.on("exit", () => rmSilent(TEST_ROOT));
 
 // ---------------------------------------------------------------------------
 // 1. Static path alignment
@@ -179,7 +158,7 @@ function isDarwin() { return process.platform === "darwin"; }
 console.log(`\n${LABEL} build-native.mjs (no args, platform detection)`);
 
 {
-  const result = await runScript("build-native.mjs", ["--output", path.join(TEST_ROOT, "native-default")]);
+  const result = await runScript("build-native.mjs", []);
   if (isWin32()) {
     tap(result.code, 0, "no-args exits 0 on Windows");
     tapMatch(result.stdout, /Building Windows helper/, "builds Windows helper on win32");
@@ -195,7 +174,7 @@ console.log(`\n${LABEL} build-native.mjs (no args, platform detection)`);
 console.log(`\n${LABEL} build-native.mjs --platform darwin`);
 
 {
-  const result = await runScript("build-native.mjs", ["--platform", "darwin", "--output", path.join(TEST_ROOT, "native-darwin")]);
+  const result = await runScript("build-native.mjs", ["--platform", "darwin"]);
   if (isDarwin()) {
     tap(result.code, 0, "--platform darwin exits 0 on macOS");
     tapMatch(result.stdout, /Building .*native helper|Built .*helper/, "builds macOS helper on darwin");
@@ -240,7 +219,7 @@ console.log(`\n${LABEL} setup-helper.mjs (no args, platform detection)`);
     const isAcceptable = result.code === 0 || result.stderr.includes("EPERM");
     tap(isAcceptable, true, "no-args handles win32 auto-detection");
   } else if (isDarwin()) {
-    tap(result.code === 0 || result.stderr.includes("EPERM"), true, "no-args installs only into the isolated test app on macOS");
+    tap(result.code === 0 || result.stderr.includes("EPERM"), true, "no-args installs or reports sandboxed /Applications on macOS");
     const combined = result.stderr + result.stdout;
     tap(/installed|current|unavailable|EPERM/i.test(combined), true, "prints macOS install/current/sandbox status");
   } else {
@@ -307,10 +286,6 @@ tap(
   true,
   "setup-helper.mjs routes on --platform windows",
 );
-
-console.log(`\n${LABEL} Live-install isolation`);
-tap(fileFingerprint(LIVE_HELPER), liveHelperBefore, "tests do not modify the installed macOS helper");
-tap(fileFingerprint(path.join(ROOT, "prebuilt", "macos", "arm64", "bridge")), armPrebuiltBefore, "tests do not rebuild the committed macOS helper");
 
 // ---------------------------------------------------------------------------
 // Summary

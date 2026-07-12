@@ -7,14 +7,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const sourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
+const macosSourcePaths = [
+	"agent_cursor.swift",
+	"agent_cursor_overlay_window.swift",
+	"agent_cursor_renderer.swift",
+	"agent_cursor_view.swift",
+	"bridge.swift",
+].map((file) => path.join(rootDir, "native", "macos", file));
 const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
 const archTriples = {
 	arm64: "arm64-apple-macosx",
 	x64: "x86_64-apple-macosx",
 };
 const deploymentTarget = "14.0";
-const frameworks = ["ApplicationServices", "AppKit", "ScreenCaptureKit", "Foundation"];
+const frameworks = ["ApplicationServices", "AppKit", "ScreenCaptureKit", "Foundation", "SwiftUI"];
 const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use";
 
 async function exists(filePath) {
@@ -76,7 +82,7 @@ function swiftArgsForArch(arch, outputPath) {
 		"-O",
 	];
 	for (const framework of frameworks) args.push("-framework", framework);
-	args.push(sourcePath, "-o", outputPath);
+	args.push(...macosSourcePaths, "-o", outputPath);
 	return args;
 }
 
