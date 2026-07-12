@@ -1967,8 +1967,15 @@ final class Bridge {
 		}
 
 		if let element, action == "press" || action == "click" {
-			if policy == "foreground" && hasAncestorRole(element, role: "AXWebArea") {
-				try executeCoordinates(coordinatePoint())
+			let elementRole = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+			let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField"]
+			let requiresPointerFocus = hasAncestorRole(element, role: "AXWebArea") || textRoles.contains(elementRole)
+			if requiresPointerFocus && policy != "ax_only" {
+				if policy == "foreground" {
+					try executeCoordinates(coordinatePoint())
+				} else {
+					throw BridgeFailure(message: "Web content requires pointer input", code: "foreground_required")
+				}
 			} else if supportsAction(element, action: kAXPressAction as CFString) {
 				let cursorPoint = try? coordinatePoint()
 				var status = AXUIElementPerformAction(element, kAXPressAction as CFString)
@@ -2002,7 +2009,8 @@ final class Bridge {
 				}
 				try postAtomicUnicodeText(text, pid: pid, delivery: delivery)
 				usleep(40_000)
-				let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
+				let verificationElement = refreshElement() ?? element
+				let value = stringAttribute(verificationElement, attribute: kAXValueAttribute as CFString) ?? ""
 				performed["grounding"] = "keyboard-events"
 				performed["delivery"] = delivery
 				performed["selectionGrounding"] = selected ? "ax" : "keyboard"
@@ -2025,11 +2033,13 @@ final class Bridge {
 			}
 			try executeCoordinates(coordinatePoint())
 		} else if action == "typeText" {
+			let preserveFocus = params["preserveFocus"] as? Bool ?? false
 			if let element {
 				let focused = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
 				if focused == .success { performed["focused"] = true }
 			}
 			acquirePhysicalInputIfNeeded()
+			if delivery == "hid" && !preserveFocus { focusTargetForPhysicalInput() }
 			let text = params["text"] as? String ?? ""
 			try postUnicodeText(text, pid: pid, delivery: delivery)
 			performed["grounding"] = "coordinates"
@@ -2040,6 +2050,7 @@ final class Bridge {
 				return finish(["outcome": changed ? "worked" : "didnt", "performed": performed, "evidence": ["value": afterValue, "valueChanged": changed]])
 			}
 		} else if action == "keypress" {
+			let preserveFocus = params["preserveFocus"] as? Bool ?? false
 			guard let keys = params["keys"] as? [String], !keys.isEmpty else {
 				throw BridgeFailure(message: "keypress requires keys", code: "invalid_args")
 			}
@@ -2061,6 +2072,7 @@ final class Bridge {
 				}
 			}
 			acquirePhysicalInputIfNeeded()
+			if delivery == "hid" && !preserveFocus { focusTargetForPhysicalInput() }
 			try postKeyPress(keys: keys, pid: pid, delivery: delivery)
 			performed["grounding"] = "coordinates"
 		} else if let element, action == "scroll" {
@@ -2440,7 +2452,10 @@ final class Bridge {
 	}
 
 	private func isBrowser(pid: Int32) -> Bool {
-		browserBundleIds.contains(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "")
+		let app = NSRunningApplication(processIdentifier: pid)
+		if browserBundleIds.contains(app?.bundleIdentifier ?? "") { return true }
+		let name = (app?.localizedName ?? processName(pid: pid) ?? "").lowercased()
+		return ["chrome", "chromium", "brave", "edge", "vivaldi", "opera", "firefox", "helium"].contains { name.contains($0) }
 	}
 
 	private func collectDescendants(startingAt root: AXUIElement, maxDepth: Int, maxNodes: Int = 5000) -> [AXUIElement] {

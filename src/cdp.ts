@@ -288,7 +288,7 @@ export function disconnectCdp(): void {
 	lastConnectFailureAt = 0;
 }
 
-export function cdpEnabled(): boolean {
+function cdpEnabled(): boolean {
 	const rawPort = process.env.PI_COMPUTER_USE_CDP_PORT ?? "";
 	if (!/^\d+$/.test(rawPort)) return false;
 	const port = Number(rawPort);

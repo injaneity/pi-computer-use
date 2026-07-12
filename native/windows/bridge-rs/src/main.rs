@@ -771,7 +771,14 @@ fn handle_act(args: &Value) -> Result<Value, ProtocolError> {
                 }
             }
             with_physical_input(|| {
-                window::ensure_foreground(record.hwnd)?;
+                let preserve_focus = parsed
+                    .params
+                    .get("preserveFocus")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !preserve_focus {
+                    window::ensure_foreground(record.hwnd)?;
+                }
                 input::act(&executable)
             })?
         }
@@ -915,7 +922,10 @@ fn act_on_ref(
         .get(reference)
         .cloned()
         .ok_or_else(|| ProtocolError::new("Element reference is stale", ErrorCode::StaleRef))?;
-    if is_web_backed(&element) && matches!(parsed.action.as_str(), "press" | "click" | "setText") {
+    if parsed.policy != "ax_only"
+        && is_web_backed(&element)
+        && matches!(parsed.action.as_str(), "press" | "click" | "setText")
+    {
         return coordinate_fallback(args, parsed, &element);
     }
     match parsed.action.as_str() {

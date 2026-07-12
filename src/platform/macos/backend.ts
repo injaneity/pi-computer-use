@@ -64,6 +64,11 @@ function parseRoots(result: unknown): PlatformRoot[] {
 	});
 }
 
+function helperAction(request: PlatformActRequest): Record<string, unknown> {
+	if (!("focus" in request.target)) return { ...request };
+	return { ...request, target: request.target.focus, params: { ...request.params, preserveFocus: true } };
+}
+
 export const macosBackend: Pick<ComputerUsePlatformBackend, "listApps" | "listRoots" | "getFrontmost" | "focusWindow" | "observe" | "act" | "actBatch" | "readText" | "waitFor"> = {
 	async listApps(signal?: AbortSignal): Promise<PlatformApp[]> {
 		return parseApps(await macosHelper.command<unknown>("listApps", {}, { signal }));
@@ -108,12 +113,12 @@ export const macosBackend: Pick<ComputerUsePlatformBackend, "listApps" | "listRo
 	},
 
 	async act(request: PlatformActRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult> {
-		return await macosHelper.command<HelperActResult>("act", { ...request, cursorOverlay: getComputerUseConfig().cursor_overlay }, options);
+		return await macosHelper.command<HelperActResult>("act", { ...helperAction(request), cursorOverlay: getComputerUseConfig().cursor_overlay }, options);
 	},
 
 	async actBatch(requests: PlatformActRequest[], options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult> {
 		const cursorOverlay = getComputerUseConfig().cursor_overlay;
-		return await macosHelper.command<HelperActResult>("actBatch", { actions: requests.map((request) => ({ ...request, cursorOverlay })) }, options);
+		return await macosHelper.command<HelperActResult>("actBatch", { actions: requests.map((request) => ({ ...helperAction(request), cursorOverlay })) }, options);
 	},
 
 	async readText(args: PlatformReadTextRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<PlatformReadTextResponse> {

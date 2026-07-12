@@ -99,6 +99,19 @@ export interface FoldResult {
 	truncated: boolean;
 }
 
+export type OutlineChange =
+	| { type: "added"; ref: string; parent?: string; node: SerializedOutlineNode }
+	| { type: "updated"; ref: string; path: string[]; fields: Partial<Omit<SerializedOutlineNode, "children">> }
+	| { type: "removed"; ref: string; parent?: string };
+
+export interface OutlineDiff {
+	changes: OutlineChange[];
+	changedNodeCount: number;
+	fullNodeCount: number;
+	useFullView: boolean;
+	reason?: "root_replaced" | "change_budget_exceeded" | "identity_confidence_low";
+}
+
 export type SerializedOutlineNode = Omit<OutlineNode, "parent" | "children"> & { children: SerializedOutlineNode[] };
 
 export interface SerializedOutline {

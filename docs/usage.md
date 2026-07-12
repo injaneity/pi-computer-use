@@ -16,7 +16,7 @@ The normal loop is:
 | `search_ui` | Search the full cached outline. |
 | `expand_ui` | Show local outline context for one ref. |
 | `inspect_ui` | Show fields, rects, actions, and evidence for one ref. |
-| `act_ui` | Perform one checked action transaction and return one final state. |
+| `act_ui` | Perform checked actions and return the resulting saved state, showing its changes or a full view when needed. |
 | `read_text` | Page through long text owned by a state. |
 | `wait_for` | Wait for text or a role to appear or disappear. |
 | `launch_browser` | Start a managed CDP browser and return page roots. |
@@ -27,7 +27,7 @@ The normal loop is:
 
 `find_roots` returns roots such as `@r1`. Every desktop window, transient surface, and CDP page participates in that same forest. `observe_ui` returns element refs such as `@e12` and a `stateId`.
 
-Every tool that consumes an `@e` ref also requires its owning `stateId`. A state remains queryable while it is in the bounded store, but a mutation from an old resource epoch is rejected as stale. Observe again after another mutation, an uncertain action outcome, or state eviction.
+Every tool that consumes an `@e` ref also requires its owning `stateId`. A state remains queryable while it is in the bounded store, but a mutation from an old resource epoch is rejected as stale. `act_ui` returns the next usable `stateId`; consume it directly instead of observing again. Observe again only after an uncertain external mutation or state eviction.
 
 Nodes marked `pictureOnly` have visual evidence but no platform accessibility element. Semantic actions cannot target them. Coordinate actions are available only from a current image-bearing desktop state.
 
@@ -82,6 +82,33 @@ act_ui({
 ```
 
 Steps run sequentially against one resource and retain helper checks. The native helper uses one root baseline and final settle for the transaction, and the bridge returns one final observation. If a transition can change the meaning of later refs or requires a decision, send one action, inspect the returned state, then continue.
+
+Clicks into editable regions establish foreground focus for later keyboard steps in the same transaction. Omit `ref` from `typeText` or `keypress` after such a click so input is sent to the editor established by that click:
+
+```ts
+act_ui({
+  stateId,
+  actions: [
+    { action: "click", x: 420, y: 300 },
+    { action: "typeText", text: "hello" },
+  ],
+  expect: { text: "hello" },
+})
+```
+
+The runtime prefers background semantics when they are credible, verifies the result, and escalates side-effect-free failed keyboard input to foreground delivery automatically. Ambiguous pointer actions are never replayed blindly.
+
+### Successor views
+
+The initial `observe_ui` response is a full folded view. A normal `act_ui` response saves the complete resulting state but renders only its trustworthy changes:
+
+```text
+Successor diff (1 change, S1 → S2):
+~ @e9 (@e1 > @e9) value="hello"
+Use stateId S2 for subsequent actions and queries.
+```
+
+Confidently matched elements retain their model-facing refs across resulting states. New nodes receive new refs and removed nodes are named explicitly. The runtime returns a full folded view instead when the root was replaced, identity confidence is low, or the change budget is too large. `search_ui`, `expand_ui`, and `inspect_ui` always query the complete saved state regardless of how it was rendered.
 
 Coordinate fallback uses image pixels from the observed state:
 

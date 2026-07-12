@@ -10,6 +10,23 @@ The agent still sees a multi-root forest. `find_roots` returns stable root refs 
 
 ## Runtime model
 
+Every live request follows one path:
+
+```text
+load saved state → prepare actions → run → observe → save → show changes
+```
+
+The implementation keeps that ownership explicit:
+
+| Module | Owns |
+|---|---|
+| `state.ts` | Saved UI states, request-local state, restoration, and serialization |
+| `actions.ts` | Validation, normalization, target resolution, dependent focus, and safe retry eligibility |
+| `bridge.ts` | Tool coordination and resource scheduling |
+| `view.ts` | Stable public refs and full-versus-changes rendering |
+| `outline.ts` | Parsing and querying complete UI trees |
+| `platform/*` | OS observation, input mechanics, and native protocol translation |
+
 ```mermaid
 flowchart TB
     A["Agent tool calls<br/>Pi may issue them concurrently"] --> C["State-scoped contract<br/>root @r / stateId / element @e"]
@@ -57,7 +74,7 @@ The bridge stores the complete observation and returns a folded rendering. The s
 
 ## Acting and batching
 
-`act_ui` is a transaction:
+`act_ui` runs one dependent action list:
 
 ```ts
 act_ui({
@@ -87,11 +104,17 @@ delivery alone is never treated as semantic success.
 
 One action is represented by an array of length one. A multi-action transaction is appropriate only when no intermediate observation is needed. The runtime validates one base state, acquires one resource lane, and sends the steps as one native helper transaction. The helper captures one pre-transaction root baseline, executes and verifies steps in order, and stops on the first failed or invalidated step. Partial results include `stoppedAt`, so callers know the exact checked boundary and must re-observe before continuing. The helper performs one final root-delta settle and the bridge produces one final observation. There is no alternate sequential protocol. This is not a mechanism for parallel actions within one UI resource.
 
-The backend/helper still owns grounding, preflight, execution, and verification. Raw coordinates are tied to the image-bearing state that produced them. A semantic ref may use its native accessibility frame without screenshot pixels; the helper still hit-tests that frame immediately before foreground delivery. Web-backed editable controls use atomic keyboard events and web-backed buttons use pointer events so application state receives normal input events rather than only a changed AX value. A helper result reports `worked`, `didnt`, or `unknown`, including evidence and shallow root changes where available.
+The bridge resolves model intent; the backend/helper owns grounding, preflight, delivery, and evidence. Accessibility capabilities choose an initial strategy but are not treated as proof that the intended result occurred. Editable-region clicks establish foreground focus for following unscoped keyboard steps in the same transaction. Raw coordinates are tied to the image-bearing state that produced them. Web-backed editable controls use atomic keyboard events and web-backed buttons use pointer events so application state receives normal input events rather than only a changed AX value. A helper result reports `worked`, `didnt`, or `unknown`, including evidence and shallow root changes where available.
 
-Every action attempts verified CDP or platform-accessibility semantics first. With `headless: true`, that background boundary is strict: Pi must never activate or raise an application, change the user's focused window, move the global cursor, post raw input, or display the agent cursor. With `headless: false` (the default) and `cursor_overlay: true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point without moving the system pointer or delaying delivery; a typed `foreground_required` failure may then start a separate foreground delivery attempt for the same action. Ambiguous or `unknown` background results are never replayed.
+With `headless: true`, the background boundary is strict: Pi must never activate or raise an application, change the user's focused window, move the global cursor, post raw input, or display the agent cursor. With `headless: false` (the default), credible semantic activation may begin in the background, editable clicks preserve the focus they establish for following unscoped keyboard input, and keyboard input with a checked `didnt` result may retry in the foreground because the first attempt proved side-effect-free. Focus-preserving native keyboard requests must not raise or re-focus the window between semantic activation and HID delivery; canvas editors such as PowerPoint otherwise collapse an inner text editor back to placeholder selection. Ambiguous pointer outcomes are never replayed. With `cursor_overlay: true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point without delaying delivery.
 
-The agent-facing `act_ui.headless` flag determines whether foreground fallback is prohibited. When a semantic pattern is absent, or when an accepted accessibility value write is verified not to have taken effect, the backend fails with `foreground_required` before physical input. Fallback-capable multi-action calls execute one checked action at a time so a completed background prefix is never replayed; strict-headless calls retain native transactional batching.
+The agent-facing `act_ui.headless` flag determines whether foreground execution is prohibited. Fallback-capable multi-action calls execute one checked action at a time, retain click-established focus, and stop on a checked `didnt`; strict-headless calls retain native transactional batching.
+
+## Successor diffs
+
+Complete observations remain immutable and bounded internally. The initial observation renders a folded full view. After a mutation, `view.ts` stabilizes public refs using confident native identities, saves the complete resulting state, and compares it with the base state. Small trustworthy results render `added`, `updated`, and `removed` nodes plus the next `stateId`. Root appearance, closure, and focus changes remain part of the run result.
+
+Diff rendering falls back to a full folded view when the root identity changes, too few successor nodes can be matched confidently, or the change budget would make a patch less useful than the full view. Cached queries always operate on the complete stored state, never on a partially applied model-side tree.
 
 ## Browser support
 
@@ -121,7 +144,9 @@ OS-specific mechanisms can differ—AX, ScreenCaptureKit, and the AppKit agent-c
 - Make state ownership explicit; never depend on a mutable session-wide current UI.
 - Reject stale writes before dispatch using resource epochs.
 - Serialize by physical resource, not by tool name or whole session.
-- Prefer platform semantics over image-only guessing.
+- Prefer platform semantics as the cheapest credible attempt, then trust verified outcomes over advertised capabilities.
+- Preserve focus established by one transaction step for dependent keyboard steps.
+- Store full immutable states and render the smallest trustworthy resulting view.
 - Keep observation compact and expand locally.
 - Let the backend/helper own action grounding and verification.
 - Keep platform mechanisms behind the platform-neutral seam.

@@ -105,6 +105,7 @@ export interface HelperActPerformed {
 	actionCount?: number;
 	activated?: boolean;
 	raised?: boolean;
+	focused?: boolean;
 }
 
 export interface PlatformRootDelta {
@@ -143,11 +144,11 @@ export interface PlatformObserveRequest {
 	includeImage?: boolean;
 }
 
-export type PlatformActAction = "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse";
-export type PlatformActTarget = { ref: string } | { x: number; y: number };
-export type PlatformDeliveryPolicy = "ax_only" | "background" | "default" | "foreground";
-export type PlatformMouseButton = "left" | "right" | "middle";
-export type PlatformActDeliveryParam = { delivery?: NativeInputDelivery };
+type PlatformActAction = "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse";
+export type PlatformActTarget = { ref: string } | { x: number; y: number } | { focus: PlatformPoint };
+type PlatformDeliveryPolicy = "ax_only" | "background" | "default" | "foreground";
+type PlatformMouseButton = "left" | "right" | "middle";
+type PlatformActDeliveryParam = { delivery?: NativeInputDelivery };
 export type PlatformPoint = { x: number; y: number };
 
 export interface PlatformActRequestBase {

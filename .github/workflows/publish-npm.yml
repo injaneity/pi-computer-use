@@ -388,7 +388,7 @@ jobs:
           test -f prebuilt/windows/windows-bridge.exe
 
       - name: Run checks
-        run: npm test
+        run: npm test && npm run test:platform && npm run test:windows-scripts
 
       - name: Publish to npm
         run: npm publish --access public --provenance

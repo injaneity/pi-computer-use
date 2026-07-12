@@ -82,6 +82,11 @@ function appsFromRoots(roots: PlatformRoot[]): PlatformApp[] {
 	});
 }
 
+function helperAction(request: PlatformActRequest): Record<string, unknown> {
+	if (!("focus" in request.target)) return { ...request };
+	return { ...request, target: request.target.focus, params: { ...request.params, preserveFocus: true } };
+}
+
 async function ensureReady(_ctx: unknown, state: PlatformReadyState, signal?: AbortSignal): Promise<PlatformReadyState> {
 	await windowsHelper.ensureInstalled(signal);
 	const diagnostics = await windowsHelper.command<any>("diagnostics", {}, { signal, timeoutMs: 5_000 });
@@ -117,10 +122,10 @@ export const windowsBackend: ComputerUsePlatformBackend = {
 		return parseLookResponse(await windowsHelper.command("look", { ...request.target, baseLookId: request.baseLookId, maxDimension: request.maxDimension, readText: request.readText, scopeRef: request.scopeRef, includeImage: request.includeImage }, options));
 	},
 	async act(request: PlatformActRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult> {
-		return await windowsHelper.command<HelperActResult>("act", { ...request }, options);
+		return await windowsHelper.command<HelperActResult>("act", helperAction(request), options);
 	},
 	async actBatch(requests: PlatformActRequest[], options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<HelperActResult> {
-		return await windowsHelper.command<HelperActResult>("actBatch", { actions: requests }, options);
+		return await windowsHelper.command<HelperActResult>("actBatch", { actions: requests.map(helperAction) }, options);
 	},
 	async readText(args: PlatformReadTextRequest, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<PlatformReadTextResponse> {
 		return await windowsHelper.command("uiaReadText", { ...args }, options);

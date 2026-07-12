@@ -23,12 +23,12 @@ export interface PermissionStatus {
 	source?: PermissionSource;
 }
 
-export interface PermissionKindCopy {
+interface PermissionKindCopy {
 	kind: PermissionKind;
 	openOption: string;
 }
 
-export interface PermissionFlowCopy {
+interface PermissionFlowCopy {
 	nonInteractiveError(helperPath: string): string;
 	prompt(status: PermissionStatus, helperPath: string, hint?: string): string;
 	incompleteError(helperPath: string): string;

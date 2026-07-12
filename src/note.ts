@@ -1,6 +1,6 @@
 import { nodeByRef, outlineNodeLabel, type Outline, type OutlineNode } from "./outline.ts";
 
-export interface NoteRegion {
+interface NoteRegion {
 	key: string;
 	label: string;
 	status: "seen" | "changed" | "never-looked";
@@ -15,14 +15,14 @@ export interface WindowNote {
 	regions: NoteRegion[];
 }
 
-export interface NoteWindowInput {
+interface NoteWindowInput {
 	windowRef?: string;
 	title: string;
 	pairing?: "exact" | "high" | "low";
 	pairingScore?: number;
 }
 
-export interface NoteRefreshOutcome {
+interface NoteRefreshOutcome {
 	window: NoteWindowInput;
 	windowChanged?: boolean;
 	newWindowLabel?: string;

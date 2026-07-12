@@ -1,47 +1,25 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { canRetryInForeground, outcomeAfterCheck, outcomeAfterObservedValues, prepareAction, type ActionState, type PreparedAction } from "./actions.ts";
 import { cdpClickForContext, cdpEvaluateForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeForContext, disconnectCdp, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
-import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, restoreOutline, searchOutline, serializeOutline, serializeOutlineNode, type LookResponse, type Outline, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode } from "./outline.ts";
+import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, restoreOutline, searchOutline, serializeOutline, serializeOutlineNode, type LookResponse, type Outline, type OutlineChange, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode } from "./outline.ts";
 import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type MouseButtonName, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type StateTargetParams, type UiAction, type WaitForParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
 import { currentPlatformBackend } from "./platform/index.ts";
 import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformActRequest, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformRoot as HelperWindow } from "./platform/types.ts";
 import type { PermissionStatus } from "./permissions.ts";
-import { ResourceScheduler, StateStore, type StoredState } from "./runtime.ts";
+import { ResourceScheduler } from "./runtime.ts";
+import { SavedStates, type CurrentCapture, type CurrentTarget, type OperationState } from "./state.ts";
+import { changesBetween, renderChanges, stabilizeRefs } from "./view.ts";
 export type { ActParams, EvaluateBrowserParams, ExpandUiParams, ImageMode, InspectUiParams, LaunchBrowserParams, FindParams, MouseButtonName, NavigateBrowserParams, ObserveParams, ObserveTargetParams, ReadTextParams, RootSelector, SearchUiParams, StateTargetParams, UiAction, WaitForParams } from "./contract.ts";
-
-interface StateTargetSnapshot {
-	pid: number;
-	windowId: number;
-	windowRef?: string;
-}
-
-export interface CurrentTarget {
-	appName: string;
-	bundleId?: string;
-	pid: number;
-	windowTitle: string;
-	windowId: number;
-	windowRef?: string;
-	nativeWindowRef?: string;
-}
-
-export interface CurrentCapture {
-	stateId: string;
-	width: number;
-	height: number;
-	scaleFactor: number;
-	timestamp: number;
-}
 
 interface ActivationFlags {
 	activated: boolean;
@@ -77,7 +55,7 @@ interface ExecutionTrace {
 	backgroundFirst?: boolean;
 	escalatedToForeground?: boolean;
 	escalationReason?: string;
-	backgroundAttempt?: { outcome: "foreground_required"; reason: string };
+	backgroundAttempt?: { outcome: "foreground_required" | "didnt"; reason: string };
 	verification?: {
 		status: "verified" | "preexisting" | "failed";
 		text?: string;
@@ -88,7 +66,7 @@ interface ExecutionTrace {
 	};
 }
 
-export interface ComputerUseDetails {
+interface ComputerUseDetails {
 	tool: string;
 	target: {
 		app: string;
@@ -108,6 +86,10 @@ export interface ComputerUseDetails {
 		coordinateSpace: "window-relative-screenshot-pixels";
 	};
 	lookId?: string;
+	view: "full" | "diff";
+	baseStateId?: string;
+	changes?: OutlineChange[];
+	viewReason?: "root_replaced" | "change_budget_exceeded" | "identity_confidence_low";
 	renderedOutline?: string;
 	outline?: SerializedOutline;
 	note?: WindowNote;
@@ -137,7 +119,7 @@ export interface ComputerUseDetails {
 		| "browser_wait_verification";
 }
 
-export interface ListWindowsDetails {
+interface ListWindowsDetails {
 	tool: "find_roots";
 	query: FindParams;
 	windows: Array<{
@@ -171,23 +153,30 @@ export interface ListWindowsDetails {
 	};
 }
 
-export interface BrowserObservationDetails {
+interface BrowserObservationDetails {
 	tool: string;
 	kind: "browser_page";
 	stateId: string;
+	baseStateId?: string;
+	view: "full" | "diff";
+	changes?: OutlineChange[];
 	root: { ref: string; kind: "browser_page"; title: string; url: string };
 	outline: SerializedOutline;
 	renderedOutline: string;
 }
 
-export interface EvaluateBrowserDetails {
+interface EvaluateBrowserDetails {
 	tool: "evaluate_browser";
 	baseStateId: string;
-	requiresObserve: true;
+	stateId: string;
+	view: "full" | "diff";
+	changes?: OutlineChange[];
+	outline: SerializedOutline;
+	renderedOutline: string;
 	value: unknown;
 }
 
-export interface LaunchBrowserDetails {
+interface LaunchBrowserDetails {
 	tool: "launch_browser";
 	browser: "helium" | "chrome";
 	port: number;
@@ -195,7 +184,7 @@ export interface LaunchBrowserDetails {
 	roots: Array<{ ref: string; kind: "browser_page"; title: string; url: string }>;
 }
 
-export interface ReadTextDetails {
+interface ReadTextDetails {
 	tool: "read_text";
 	ref?: string;
 	offset: number;
@@ -205,17 +194,12 @@ export interface ReadTextDetails {
 	text: string;
 }
 
-export interface ConfirmationDetails {
-	tool: string;
-	status: "ok";
-	target: Pick<ComputerUseDetails["target"], "app" | "bundleId" | "pid" | "windowTitle" | "windowId" | "windowRef">;
-	execution: ExecutionTrace;
-	message: string;
-}
-
-export interface WaitForDetails {
+interface WaitForDetails {
 	tool: "wait_for";
 	stateId: string;
+	baseStateId?: string;
+	view: "full" | "diff";
+	changes?: OutlineChange[];
 	found: boolean;
 	gone?: boolean;
 	timedOut?: boolean;
@@ -227,7 +211,7 @@ export interface WaitForDetails {
 	renderedOutline: string;
 }
 
-export interface OutlineToolDetails {
+interface OutlineToolDetails {
 	tool: "search_ui" | "expand_ui" | "inspect_ui";
 	stateId?: string;
 	lookId?: string;
@@ -278,39 +262,6 @@ interface RuntimeState {
 	lastPermissionCheckAt: number;
 }
 
-interface OperationState {
-	currentTarget?: CurrentTarget;
-	currentCapture?: CurrentCapture;
-	currentStateTarget?: StateTargetSnapshot;
-	currentImageMode?: ImageMode;
-	currentLook?: LookResponse;
-	currentOutline?: Outline;
-	currentNote?: WindowNote;
-	resourceKey?: string;
-	epoch?: number;
-	lastSearchOcrEscalatedLookId?: string;
-	browserSnapshot?: CdpPageSnapshot;
-	contextId?: string;
-}
-
-interface DesktopObservation {
-	kind: "desktop";
-	target: CurrentTarget;
-	capture: CurrentCapture;
-	look: Omit<LookResponse, "parsedOutline" | "outline">;
-	outline: SerializedOutline;
-	note?: WindowNote;
-	imageMode?: ImageMode;
-}
-
-interface BrowserObservation {
-	kind: "browser";
-	snapshot: CdpPageSnapshot;
-	outline: SerializedOutline;
-}
-
-type UiObservation = DesktopObservation | BrowserObservation;
-
 
 const MISSING_TARGET_ERROR = "No current controlled window. Call observe_ui first to choose a target window.";
 const CURRENT_TARGET_GONE_ERROR =
@@ -340,89 +291,22 @@ const runtimeState: RuntimeState = {
 	nextRootRefIndex: 1,
 };
 
-const operationStorage = new AsyncLocalStorage<OperationState>();
-const uiStates = new StateStore<UiObservation>(128);
+const savedStates = new SavedStates();
 let resourceScheduler = new ResourceScheduler();
 
 function operationState(): OperationState {
-	const state = operationStorage.getStore();
-	if (!state) throw new Error("Computer-use operation state is unavailable.");
-	return state;
+	return savedStates.current();
 }
 
 function desktopResourceKey(target: Pick<CurrentTarget, "pid">): string {
 	return `desktop-pid:${target.pid}`;
 }
 
-function hydrateOperation(record: StoredState<UiObservation> | undefined): OperationState {
-	if (!record) return {};
-	if (record.value.kind === "browser") {
-		const outline = restoreOutline(record.value.outline);
-		return {
-			currentCapture: { stateId: record.stateId, width: 0, height: 0, scaleFactor: 1, timestamp: record.value.snapshot.capturedAt },
-			currentLook: {
-				lookId: record.value.snapshot.snapshotId,
-				capturedAt: record.value.snapshot.capturedAt / 1000,
-				window: { windowId: 0, framePoints: { x: 0, y: 0, w: 1, h: 1 }, scaleFactor: 1, isModal: false, role: "document", subrole: "" },
-				outline: outline.root,
-				timings: {},
-				parsedOutline: outline,
-			},
-			currentOutline: outline,
-			resourceKey: record.resourceKey,
-			epoch: record.epoch,
-			browserSnapshot: record.value.snapshot,
-			contextId: record.value.snapshot.contextId,
-		};
-	}
-	const outline = restoreOutline(record.value.outline);
-	const look: LookResponse = {
-		...record.value.look,
-		outline: outline.root,
-		parsedOutline: outline,
-	};
-	return {
-		currentTarget: { ...record.value.target },
-		currentCapture: { ...record.value.capture },
-		currentStateTarget: {
-			pid: record.value.target.pid,
-			windowId: record.value.target.windowId,
-			windowRef: record.value.target.windowRef,
-		},
-		currentImageMode: record.value.imageMode,
-		currentLook: look,
-		currentOutline: outline,
-		currentNote: record.value.note ? structuredClone(record.value.note) : undefined,
-		resourceKey: record.resourceKey,
-		epoch: record.epoch,
-	};
-}
-
 function persistOperation(state: OperationState): void {
 	if (!state.currentTarget || !state.currentCapture || !state.currentLook || !state.currentOutline) return;
 	const resourceKey = state.resourceKey ?? desktopResourceKey(state.currentTarget);
 	const epoch = state.epoch ?? resourceScheduler.epoch(resourceKey);
-	uiStates.set({
-		stateId: state.currentCapture.stateId,
-		resourceKey,
-		epoch,
-		value: {
-			kind: "desktop",
-			target: { ...state.currentTarget },
-			capture: { ...state.currentCapture },
-			look: {
-				lookId: state.currentLook.lookId,
-				capturedAt: state.currentLook.capturedAt,
-				window: structuredClone(state.currentLook.window),
-				image: state.currentLook.image ? { ...state.currentLook.image } : undefined,
-				timings: { ...state.currentLook.timings },
-				readText: state.currentLook.readText ? { ...state.currentLook.readText } : undefined,
-			},
-			outline: serializeOutline(state.currentOutline),
-			note: state.currentNote ? structuredClone(state.currentNote) : undefined,
-			imageMode: state.currentImageMode,
-		},
-	});
+	savedStates.saveDesktop(state, resourceKey, epoch);
 }
 
 /** Release handles and state owned by the current Pi session. */
@@ -444,7 +328,7 @@ export async function shutdownComputerUseSession(): Promise<void> {
 	runtimeState.managedBrowserCdpPort = undefined;
 	runtimeState.previousCdpPort = undefined;
 
-	uiStates.clear();
+	savedStates.clear();
 	runtimeState.windowRefs.clear();
 	runtimeState.windowRefByIdentity.clear();
 	runtimeState.browserRootByContext.clear();
@@ -562,27 +446,6 @@ function toOptionalString(value: unknown): string | undefined {
 
 function toBoolean(value: unknown): boolean {
 	return value === true;
-}
-
-function normalizeMouseButton(value: unknown): MouseButtonName {
-	if (value === "right" || value === "middle" || value === "left") {
-		return value;
-	}
-	return "left";
-}
-
-function normalizeClickCount(value: unknown, fallback = 1): number {
-	const count = Math.trunc(toFiniteNumber(value, fallback));
-	return Math.max(1, Math.min(3, count));
-}
-
-function normalizeScrollDelta(value: unknown): number {
-	const delta = Math.round(toFiniteNumber(value, 0));
-	return Math.max(-10_000, Math.min(10_000, delta));
-}
-
-function normalizeKeyList(value: unknown): string[] {
-	return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string" && key.trim().length > 0) : [];
 }
 
 function outlineNodeCenter(node: OutlineNode): { x: number; y: number } {
@@ -1332,10 +1195,14 @@ function actTargetPublicRef(params: { ref?: string }): string | undefined {
 
 async function captureCurrentTarget(signal?: AbortSignal, readText: "auto" | "always" | "never" = "auto", maxDimension = AUTO_IMAGE_MAX_DIMENSION, targetOverride?: ResolvedTarget, includeImage = true): Promise<CaptureResult> {
 	const state = operationState();
+	const baseOutline = state.currentOutline;
+	const baseTarget = state.currentTarget;
 	let target = targetOverride ?? await resolveCurrentTarget(signal);
 	target = await ensureTargetWindowId(target, signal);
 	const look = await performLook(target, { maxDimension, readText, includeImage }, signal);
-	const outline = look.parsedOutline!;
+	const outline = stabilizeRefs(baseTarget && sameRootIdentity(baseTarget, target) ? baseOutline : undefined, look.parsedOutline!);
+	look.parsedOutline = outline;
+	look.outline = outline.root;
 	const capture = captureForLook(look);
 
 	setCurrentTarget(target);
@@ -1363,9 +1230,12 @@ async function buildToolResult(
 	execution: ExecutionTrace,
 	_signal?: AbortSignal,
 	imageMode: ImageMode = operationState().currentImageMode ?? "auto",
+	base?: { stateId: string; outline: Outline },
 ): Promise<AgentToolResult<ComputerUseDetails>> {
 	const state = operationState();
 	const fallbackReason = imageFallbackReason(tool, result, imageMode);
+	const transition = base ? changesBetween(base.outline, result.outline) : undefined;
+	const useDiff = Boolean(transition && !transition.useFullView);
 	const folded = foldToBudget(result.outline);
 	const renderedNote = renderNote(state.currentNote);
 
@@ -1389,6 +1259,10 @@ async function buildToolResult(
 			coordinateSpace: "window-relative-screenshot-pixels",
 		},
 		lookId: result.look.lookId,
+		view: useDiff ? "diff" : "full",
+		baseStateId: transition ? base?.stateId : undefined,
+		changes: useDiff ? transition?.changes : undefined,
+		viewReason: transition?.useFullView ? transition.reason : undefined,
 		renderedOutline: folded.text,
 		outline: serializeOutline(result.outline),
 		note: state.currentNote,
@@ -1413,7 +1287,12 @@ async function buildToolResult(
 	}
 
 	const noteText = renderedNote ? `\n\n${renderedNote}` : "";
-	const outlineText = `\n\nOutline (${folded.nodeCount} nodes, lookId ${result.look.lookId}${folded.truncated ? ", folded output truncated" : ""}):\n${folded.text}`;
+	// The model must echo capture.stateId into follow-up tools. Exposing only the
+	// helper-internal lookId here makes a plausible but invalid stateId easy to use.
+	const renderedChanges = useDiff ? renderChanges(transition!.changes) : "";
+	const outlineText = useDiff
+		? `\n\nChanges (${transition!.changedNodeCount}, ${base!.stateId} → ${result.capture.stateId}):\n${renderedChanges || "(no element changes)"}\nUse stateId ${result.capture.stateId} for subsequent actions and queries.`
+		: `\n\nOutline (${folded.nodeCount} nodes, stateId ${result.capture.stateId}${transition?.reason ? `, full view: ${transition.reason}` : ""}${folded.truncated ? ", folded output truncated" : ""}):\n${folded.text}`;
 	const fallbackText = fallbackReason ? `\n\n${fallbackReason.message}` : "";
 	const deltaText = rootDeltaLines(execution).join("\n");
 	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${deltaText ? `\n${deltaText}` : ""}${consoleText}${noteText}${outlineText}${fallbackText}` }];
@@ -1424,16 +1303,7 @@ async function buildToolResult(
 	return { content, details };
 }
 
-type HelperActAction = "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse";
-type HelperActTarget = { ref: string } | { x: number; y: number };
-type HelperActInput =
-	| { action: "press" | "click"; params: { button?: MouseButtonName; clickCount?: number } }
-	| { action: "setText"; params: { text: string } }
-	| { action: "typeText"; params: { text: string } }
-	| { action: "keypress"; params: { keys: string[] } }
-	| { action: "scroll"; params: { scrollX: number; scrollY: number } }
-	| { action: "drag"; params: { path: Array<{ x: number; y: number }> } }
-	| { action: "moveMouse"; params: Record<string, never> };
+type NativePreparedAction = Exclude<PreparedAction, { action: "wait" }>;
 
 function currentLookOrThrow(): LookResponse {
 	const state = operationState();
@@ -1453,50 +1323,6 @@ function ensurePointIsInLookImage(x: number, y: number, look: LookResponse, erro
 	if (x < 0 || y < 0 || x >= look.image.width || y >= look.image.height) {
 		throw new Error(`${errorPrefix} (${Math.round(x)},${Math.round(y)}) are outside the latest look image bounds (${look.image.width}x${look.image.height}). Call observe_ui again and retry.`);
 	}
-}
-
-function normalizeActPath(path: UiAction["path"], look: LookResponse): Array<{ x: number; y: number }> {
-	if (!Array.isArray(path) || path.length < 2) {
-		throw new Error("drag.path must contain at least two points.");
-	}
-	return path.map((point, index) => {
-		const x = Array.isArray(point) ? toFiniteNumber(point[0], NaN) : toFiniteNumber(point?.x, NaN);
-		const y = Array.isArray(point) ? toFiniteNumber(point[1], NaN) : toFiniteNumber(point?.y, NaN);
-		ensurePointIsInLookImage(x, y, look, `Drag point ${index + 1}`);
-		return { x, y };
-	});
-}
-
-function clickShouldUseCoordinateGrounding(node: OutlineNode, action: HelperActAction): boolean {
-	if (action !== "click" && action !== "press") return false;
-	if (node.canPress || node.canFocus || node.canSetValue) return false;
-	return node.actions.every((candidate) => candidate === "AXShowMenu" || candidate === "AXScrollToVisible");
-}
-
-function actTargetFromParams(params: { ref?: string; x?: number; y?: number; path?: UiAction["path"] }, look: LookResponse, action: HelperActAction): HelperActTarget {
-	const ref = trimOrUndefined(params.ref);
-	if (ref) {
-		const node = outlineNodeByRef(ref);
-		if (node.wireRef && !node.pictureOnly && !clickShouldUseCoordinateGrounding(node, action)) return { ref: node.wireRef };
-		const point = outlineNodeCenter(node);
-		ensurePointIsInLookImage(point.x, point.y, look);
-		return point;
-	}
-	const x = toFiniteNumber(params.x, NaN);
-	const y = toFiniteNumber(params.y, NaN);
-	if (Number.isFinite(x) && Number.isFinite(y)) {
-		ensurePointIsInLookImage(x, y, look);
-		return { x, y };
-	}
-	if (action === "drag" && params.path?.length) {
-		const [first] = normalizeActPath(params.path, look);
-		return first;
-	}
-	if (action === "typeText" || action === "keypress") {
-		if (!look.image) throw new Error(`${action} requires an image-bearing root when no ref is provided.`);
-		return { x: Math.floor(look.image.width / 2), y: Math.floor(look.image.height / 2) };
-	}
-	throw new Error(`${action} requires either ref or both x and y.`);
 }
 
 function modelRefForRootDelta(delta: NonNullable<HelperActResult["rootDelta"]>[number]): string | undefined {
@@ -1542,8 +1368,7 @@ function executionTraceFromAct(result: HelperActResult, policy = currentDelivery
 
 async function helperAct(
 	target: ResolvedTarget,
-	actTarget: HelperActTarget,
-	input: HelperActInput,
+	action: NativePreparedAction,
 	headless: boolean,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
@@ -1553,17 +1378,33 @@ async function helperAct(
 		}
 		return candidate;
 	};
-	const textTimeout = "text" in input.params ? input.params.text.length * 25 + 4_000 : COMMAND_TIMEOUT_MS;
+	const textTimeout = "text" in action.params ? action.params.text.length * 25 + 4_000 : COMMAND_TIMEOUT_MS;
 	const timeoutMs = Math.max(COMMAND_TIMEOUT_MS, textTimeout);
+	if ((action.usesCurrentFocus || action.needsForeground) && !headless) {
+		const foreground = checked(await currentPlatformBackend.act(helperActRequest(target, action, "foreground"), { signal, timeoutMs }));
+		const trace = executionTraceFromAct(foreground, "foreground");
+		trace.backgroundFirst = false;
+		return trace;
+	}
 	try {
-		const result = checked(await currentPlatformBackend.act(helperActRequest(target, actTarget, input, "background"), { signal, timeoutMs }));
+		const initialPolicy = headless ? "ax_only" : "background";
+		const result = checked(await currentPlatformBackend.act(helperActRequest(target, action, initialPolicy), { signal, timeoutMs }));
+		if (canRetryInForeground(action, result.outcome, headless)) {
+			const foreground = checked(await currentPlatformBackend.act(helperActRequest(target, action, "foreground"), { signal, timeoutMs }));
+			const trace = executionTraceFromAct(foreground, "foreground");
+			trace.backgroundFirst = true;
+			trace.escalatedToForeground = true;
+			trace.escalationReason = "side_effect_free_didnt";
+			trace.backgroundAttempt = { outcome: "didnt", reason: "Background input produced no observable value change; a foreground retry was safe." };
+			return trace;
+		}
 		const trace = executionTraceFromAct(result, "background");
 		trace.backgroundFirst = true;
 		return trace;
 	} catch (error) {
 		const code = (error as Error & { code?: string })?.code;
 		if (code !== "foreground_required" || headless) throw error;
-		const foreground = checked(await currentPlatformBackend.act(helperActRequest(target, actTarget, input, "foreground"), { signal, timeoutMs }));
+		const foreground = checked(await currentPlatformBackend.act(helperActRequest(target, action, "foreground"), { signal, timeoutMs }));
 		const trace = executionTraceFromAct(foreground, "foreground");
 		trace.backgroundFirst = true;
 		trace.escalatedToForeground = true;
@@ -1573,20 +1414,20 @@ async function helperAct(
 	}
 }
 
-function helperActRequest(target: ResolvedTarget, actTarget: HelperActTarget, input: HelperActInput, policy = currentDeliveryPolicy()): PlatformActRequest {
+function helperActRequest(target: ResolvedTarget, action: NativePreparedAction, policy = currentDeliveryPolicy()): PlatformActRequest {
 	const look = currentLookOrThrow();
 	const delivery = nativeInputDelivery(policy);
-	const base = { lookId: look.lookId, pid: target.pid, target: actTarget, policy };
+	const base = { lookId: look.lookId, pid: target.pid, target: action.target, policy };
 	return (() => {
-		switch (input.action) {
+		switch (action.action) {
 			case "press":
-			case "click": return { ...base, action: input.action, params: { ...input.params, delivery } };
-			case "setText": return { ...base, action: input.action, params: { text: input.params.text, delivery } };
-			case "typeText": return { ...base, action: input.action, params: { text: input.params.text, delivery } };
-			case "keypress": return { ...base, action: input.action, params: { keys: input.params.keys, delivery } };
-			case "scroll": return { ...base, action: input.action, params: { scrollX: input.params.scrollX, scrollY: input.params.scrollY, delivery } };
-			case "drag": return { ...base, action: input.action, params: { path: input.params.path, delivery } };
-			case "moveMouse": return { ...base, action: input.action, params: { delivery } };
+			case "click": return { ...base, action: action.action, params: { ...action.params, delivery } };
+			case "setText": return { ...base, action: action.action, params: { text: action.params.text, delivery } };
+			case "typeText": return { ...base, action: action.action, params: { text: action.params.text, delivery } };
+			case "keypress": return { ...base, action: action.action, params: { keys: action.params.keys, delivery } };
+			case "scroll": return { ...base, action: action.action, params: { scrollX: action.params.scrollX, scrollY: action.params.scrollY, delivery } };
+			case "drag": return { ...base, action: action.action, params: { path: action.params.path, delivery } };
+			case "moveMouse": return { ...base, action: action.action, params: { delivery } };
 		}
 	})();
 }
@@ -1602,31 +1443,6 @@ function rootDeltaLines(execution: ExecutionTrace): string[] {
 		if (delta.change === "closed") return `Root closed: ${delta.kind}${suffix}`;
 		return `Root focused: ${delta.kind}${suffix}`;
 	});
-}
-
-function appendRootDeltaText(message: string, execution: ExecutionTrace): string {
-	const lines = rootDeltaLines(execution);
-	return lines.length ? `${message}\n${lines.join("\n")}` : message;
-}
-
-function confirmationToolResult(tool: string, target: ResolvedTarget, execution: ExecutionTrace, message: string): AgentToolResult<ConfirmationDetails> {
-	return {
-		content: [{ type: "text", text: appendRootDeltaText(message, execution) }],
-		details: {
-			tool,
-			status: "ok",
-			target: {
-				app: target.appName,
-				bundleId: target.bundleId,
-				pid: target.pid,
-				windowTitle: target.windowTitle,
-				windowId: target.windowId,
-				windowRef: target.windowRef,
-			},
-			execution,
-			message: appendRootDeltaText(message, execution),
-		},
-	};
 }
 
 // Side effect: stores stable @r refs for discovered windows in runtimeState.
@@ -1724,7 +1540,7 @@ function isBrowserContextId(contextId: string | undefined): contextId is string 
 
 function browserSnapshotTarget(snapshotId: string | undefined, ref: string | undefined): { contextId: string; backendNodeId?: number } | undefined {
 	if (!snapshotId || !ref) return undefined;
-	const record = uiStates.get(snapshotId);
+	const record = savedStates.get(snapshotId);
 	const snapshot = record?.value.kind === "browser" ? record.value.snapshot : undefined;
 	const target = snapshot?.targets.find((candidate) => candidate.ref === ref);
 	if (!snapshot || !target) return undefined;
@@ -1749,20 +1565,26 @@ async function withBrowserWrite<T>(contextId: string, work: () => Promise<T>): P
 	return result.value;
 }
 
-function browserObservationResult(browser: CdpPageSnapshot, resourceKey: string, epoch: number, tool: string): AgentToolResult<BrowserObservationDetails> {
-	uiStates.set({ stateId: browser.snapshotId, resourceKey, epoch, value: { kind: "browser", snapshot: browser, outline: browser.outline } });
-	const folded = foldToBudget(restoreOutline(browser.outline));
+function browserObservationResult(browser: CdpPageSnapshot, resourceKey: string, epoch: number, tool: string, base?: { stateId: string; outline: SerializedOutline }): AgentToolResult<BrowserObservationDetails> {
+	savedStates.set({ stateId: browser.snapshotId, resourceKey, epoch, value: { kind: "browser", snapshot: browser, outline: browser.outline } });
+	const currentOutline = restoreOutline(browser.outline);
+	const transition = base ? changesBetween(restoreOutline(base.outline), currentOutline) : undefined;
+	const useDiff = Boolean(transition && !transition.useFullView);
+	const folded = foldToBudget(currentOutline);
 	const root = { ref: storeBrowserRootRef(browser.contextId), kind: "browser_page" as const, title: browser.title, url: browser.url };
-	const details: BrowserObservationDetails = { tool, kind: "browser_page", stateId: browser.snapshotId, root, outline: browser.outline, renderedOutline: folded.text };
-	return { content: [{ type: "text", text: `${tool} completed for ${root.ref} ${JSON.stringify(browser.title)}. State ${browser.snapshotId}.\n${folded.text}` }], details };
+	const details: BrowserObservationDetails = { tool, kind: "browser_page", stateId: browser.snapshotId, baseStateId: base?.stateId, view: useDiff ? "diff" : "full", changes: useDiff ? transition?.changes : undefined, root, outline: browser.outline, renderedOutline: folded.text };
+	const viewText = useDiff
+		? `Changes (${transition!.changedNodeCount}, ${base!.stateId} → ${browser.snapshotId}):\n${renderChanges(transition!.changes) || "(no element changes)"}\nUse stateId ${browser.snapshotId} for subsequent actions and queries.`
+		: folded.text;
+	return { content: [{ type: "text", text: `${tool} completed for ${root.ref} ${JSON.stringify(browser.title)}. State ${browser.snapshotId}.\n${viewText}` }], details };
 }
 
-async function refreshBrowserSnapshot(contextId: string, tool: string): Promise<AgentToolResult<BrowserObservationDetails>> {
+async function refreshBrowserSnapshot(contextId: string, tool: string, base?: { stateId: string; outline: SerializedOutline }): Promise<AgentToolResult<BrowserObservationDetails>> {
 	const browser = await cdpSnapshotForContext(contextId);
 	if (!browser) throw new Error(`Browser root '${contextId}' is no longer available. Call find_roots and observe_ui again.`);
 	const state = operationState();
 	const resourceKey = state.resourceKey ?? `cdp:${browser.targetId}`;
-	return browserObservationResult(browser, resourceKey, state.epoch ?? resourceScheduler.epoch(resourceKey), tool);
+	return browserObservationResult(browser, resourceKey, state.epoch ?? resourceScheduler.epoch(resourceKey), tool, base);
 }
 
 function sliceText(value: string, offsetValue: unknown, limitValue: unknown): Pick<ReadTextDetails, "offset" | "limit" | "totalChars" | "hasMore" | "text"> {
@@ -1828,16 +1650,22 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 	if (isBrowserContextId(contextId)) {
 		const state = operationState();
 		if (!state.resourceKey) throw new Error("The browser observation has no live resource identity. Observe again.");
+		const baseSnapshot = state.browserSnapshot;
+		if (!baseSnapshot) throw new Error("Browser wait requires a complete base observation.");
 		const deadline = Date.now() + timeoutMs;
 		let lastSnapshot: CdpPageSnapshot | undefined;
 		let lastEpoch = state.epoch ?? resourceScheduler.epoch(state.resourceKey);
 		const finish = (found: boolean, timedOut?: boolean): AgentToolResult<WaitForDetails> => {
 			if (!lastSnapshot) throw new Error("Browser wait completed without an observation.");
-			uiStates.set({ stateId: lastSnapshot.snapshotId, resourceKey: state.resourceKey!, epoch: lastEpoch, value: { kind: "browser", snapshot: lastSnapshot, outline: lastSnapshot.outline } });
-			const renderedOutline = foldToBudget(restoreOutline(lastSnapshot.outline)).text;
-			const details: WaitForDetails = { tool: "wait_for", stateId: lastSnapshot.snapshotId, found, gone: found && params.gone === true || undefined, timedOut, nodeCount: lastSnapshot.targets.length, text, role, outline: lastSnapshot.outline, renderedOutline };
+			savedStates.set({ stateId: lastSnapshot.snapshotId, resourceKey: state.resourceKey!, epoch: lastEpoch, value: { kind: "browser", snapshot: lastSnapshot, outline: lastSnapshot.outline } });
+			const successorOutline = restoreOutline(lastSnapshot.outline);
+			const transition = changesBetween(restoreOutline(baseSnapshot.outline), successorOutline);
+			const useDiff = !transition.useFullView;
+			const renderedOutline = foldToBudget(successorOutline).text;
+			const details: WaitForDetails = { tool: "wait_for", stateId: lastSnapshot.snapshotId, baseStateId: baseSnapshot.snapshotId, view: useDiff ? "diff" : "full", changes: useDiff ? transition.changes : undefined, found, gone: found && params.gone === true || undefined, timedOut, nodeCount: lastSnapshot.targets.length, text, role, outline: lastSnapshot.outline, renderedOutline };
 			const message = found ? (params.gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
-			return { content: [{ type: "text", text: `${message}\n${renderedOutline}` }], details };
+			const viewText = useDiff ? `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${lastSnapshot.snapshotId} for subsequent actions and queries.` : renderedOutline;
+			return { content: [{ type: "text", text: `${message}\n${viewText}` }], details };
 		};
 		do {
 			const scheduled = await resourceScheduler.read(state.resourceKey, async () => await cdpSnapshotForContext(contextId));
@@ -1853,6 +1681,8 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		return finish(false, true);
 	}
 
+	const state = operationState();
+	const baseView = { stateId: state.currentCapture!.stateId, outline: state.currentOutline! };
 	let target = await resolveCurrentTarget(signal);
 	target = await ensureTargetWindowId(target, signal);
 	const raw = await currentPlatformBackend.waitFor({
@@ -1862,14 +1692,18 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		gone: params.gone === true,
 		timeoutMs,
 	}, { signal, timeoutMs: timeoutMs + 2_000 });
-	const state = operationState();
 	if (!state.resourceKey || state.epoch === undefined) throw new Error("The observation has no live resource identity. Observe again.");
 	const refreshed = (await resourceScheduler.readAt(state.resourceKey, state.epoch, async () => await captureCurrentTarget(signal, "auto"))).value;
+	const transition = changesBetween(baseView.outline, refreshed.outline);
+	const useDiff = !transition.useFullView;
 	const matches = searchOutline(refreshed.outline, text, role, undefined, 1);
 	const foundTarget = matches[0];
 	const details: WaitForDetails = {
 		tool: "wait_for",
 		stateId: refreshed.capture.stateId,
+		baseStateId: baseView.stateId,
+		view: useDiff ? "diff" : "full",
+		changes: useDiff ? transition.changes : undefined,
 		found: raw.found,
 		gone: raw.gone || undefined,
 		timedOut: raw.timedOut || undefined,
@@ -1881,7 +1715,8 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		renderedOutline: foldToBudget(refreshed.outline).text,
 	};
 	const message = details.found ? (details.gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
-	return { content: [{ type: "text", text: `${message}\n${details.renderedOutline}` }], details };
+	const viewText = useDiff ? `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${refreshed.capture.stateId} for subsequent actions and queries.` : details.renderedOutline;
+	return { content: [{ type: "text", text: `${message}\n${viewText}` }], details };
 }
 
 function sameRootIdentity(a: CurrentTarget, b: CurrentTarget): boolean {
@@ -2053,31 +1888,27 @@ async function performInspectUi(params: InspectUiParams, signal?: AbortSignal): 
 	return { content: [{ type: "text", text: fields.join("\n") }], details };
 }
 
-async function dispatchUiAction(action: UiAction, target: ResolvedTarget, look: LookResponse, headless: boolean, signal?: AbortSignal): Promise<ExecutionTrace> {
-	if (action.action === "wait") {
-		const ms = Math.max(0, Math.min(60_000, Math.round(toFiniteNumber(action.ms, DEFAULT_WAIT_MS))));
-		await sleep(ms, signal);
-		return executionTrace("wait", "stealth", { outcome: "worked" });
-	}
-	const normalizedAction = action.action === "doubleClick" ? "click" : action.action;
-	const actTarget = actTargetFromParams(action, look, normalizedAction);
-	return await helperAct(target, actTarget, helperInputForUiAction(action, look), headless, signal);
+function prepareUiAction(action: UiAction, state: ActionState, look: LookResponse, headless: boolean): PreparedAction {
+	return prepareAction(action, state, {
+		headless,
+		image: look.image,
+		node: outlineNodeByRef,
+		center: outlineNodeCenter,
+		validatePoint: (x, y, label) => ensurePointIsInLookImage(x, y, look, label),
+	});
 }
 
-function helperInputForUiAction(action: Exclude<UiAction, { action: "wait" }> | UiAction, look: LookResponse): HelperActInput {
-	switch (action.action) {
-		case "press":
-		case "click":
-		case "doubleClick":
-			return { action: action.action === "press" ? "press" : "click", params: { button: normalizeMouseButton(action.button), clickCount: action.action === "doubleClick" ? 2 : normalizeClickCount(action.clickCount) } };
-		case "setText": return { action: "setText", params: { text: action.text ?? "" } };
-		case "typeText": return { action: "typeText", params: { text: action.text ?? "" } };
-		case "keypress": return { action: "keypress", params: { keys: normalizeKeyList(action.keys) } };
-		case "scroll": return { action: "scroll", params: { scrollX: normalizeScrollDelta(action.scrollX), scrollY: normalizeScrollDelta(action.scrollY) } };
-		case "drag": return { action: "drag", params: { path: normalizeActPath(action.path, look) } };
-		case "moveMouse": return { action: "moveMouse", params: {} };
-		case "wait": throw new Error("wait is not a native helper action");
+async function dispatchUiAction(action: UiAction, target: ResolvedTarget, look: LookResponse, headless: boolean, state: ActionState, signal?: AbortSignal): Promise<ExecutionTrace> {
+	const prepared = prepareUiAction(action, state, look, headless);
+	if (prepared.action === "wait") {
+		await sleep(prepared.params.ms, signal);
+		return executionTrace("wait", "stealth", { outcome: "worked" });
 	}
+	const trace = await helperAct(target, prepared, headless, signal);
+	if (!headless && (prepared.establishesFocus || (prepared.action === "click" && "x" in prepared.target))) {
+		state.currentFocus = true;
+	}
+	return trace;
 }
 
 async function dispatchUiTransaction(actions: UiAction[], target: ResolvedTarget, look: LookResponse, headless: boolean, signal?: AbortSignal): Promise<ExecutionTrace> {
@@ -2085,15 +1916,13 @@ async function dispatchUiTransaction(actions: UiAction[], target: ResolvedTarget
 	// fallback is permitted, decide independently per action so a completed
 	// background prefix is never replayed as part of a foreground batch.
 	if (headless && currentPlatformBackend.actBatch && actions.every((action) => action.action !== "wait")) {
-		const requests = actions.map((action) => {
-			const normalizedAction = action.action === "doubleClick" ? "click" : action.action as HelperActAction;
-			return helperActRequest(target, actTargetFromParams(action, look, normalizedAction), helperInputForUiAction(action, look), "background");
-		});
+		const actionState: ActionState = { currentFocus: false };
+		const requests = actions.map((action) => helperActRequest(target, prepareUiAction(action, actionState, look, true) as NativePreparedAction, "ax_only"));
 		const textLength = actions.reduce((sum, action) => sum + (action.text?.length ?? 0), 0);
 		const result = await currentPlatformBackend.actBatch(requests, { signal, timeoutMs: Math.max(COMMAND_TIMEOUT_MS, textLength * 25 + 6_000) });
 		if (!result.steps || result.steps.length === 0) throw new Error("Native action transaction returned no checked steps.");
-		const execution = aggregateExecutions(result.steps.map((step) => executionTraceFromAct(step, "background")));
-		const batchTrace = executionTraceFromAct(result, "background");
+		const execution = aggregateExecutions(result.steps.map((step) => executionTraceFromAct(step, "ax_only")));
+		const batchTrace = executionTraceFromAct(result, "ax_only");
 		execution.outcome = result.outcome;
 		execution.performed = result.performed;
 		execution.rootDelta = batchTrace.rootDelta;
@@ -2101,7 +1930,12 @@ async function dispatchUiTransaction(actions: UiAction[], target: ResolvedTarget
 		return execution;
 	}
 	const steps: ExecutionTrace[] = [];
-	for (const action of actions) steps.push(await dispatchUiAction(action, target, look, headless, signal));
+	const actionState: ActionState = { currentFocus: false };
+	for (const action of actions) {
+		const step = await dispatchUiAction(action, target, look, headless, actionState, signal);
+		steps.push(step);
+		if (step.outcome === "didnt") break;
+	}
 	return aggregateExecutions(steps);
 }
 
@@ -2121,11 +1955,12 @@ function aggregateExecutions(steps: ExecutionTrace[]): ExecutionTrace {
 	});
 }
 
-async function performDesktopTransaction(params: ActParams, actions: UiAction[], signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
+async function performDesktopTransaction(params: ActParams, actions: UiAction[], signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	const state = operationState();
 	state.currentImageMode = normalizeImageMode(params.image);
 	validateStateId(params.stateId);
 	const look = currentLookOrThrow();
+	const baseView = { stateId: state.currentCapture!.stateId, outline: state.currentOutline! };
 	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
 	const noteBefore = state.currentNote;
 	return await withWindowWriteLock(target, async () => {
@@ -2156,8 +1991,8 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 				gone: params.expect.gone === true || undefined,
 				timeoutMs,
 			};
+			execution.outcome = outcomeAfterCheck(execution.outcome ?? "unknown", execution.verification.status);
 			if (!verification.found) {
-				execution.outcome = "didnt";
 				execution.error = {
 					code: "postcondition_failed",
 					message: `The action was delivered but its postcondition was not satisfied within ${timeoutMs}ms.`,
@@ -2166,24 +2001,21 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 		} else {
 			await sleep(settleMsForExecution(execution), signal);
 		}
-		if (params.responseMode === "confirmation") {
-			const result = confirmationToolResult("act_ui", target, execution, `Executed ${executedActions.length} checked UI action${executedActions.length === 1 ? "" : "s"}. Observe again before continuing.`);
-			state.currentCapture = undefined;
-			state.currentLook = undefined;
-			state.currentOutline = undefined;
-			return result;
-		}
 		const capture = await captureCurrentTarget(signal, "auto", AUTO_IMAGE_MAX_DIMENSION, target);
+		execution.outcome = outcomeAfterObservedValues(execution.outcome ?? "unknown", executedActions, (ref) => nodeByRef(capture.outline, ref)?.value);
 		for (const action of executedActions) {
 			state.currentNote = noteAfterAct(state.currentNote ?? noteBefore, action.ref, capture.outline, { window: noteWindowForTarget(capture.target, capture.look), rootDelta: execution.rootDelta });
 		}
-		return await buildToolResult("act_ui", `Executed ${executedActions.length} checked UI action${executedActions.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned state ${capture.capture.stateId}.`, capture, execution, signal);
+		return await buildToolResult("act_ui", `Executed ${executedActions.length} checked UI action${executedActions.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned state ${capture.capture.stateId}.`, capture, execution, signal, state.currentImageMode, baseView);
 	});
 }
 
 async function performBrowserTransaction(params: ActParams, actions: UiAction[], signal?: AbortSignal): Promise<AgentToolResult<BrowserObservationDetails>> {
 	const contextId = browserContextForOperation();
 	if (!contextId) throw new Error("Browser transaction requires a browser observation state.");
+	const baseSnapshot = operationState().browserSnapshot;
+	if (!baseSnapshot) throw new Error("Browser transaction requires a complete base observation.");
+	const baseView = { stateId: baseSnapshot.snapshotId, outline: baseSnapshot.outline };
 	const prepared = actions.map((action) => {
 		if (action.action === "wait") return { action };
 		if (!BROWSER_TRANSACTION_ACTIONS.has(action.action)) throw new Error(`Browser transactions do not support '${action.action}'.`);
@@ -2223,11 +2055,11 @@ async function performBrowserTransaction(params: ActParams, actions: UiAction[],
 			} while (!satisfied && Date.now() < deadline);
 			if (!satisfied) throw new Error(`The browser action was delivered but its postcondition was not satisfied within ${timeoutMs}ms.`);
 		}
-		return await refreshBrowserSnapshot(contextId, "act_ui");
+		return await refreshBrowserSnapshot(contextId, "act_ui", baseView);
 	});
 }
 
-async function performAct(params: ActParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | BrowserObservationDetails | ConfirmationDetails>> {
+async function performAct(params: ActParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | BrowserObservationDetails>> {
 	const actions = Array.isArray(params.actions) ? params.actions : [];
 	if (actions.length === 0) throw new Error("act_ui.actions must contain at least one action.");
 	if (actions.length > 20) throw new Error("act_ui supports at most 20 actions per transaction.");
@@ -2319,13 +2151,17 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 	if (!url) throw new Error("navigate_browser.url must be a non-empty URL or browser-search string.");
 	if (isBrowserContextId(contextId)) {
 		if (!/^https?:/i.test(url)) throw new Error("navigate_browser on a browser-page state only supports http(s) URLs.");
+		const baseSnapshot = operationState().browserSnapshot;
+		if (!baseSnapshot) throw new Error("Browser navigation requires a complete base observation.");
 		return await withBrowserWrite(contextId, async () => {
 			const ok = await cdpNavigateContext(contextId, url);
 			if (!ok) throw new Error(`Browser context '${contextId}' is no longer available. Observe it again.`);
-			return await refreshBrowserSnapshot(contextId, "navigate_browser");
+			return await refreshBrowserSnapshot(contextId, "navigate_browser", { stateId: baseSnapshot.snapshotId, outline: baseSnapshot.outline });
 		});
 	}
 	operationState().currentImageMode = normalizeImageMode(params.image);
+	const state = operationState();
+	const baseView = { stateId: state.currentCapture!.stateId, outline: state.currentOutline! };
 	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
 	assertBrowserUseAllowed(target);
 	if (!currentPlatformBackend.isBrowserApp(target.appName, target.bundleId)) {
@@ -2356,6 +2192,8 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 				captureResult,
 				executionTrace("cdp_navigate", "stealth"),
 				signal,
+				state.currentImageMode,
+				baseView,
 			);
 		});
 	}
@@ -2375,6 +2213,8 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 			captureResult,
 			executionTrace("browser_open_location", "stealth"),
 			signal,
+			state.currentImageMode,
+			baseView,
 		);
 	});
 }
@@ -2384,20 +2224,34 @@ async function performEvaluateBrowser(params: EvaluateBrowserParams): Promise<Ag
 	const expression = typeof params.expression === "string" ? params.expression : "";
 	if (!contextId) throw new Error("evaluate_browser.stateId must belong to a browser observation.");
 	if (!expression.trim()) throw new Error("evaluate_browser.expression must be non-empty JavaScript.");
-	const result = await withBrowserWrite(contextId, async () => await cdpEvaluateForContext(contextId, expression));
-	if (!result) throw new Error(`Browser context '${contextId}' is no longer available. Observe it again.`);
-	const details: EvaluateBrowserDetails = { tool: "evaluate_browser", baseStateId: params.stateId, requiresObserve: true, value: result.value };
-	return { content: [{ type: "text", text: `Evaluated JavaScript in the browser root: ${JSON.stringify(result.value)}` }], details };
+	const baseSnapshot = operationState().browserSnapshot;
+	if (!baseSnapshot) throw new Error("Browser evaluation requires a complete base observation.");
+	return await withBrowserWrite(contextId, async () => {
+		const result = await cdpEvaluateForContext(contextId, expression);
+		if (!result) throw new Error(`Browser context '${contextId}' is no longer available. Observe it again.`);
+		const successor = await refreshBrowserSnapshot(contextId, "evaluate_browser", { stateId: baseSnapshot.snapshotId, outline: baseSnapshot.outline });
+		const details: EvaluateBrowserDetails = {
+			tool: "evaluate_browser",
+			baseStateId: baseSnapshot.snapshotId,
+			stateId: successor.details.stateId,
+			view: successor.details.view,
+			changes: successor.details.changes,
+			outline: successor.details.outline,
+			renderedOutline: successor.details.renderedOutline,
+			value: result.value,
+		};
+		return { content: [{ type: "text", text: `Evaluated JavaScript in the browser root: ${JSON.stringify(result.value)}` }, ...successor.content], details };
+	});
 }
 
 async function executeTool<P, T>(ctx: ExtensionContext, params: P, signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
 	const requestedStateId = trimOrUndefined((params as { stateId?: string } | undefined)?.stateId);
-	const stateRecord = requestedStateId ? uiStates.get(requestedStateId) : undefined;
+	const stateRecord = requestedStateId ? savedStates.get(requestedStateId) : undefined;
 	if (requestedStateId && !stateRecord) {
 		throw new Error(`State '${requestedStateId}' is unavailable or was evicted. Observe the root again.`);
 	}
-	const operation = hydrateOperation(stateRecord);
-	return await operationStorage.run(operation, async () => {
+	const operation = savedStates.hydrate(stateRecord);
+	return await savedStates.operations.run(operation, async () => {
 		await resourceScheduler.read("session-lifecycle", async () => await ensureReady(ctx, signal));
 		throwIfAborted(signal);
 		const result = await run();
@@ -2423,13 +2277,13 @@ export const executeObserve = makeToolExecutor(performObserve);
 export const executeSearchUi = makeToolExecutor(performSearchUi);
 export const executeExpandUi = makeToolExecutor(performExpandUi);
 export const executeInspectUi = makeToolExecutor(performInspectUi);
-export const executeAct = makeToolExecutor<ActParams, ComputerUseDetails | BrowserObservationDetails | ConfirmationDetails>(performAct);
+export const executeAct = makeToolExecutor<ActParams, ComputerUseDetails | BrowserObservationDetails>(performAct);
 export const executeNavigateBrowser = makeToolExecutor(performNavigateBrowser);
 export const executeEvaluateBrowser = makeToolExecutor(performEvaluateBrowser);
 export const executeLaunchBrowser = makeToolExecutor(performLaunchBrowser);
 
 export function reconstructStateFromBranch(ctx: ExtensionContext): void {
-	uiStates.clear();
+	savedStates.clear();
 	runtimeState.windowRefs.clear();
 	runtimeState.windowRefByIdentity.clear();
 	runtimeState.nextRootRefIndex = 1;
@@ -2504,7 +2358,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 		if (details.outline?.root && typeof details.outline.lookId === "string") {
 			const epoch = 0;
 			resourceScheduler.restoreEpoch(resourceKey, epoch);
-			uiStates.set({
+			savedStates.set({
 				stateId: capture.stateId,
 				resourceKey,
 				epoch,

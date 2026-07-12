@@ -21,7 +21,6 @@ export interface FindParams {
 export interface StateTargetParams {
 	stateId?: string;
 	image?: ImageMode;
-	responseMode?: "state" | "confirmation";
 }
 
 export interface NavigateBrowserParams extends StateTargetParams {

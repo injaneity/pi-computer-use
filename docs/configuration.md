@@ -44,7 +44,7 @@ Known browser families include Safari, Chrome and Chromium-family browsers, Fire
 
 Default: `false`
 
-When `true`, actions must remain in the background. Raw pointer events, raw keyboard events, foreground focus fallback, cursor takeover, and the agent cursor overlay are blocked. When `false` (the default), Pi still attempts verified background delivery first and falls back to foreground only after a typed `foreground_required` result proves that the background attempt caused no action.
+When `true`, actions must remain in the background. Raw pointer events, raw keyboard events, foreground focus fallback, cursor takeover, and the agent cursor overlay are blocked. When `false` (the default), Pi prefers verified semantic activation when it is credible, preserves the focus established by editable clicks for dependent keyboard input, and may retry keyboard input in the foreground when a background attempt conclusively produced no value change. Ambiguous pointer actions are never replayed blindly.
 
 ### `cursor_overlay`
 

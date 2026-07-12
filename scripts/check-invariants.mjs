@@ -135,8 +135,9 @@ check("INV-8 tsc no unused locals", () => {
 });
 
 check("INV-9 immutable state ownership", () => {
+	const state = fs.readFileSync(path.join(root, "src/state.ts"), "utf8");
 	assert(!/runtimeState\.current(Target|Capture|Look|Outline|Note|ImageMode|StateTarget)/.test(ts), "global current UI state remains in bridge");
-	assert(ts.includes("new StateStore<UiObservation>"), "unified bounded observation store is missing");
+	assert(state.includes("class SavedStates") && state.includes("new StateStore<UiObservation>"), "unified bounded observation store is missing");
 });
 
 check("INV-10 resource-keyed scheduling", () => {
@@ -172,9 +173,11 @@ check("INV-14 native batches settle once", () => {
 
 check("INV-15 semantic action postconditions", () => {
 	const extension = fs.readFileSync(path.join(root, "extensions/computer-use.ts"), "utf8");
+	const actions = fs.readFileSync(path.join(root, "src/actions.ts"), "utf8");
 	const swift = fs.readFileSync(path.join(root, "native/macos/bridge.swift"), "utf8");
 	assert(extension.includes("expect: Type.Optional") && extension.includes("timeoutMs"), "act_ui does not expose a semantic postcondition");
 	assert(ts.includes('code: "postcondition_failed"') && ts.includes('status: "verified" | "preexisting" | "failed"'), "postcondition failure is not represented honestly");
+	assert(ts.includes("outcomeAfterCheck") && actions.includes('check === "verified"') && actions.includes('return "worked"'), "newly verified expectations do not determine the request outcome");
 	assert(swift.includes("waitForRootChange") && swift.includes("state.change.broadcast()"), "macOS waits are not change-notification assisted");
 });
 
@@ -192,6 +195,21 @@ check("INV-17 macOS agent cursor stays native, configurable, and headless-safe",
 	assert(swift.includes("app.processIdentifier != getpid()"), "helper overlay can leak into root discovery");
 	assert(swift.includes("AgentCursor.shared.animate(to:"), "native grounded actions do not drive the agent cursor");
 	assert(!swift.includes("completed.wait()") && !swift.includes("agentCursorLock"), "agent cursor can delay action delivery");
+});
+
+check("INV-18 consolidated actions and diff-first resulting views", () => {
+	const actions = fs.readFileSync(path.join(root, "src/actions.ts"), "utf8");
+	const view = fs.readFileSync(path.join(root, "src/view.ts"), "utf8");
+	const macBackend = fs.readFileSync(path.join(root, "src/platform/macos/backend.ts"), "utf8");
+	const extension = fs.readFileSync(path.join(root, "extensions/computer-use.ts"), "utf8");
+	assert(actions.includes("prepareAction") && actions.includes("canRetryInForeground"), "action preparation and safe recovery are not consolidated");
+	assert(!fs.existsSync(path.join(root, "src/interaction.ts")), "superseded interaction policy module still exists");
+	assert(!ts.includes("responseMode") && !extension.includes("responseMode"), "alternate confirmation-only action path still exists");
+	assert(ts.includes("currentFocus") && ts.includes('escalationReason = "side_effect_free_didnt"'), "runner does not preserve action focus or recover checked keyboard failures");
+	assert(view.includes("stabilizeRefs") && view.includes("changesBetween"), "resulting-state ref stabilization or change rendering is missing");
+	assert(ts.includes('view: "full" | "diff"') && ts.includes("Changes ("), "agent result does not expose changes-first resulting views");
+	assert(extension.includes("const uiAction = Type.Union") && extension.includes("omit ref from typeText"), "agent action schema is not discriminated or focus-aware");
+	assert(!ts.includes("preserveFocus") && macBackend.includes("preserveFocus") && swift.includes("!preserveFocus"), "native focus continuity leaks through the coordinator or is not enforced by the backend");
 });
 
 check("INV-8 swift typecheck", () => {
@@ -300,7 +318,7 @@ async function liveChecks() {
 			check("LIVE listRoots pairing", () => {
 				assert(Array.isArray(windows), "listRoots did not return an array");
 				for (const window of windows) {
-					assert(["exact", "high", "low"].includes(window?.pairing?.confidence), `invalid pairing ${JSON.stringify(window?.pairing)}`);
+					assert(["exact", "high", "low"].includes(window?.metadata?.pairing?.confidence), `invalid pairing ${JSON.stringify(window?.metadata?.pairing)}`);
 				}
 			});
 		} catch (error) {
@@ -344,7 +362,7 @@ async function liveChecks() {
 			assert(found, "no text annotations");
 		});
 		check("LIVE window pairing", () => {
-			assert(look.window?.pairing, "missing window.pairing");
+			assert(look.window?.metadata?.pairing, "missing window.metadata.pairing");
 		});
 		const parsedForNote = parseLookResponse(look).parsedOutline;
 		check("LIVE note derivation", () => {
@@ -352,8 +370,8 @@ async function liveChecks() {
 			const note = noteFromLook(undefined, parsedForNote, {
 				windowRef: target.windowRef ?? `@window-${target.windowId}`,
 				title: target.title ?? target.windowTitle ?? "(untitled)",
-				pairing: look.window?.pairing?.confidence ?? "low",
-				pairingScore: look.window?.pairing?.score,
+				pairing: look.window?.metadata?.pairing?.confidence ?? "low",
+				pairingScore: look.window?.metadata?.pairing?.score,
 			});
 			const topLevel = parsedForNote.root.children.length ? parsedForNote.root.children : [parsedForNote.root];
 			for (const top of topLevel) {

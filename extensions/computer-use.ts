@@ -21,7 +21,20 @@ import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config
 const stateId = Type.String({ description: "Required state id owning every @e ref used by this operation" });
 const root = Type.Optional(Type.String({ description: "Root ref from find_roots, e.g. @r1" }));
 const image = Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("always"), Type.Literal("never")], { description: "Image attachment mode, default auto" }));
-const responseMode = Type.Optional(Type.Union([Type.Literal("state"), Type.Literal("confirmation")], { description: "Use confirmation to skip returned state." }));
+const refTarget = { ref: Type.Optional(Type.String({ description: "Outline ref, e.g. @e12" })), x: Type.Optional(Type.Number()), y: Type.Optional(Type.Number()) };
+const mouseButton = Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")]));
+const uiAction = Type.Union([
+	Type.Object({ action: Type.Literal("press"), ...refTarget }),
+	Type.Object({ action: Type.Literal("click"), ...refTarget, button: mouseButton, clickCount: Type.Optional(Type.Number()) }),
+	Type.Object({ action: Type.Literal("doubleClick"), ...refTarget, button: mouseButton }),
+	Type.Object({ action: Type.Literal("setText"), ref: Type.String({ description: "Editable outline ref" }), text: Type.String() }),
+	Type.Object({ action: Type.Literal("typeText"), ref: Type.Optional(Type.String({ description: "Omit after a click to type into the focus established by that click" })), text: Type.String() }),
+	Type.Object({ action: Type.Literal("keypress"), ref: Type.Optional(Type.String({ description: "Omit to send keys to the focused control" })), keys: Type.Array(Type.String(), { minItems: 1 }) }),
+	Type.Object({ action: Type.Literal("scroll"), ...refTarget, scrollX: Type.Optional(Type.Number()), scrollY: Type.Optional(Type.Number()) }),
+	Type.Object({ action: Type.Literal("drag"), path: Type.Array(Type.Object({ x: Type.Number(), y: Type.Number() }), { minItems: 2 }) }),
+	Type.Object({ action: Type.Literal("moveMouse"), ...refTarget }),
+	Type.Object({ action: Type.Literal("wait"), ms: Type.Number() }),
+]);
 
 const findTool = defineTool({
 	name: "find_roots",
@@ -101,8 +114,12 @@ const inspectUiTool = defineTool({
 const actTool = defineTool({
 	name: "act_ui",
 	label: "Act",
-	description: "Perform one or more sequentially checked UI actions from one observation, returning one final state.",
-	promptSnippet: "Pass one action for ordinary work or several only when no intermediate observation is needed.",
+	description: "Perform one or more checked actions, returning the resulting saved state and a compact list of changes when trustworthy.",
+	promptSnippet: "Pass dependent click/type steps together, use the returned state directly, and omit the typing ref when the click should establish focus.",
+	promptGuidelines: [
+		"Use expect for observable completion instead of issuing a separate observe_ui call.",
+		"After clicking an editable region, omit ref from typeText/keypress so input follows the focus established by the click.",
+	],
 	parameters: Type.Object({
 		stateId,
 		headless: Type.Optional(Type.Boolean({ description: "When true, prohibit foreground fallback. When false or omitted, Pi still attempts background first and uses foreground only after a side-effect-free foreground_required result." })),
@@ -113,22 +130,8 @@ const actTool = defineTool({
 			gone: Type.Optional(Type.Boolean({ description: "When true, the matching text/role must disappear" })),
 			timeoutMs: Type.Optional(Type.Number({ description: "Maximum postcondition wait, default 10000ms" })),
 		})),
-		actions: Type.Array(Type.Object({
-			action: Type.Union([Type.Literal("press"), Type.Literal("click"), Type.Literal("doubleClick"), Type.Literal("setText"), Type.Literal("typeText"), Type.Literal("keypress"), Type.Literal("scroll"), Type.Literal("drag"), Type.Literal("moveMouse"), Type.Literal("wait")]),
-			ref: Type.Optional(Type.String({ description: "Outline ref, e.g. @e12" })),
-			x: Type.Optional(Type.Number()),
-			y: Type.Optional(Type.Number()),
-			text: Type.Optional(Type.String()),
-			keys: Type.Optional(Type.Array(Type.String())),
-			scrollX: Type.Optional(Type.Number()),
-			scrollY: Type.Optional(Type.Number()),
-			path: Type.Optional(Type.Array(Type.Object({ x: Type.Number(), y: Type.Number() }))),
-			button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
-			clickCount: Type.Optional(Type.Number()),
-			ms: Type.Optional(Type.Number()),
-		}), { minItems: 1, maxItems: 20 }),
+		actions: Type.Array(uiAction, { minItems: 1, maxItems: 20 }),
 		image,
-		responseMode,
 	}),
 	execute: executeAct,
 });
