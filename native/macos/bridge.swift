@@ -373,6 +373,7 @@ final class Bridge {
 	private let refStore = AXRefStore()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let physicalInputLock = NSRecursiveLock()
+	private let supportsAgentCursor = CommandLine.arguments.contains("serve")
 	private let browserBundleIds: Set<String> = [
 		"com.apple.Safari", "com.google.Chrome", "org.chromium.Chromium", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "net.imput.helium", "org.mozilla.firefox",
 	]
@@ -392,7 +393,9 @@ final class Bridge {
 
 	func run() {
 		if CommandLine.arguments.contains("serve") {
-			runServer(socketPath: argumentValue("--socket") ?? defaultSocketPath())
+			let socketPath = argumentValue("--socket") ?? defaultSocketPath()
+			Thread.detachNewThread { [self] in runServer(socketPath: socketPath) }
+			NSApp.run()
 			return
 		}
 		while true {
@@ -880,7 +883,7 @@ final class Bridge {
 			// windows while using an accessory/prohibited activation policy, so do not
 			// gate discovery on `.regular` here. `listWindows` and the higher-level
 			// window collector filter to actual controllable windows.
-			pidIsAlive(app.processIdentifier)
+			app.processIdentifier != getpid() && pidIsAlive(app.processIdentifier)
 		}
 		var seen = Set<Int32>()
 		var output = apps.map { app in
@@ -900,7 +903,7 @@ final class Bridge {
 		// even when their windows are visible and AX-controllable. Add CGWindow
 		// owners as acquisition candidates so callers can still resolve by pid/title
 		// and then build the normal AX scene through listWindows(pid:).
-		for owner in cgWindowOwners() where !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
+		for owner in cgWindowOwners() where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
 			seen.insert(owner.pid)
 			output.append([
 				"appName": owner.name,
@@ -1690,8 +1693,8 @@ final class Bridge {
 
 		let source = AXObserverGetRunLoopSource(observer)
 		Thread.detachNewThread {
-			// The socket server blocks the main thread in accept/read loops, so AXObserver
-			// sources live on this helper run loop and append into a locked ring buffer.
+			// Keep each AXObserver on its own run loop so its callbacks never compete
+			// with AppKit rendering on the helper's main thread.
 			CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
 			CFRunLoopRun()
 		}
@@ -1880,6 +1883,15 @@ final class Bridge {
 			throw BridgeFailure(message: "No coordinate grounding is available", code: "coordinate_unavailable")
 		}
 
+		func animateCursor(at point: CGPoint) {
+			guard supportsAgentCursor,
+				(request["cursorOverlay"] as? Bool ?? true),
+				policy != "ax_only",
+				["press", "click", "moveMouse", "scroll", "drag"].contains(action)
+			else { return }
+			Task { @MainActor in AgentCursor.shared.animate(to: point, above: record.windowId) }
+		}
+
 		func focusTargetForPhysicalInput() {
 			guard delivery == "hid" else { return }
 			if let app = NSRunningApplication(processIdentifier: pid), !app.isActive {
@@ -1920,10 +1932,13 @@ final class Bridge {
 			if delivery == "hid" { try preflight(point) }
 			switch action {
 			case "press", "click":
+				animateCursor(at: point)
 				try postMouseClick(at: point, pid: pid, button: mouseButton(params["button"] as? String ?? "left"), clickCount: max(1, min(3, (params["clickCount"] as? NSNumber)?.intValue ?? 1)), delivery: delivery)
 			case "moveMouse":
+				animateCursor(at: point)
 				try postMouseMove(to: point, pid: pid, delivery: delivery)
 			case "scroll":
+				animateCursor(at: point)
 				try postScrollWheel(at: point, deltaX: (params["scrollX"] as? NSNumber)?.intValue ?? 0, deltaY: (params["scrollY"] as? NSNumber)?.intValue ?? 0, pid: pid, delivery: delivery)
 			case "drag":
 				guard let rawPath = params["path"] as? [[String: Any]], rawPath.count >= 2 else {
@@ -1935,6 +1950,7 @@ final class Bridge {
 					}
 					return lookPoint(record: record, x: x, y: y)
 				}
+				animateCursor(at: point)
 				try postMouseDrag(points: points, pid: pid, delivery: delivery)
 			default:
 				throw BridgeFailure(message: "Action \(action) cannot use coordinate grounding", code: "invalid_args")
@@ -1954,6 +1970,7 @@ final class Bridge {
 			if policy == "foreground" && hasAncestorRole(element, role: "AXWebArea") {
 				try executeCoordinates(coordinatePoint())
 			} else if supportsAction(element, action: kAXPressAction as CFString) {
+				let cursorPoint = try? coordinatePoint()
 				var status = AXUIElementPerformAction(element, kAXPressAction as CFString)
 				if status != .success, let refreshed = refreshElement(), supportsAction(refreshed, action: kAXPressAction as CFString) {
 					status = AXUIElementPerformAction(refreshed, kAXPressAction as CFString)
@@ -1961,6 +1978,7 @@ final class Bridge {
 				if status == .success {
 					performed["grounding"] = "description"
 					performed["delivery"] = "ax"
+					if let cursorPoint { animateCursor(at: cursorPoint) }
 				} else {
 					try executeCoordinates(coordinatePoint())
 				}
@@ -2046,11 +2064,13 @@ final class Bridge {
 			try postKeyPress(keys: keys, pid: pid, delivery: delivery)
 			performed["grounding"] = "coordinates"
 		} else if let element, action == "scroll" {
+			let cursorPoint = try? coordinatePoint()
 			let before = scrollPositionSignature(element)
 			let result = performScrollActionOrAncestor(startingAt: element, targetPid: pid, scrollX: (params["scrollX"] as? NSNumber)?.intValue ?? 0, scrollY: (params["scrollY"] as? NSNumber)?.intValue ?? 0, steps: 1)
 			if (result["scrolled"] as? Bool) == true {
 				performed["grounding"] = "description"
 				performed["delivery"] = "ax"
+				if let cursorPoint { animateCursor(at: cursorPoint) }
 				let after = scrollPositionSignature(element)
 				return finish(["outcome": before != after ? "worked" : "unknown", "performed": performed])
 			}
@@ -3477,8 +3497,11 @@ final class Bridge {
 
 }
 
-_ = NSApplication.shared
-NSApp.setActivationPolicy(.prohibited)
-
-let bridge = Bridge()
-bridge.run()
+@main
+struct PiComputerUseHelper {
+	static func main() {
+		_ = NSApplication.shared
+		NSApp.setActivationPolicy(CommandLine.arguments.contains("serve") ? .accessory : .prohibited)
+		Bridge().run()
+	}
+}

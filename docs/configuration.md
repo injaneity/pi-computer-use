@@ -1,6 +1,6 @@
 # Configuration
 
-Configuration controls browser access and strict accessibility execution.
+Configuration controls browser access, strict accessibility execution, and the macOS agent cursor.
 
 ## Files
 
@@ -23,7 +23,8 @@ Example:
 ```json
 {
   "browser_use": true,
-  "headless": false
+  "headless": false,
+  "cursor_overlay": true
 }
 ```
 
@@ -43,7 +44,13 @@ Known browser families include Safari, Chrome and Chromium-family browsers, Fire
 
 Default: `false`
 
-When `true`, actions must remain in the background. Raw pointer events, raw keyboard events, foreground focus fallback, and cursor takeover are blocked. When `false` (the default), Pi still attempts verified background delivery first and falls back to foreground only after a typed `foreground_required` result proves that the background attempt caused no action.
+When `true`, actions must remain in the background. Raw pointer events, raw keyboard events, foreground focus fallback, cursor takeover, and the agent cursor overlay are blocked. When `false` (the default), Pi still attempts verified background delivery first and falls back to foreground only after a typed `foreground_required` result proves that the background attempt caused no action.
+
+### `cursor_overlay`
+
+Default: `true`
+
+When `true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point for both accessibility and physical delivery. It doesn't move the system pointer, accept input, or delay the action. Set it to `false` for invisible automation. `headless: true` always suppresses it regardless of this setting.
 
 ## Environment variables
 
@@ -52,6 +59,8 @@ PI_COMPUTER_USE_BROWSER_USE=0
 PI_COMPUTER_USE_BROWSER_USE=1
 PI_COMPUTER_USE_HEADLESS=0
 PI_COMPUTER_USE_HEADLESS=1
+PI_COMPUTER_USE_CURSOR_OVERLAY=0
+PI_COMPUTER_USE_CURSOR_OVERLAY=1
 PI_COMPUTER_USE_DELIVERY_POLICY=default
 PI_COMPUTER_USE_DELIVERY_POLICY=foreground
 PI_COMPUTER_USE_CDP_PORT=9222
