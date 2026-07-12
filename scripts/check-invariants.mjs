@@ -206,9 +206,7 @@ check("INV-8 swift typecheck", () => {
 		"-framework", "SwiftUI",
 		"-typecheck",
 		"native/macos/agent_cursor.swift",
-		"native/macos/agent_cursor_overlay_window.swift",
-		"native/macos/agent_cursor_renderer.swift",
-		"native/macos/agent_cursor_view.swift",
+		"native/macos/agent_cursor_motion.swift",
 		"native/macos/bridge.swift",
 	], { cwd: root, stdio: "pipe" });
 });

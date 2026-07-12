@@ -9,9 +9,7 @@ import { fileURLToPath } from "node:url";
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const macosSourcePaths = [
 	"agent_cursor.swift",
-	"agent_cursor_overlay_window.swift",
-	"agent_cursor_renderer.swift",
-	"agent_cursor_view.swift",
+	"agent_cursor_motion.swift",
 	"bridge.swift",
 ].map((file) => path.join(rootDir, "native", "macos", file));
 const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");

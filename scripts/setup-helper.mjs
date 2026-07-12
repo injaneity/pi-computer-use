@@ -20,7 +20,8 @@ const helperSourceHashPath = path.join(helperAppPath, "Contents", "Resources", "
 const helperBundleId = "com.injaneity.pi-computer-use";
 const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
 const windowsHelperDestPath = process.env.PI_COMPUTER_USE_WINDOWS_HELPER_PATH || path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
-const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
+const helperSourcePaths = ["agent_cursor.swift", "agent_cursor_motion.swift", "bridge.swift"]
+	.map((file) => path.join(rootDir, "native", "macos", file));
 const packageJsonPath = path.join(rootDir, "package.json");
 const releaseRepo = "injaneity/pi-computer-use";
 const localCodeSignCommonName = "pi-computer-use Local Signing (com.injaneity.pi-computer-use)";
@@ -41,7 +42,7 @@ const archTriples = {
 	x64: "x86_64-apple-macosx",
 };
 const deploymentTarget = "14.0";
-const frameworks = ["ApplicationServices", "AppKit", "ScreenCaptureKit", "Foundation"];
+const frameworks = ["ApplicationServices", "AppKit", "ScreenCaptureKit", "Foundation", "SwiftUI"];
 const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use";
 
 function normalizeArch(arch) {
@@ -430,8 +431,8 @@ async function installHelperApp(sourcePath) {
 }
 
 async function buildHelper(arch, outputPath) {
-	if (!(await exists(helperSourcePath))) {
-		throw new Error(`Native helper source not found at ${helperSourcePath}`);
+	for (const sourcePath of helperSourcePaths) {
+		if (!(await exists(sourcePath))) throw new Error(`Native helper source not found at ${sourcePath}`);
 	}
 
 	await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -444,7 +445,7 @@ async function buildHelper(arch, outputPath) {
 		"-O",
 	];
 	for (const framework of frameworks) swiftArgs.push("-framework", framework);
-	swiftArgs.push(helperSourcePath, "-o", outputPath);
+	swiftArgs.push(...helperSourcePaths, "-o", outputPath);
 
 	await run("xcrun", swiftArgs);
 	await fs.chmod(outputPath, 0o755);
