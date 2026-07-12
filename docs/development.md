@@ -69,7 +69,7 @@ On Windows, development uses the Windows platform backend/helper and the active 
 
 ## Release signing
 
-This section applies to macOS releases. macOS TCC keys Accessibility and Screen Recording grants to an app's code-signing designated requirement. An ad-hoc signature pins that requirement to the exact binary hash, so updates can orphan existing grants. A stable certificate anchors the requirement on `identifier + certificate leaf`, allowing grants to survive future releases signed with the same certificate.
+This section applies to macOS releases. macOS TCC keys Accessibility and Screen Recording grants to an app's code-signing identity. Ad-hoc and locally self-signed development builds may require permission review whenever their native code changes. Only Developer ID-signed release bundles should be treated as having a stable update identity.
 
 Release setup:
 

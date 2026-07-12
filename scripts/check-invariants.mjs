@@ -182,6 +182,7 @@ check("INV-16 clean headless contract and non-destructive helper install", () =>
 	assert(!/stealth_mode|stealthMode|PI_COMPUTER_USE_STEALTH|PI_COMPUTER_USE_STRICT_AX/.test(configTs), "obsolete stealth configuration aliases remain");
 	assert(!/tccutil[\s\S]{0,80}reset|resetTcc/i.test(setupHelper), "helper installation can reset macOS privacy grants");
 	assert(setupHelper.includes("pi-computer-use Local Signing (com.injaneity.pi-computer-use)"), "stable bundle-specific local signing identity is missing");
+	assert(setupHelper.includes("PI_COMPUTER_USE_HELPER_APP_PATH"), "helper installer lacks an isolated test destination");
 });
 
 check("INV-17 macOS agent cursor stays native, configurable, and headless-safe", () => {
