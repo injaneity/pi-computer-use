@@ -10,7 +10,7 @@ The macOS helper requires macOS 14 or newer.
 
 An agent can look at an app window, understand the buttons and text inside it, and perform actions like clicking, typing, scrolling, and waiting for something to change. This is useful when the agent needs to work with a normal desktop app instead of an API, a terminal command, or a file.
 
-New to computer use? Start with: [Wait, what exactly is Computer Use?](http://zanechee.dev/what-exactly-is-computer-use/)
+New to computer use? Start with: [Wait, what exactly is Computer Use?](https://zanechee.dev/what-exactly-is-computer-use/)
 
 ## What this package does
 
