@@ -91,7 +91,7 @@ function tapMatch(actual, re, msg) {
 }
 
 /** Spawn a script, capturing stdout/stderr and the exit code. */
-function runScript(relPath, args) {
+function runScript(relPath, args, timeoutMs = 120_000) {
   const scriptPath = path.join(__dirname, relPath);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [scriptPath, ...args], {
@@ -100,14 +100,30 @@ function runScript(relPath, args) {
         ...process.env,
         PI_COMPUTER_USE_HELPER_APP_PATH: TEST_HELPER_APP,
         PI_COMPUTER_USE_WINDOWS_HELPER_PATH: TEST_WINDOWS_HELPER,
+        // These smoke tests validate routing and isolated install paths, not
+        // Keychain integration. Signing can open SecurityAgent on headless macOS.
+        PI_COMPUTER_USE_NO_SIGN: "1",
       },
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      stderr += `Timed out after ${timeoutMs}ms: ${relPath} ${args.join(" ")}\n`;
+      child.kill("SIGTERM");
+      finish({ code: -1, stdout, stderr });
+    }, timeoutMs);
+    timeout.unref();
     child.stdout.on("data", (d) => { stdout += d.toString(); });
     child.stderr.on("data", (d) => { stderr += d.toString(); });
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.on("error", (err) => resolve({ code: -1, stdout, stderr: err.message }));
+    child.on("close", (code) => finish({ code, stdout, stderr }));
+    child.on("error", (err) => finish({ code: -1, stdout, stderr: `${stderr}${err.message}` }));
   });
 }
 
