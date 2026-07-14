@@ -34,7 +34,7 @@ Computer use is most helpful when the only available interface is the app on scr
 ## Install
 
 ```bash
-pi install npm:@injaneity/pi-computer-use@0.4.3
+pi install npm:@injaneity/pi-computer-use
 ```
 
 Start Pi and complete the platform setup flow.
