@@ -1280,7 +1280,7 @@ final class Bridge {
 		let pid: Int32
 		if let windowId, let ownerPid = pidForWindowId(windowId) {
 			pid = ownerPid
-		} else if let windowRef, let element = refStore.element(for: windowRef), let owner = pidForElement(element) {
+		} else if let requestedRoot, let owner = pidForElement(requestedRoot) {
 			pid = owner
 		} else {
 			throw BridgeFailure(message: "Root is not owned by a running app", code: "root_not_found")
@@ -3168,10 +3168,20 @@ final class Bridge {
 	}
 
 	private func windowInfo(windowId: UInt32) -> (pid: Int32, bounds: CGRect)? {
-		guard let entries = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(windowId)) as? [[String: Any]],
-			let first = entries.first,
-			let pid = (first[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-			let boundsDict = first[kCGWindowBounds as String] as? [String: Any],
+		func matchingEntry(_ entries: [[String: Any]]?) -> [String: Any]? {
+			entries?.first {
+				($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowId
+			}
+		}
+
+		let requestedIds = [NSNumber(value: windowId)] as CFArray
+		let targetedEntries = CGWindowListCreateDescriptionFromArray(requestedIds) as? [[String: Any]]
+		let entry = matchingEntry(targetedEntries) ?? matchingEntry(
+			CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]
+		)
+		guard let entry,
+			let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+			let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
 			let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
 		else {
 			return nil
