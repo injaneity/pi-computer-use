@@ -23,7 +23,7 @@ Example:
 ```json
 {
   "browser_use": true,
-  "managed_browser": "helium",
+  "managed_browser": "chrome",
   "headless": false,
   "cursor_overlay": true
 }
@@ -43,7 +43,7 @@ Known browser families include Safari, Chrome and Chromium-family browsers, Fire
 
 ### `managed_browser`
 
-Default: `"helium"`
+Default: `"chrome"`
 
 Selects `"helium"` or `"chrome"` for `launch_browser`. The debugging port is always allocated internally and isn't part of the model-facing contract.
 

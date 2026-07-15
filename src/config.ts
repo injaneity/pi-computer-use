@@ -26,7 +26,7 @@ const DEFAULT_CONFIG: ComputerUseConfig = {
 	browser_use: true,
 	headless: false,
 	cursor_overlay: true,
-	managed_browser: "helium",
+	managed_browser: "chrome",
 };
 
 let activeConfig: ComputerUseConfig = { ...DEFAULT_CONFIG };
