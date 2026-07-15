@@ -11,15 +11,15 @@ The normal loop is:
 
 | Tool | Purpose |
 | --- | --- |
-| `find_roots` | Find desktop and CDP browser-page roots. |
-| `observe_ui` | Capture one root and return a folded outline plus `stateId`. |
-| `search_ui` | Search the full cached outline. |
+| `find_roots` | Return a bounded, ranked set of desktop and CDP browser-page roots. |
+| `observe_ui` | Capture the current/frontmost root or one exact `@r` root and return a folded outline plus `stateId`. |
+| `search_ui` | Run a bounded, ranked query over the full cached outline. |
 | `expand_ui` | Show local outline context for one ref. |
 | `inspect_ui` | Show fields, rects, actions, and evidence for one ref. |
 | `act_ui` | Perform checked actions and return the resulting saved state, showing its changes or a full view when needed. |
-| `read_text` | Page through long text owned by a state. |
-| `wait_for` | Wait for text or a role to appear or disappear. |
-| `launch_browser` | Start a managed CDP browser and return page roots. |
+| `read_text` | Read fixed pages from state-owned `@e` text or immutable `@o` output. |
+| `wait_for` | Wait for a precise, optionally scoped condition. |
+| `launch_browser` | Start a managed CDP browser and return its observed page state. |
 | `navigate_browser` | Navigate the browser page owned by a state. |
 | `evaluate_browser` | Evaluate JavaScript in the browser page owned by a state. |
 
@@ -28,6 +28,8 @@ The normal loop is:
 `find_roots` returns roots such as `@r1`. Every desktop window, transient surface, and CDP page participates in that same forest. `observe_ui` returns element refs such as `@e12` and a `stateId`.
 
 Every tool that consumes an `@e` ref also requires its owning `stateId`. A state remains queryable while it is in the bounded store, but a mutation from an old resource epoch is rejected as stale. `act_ui` returns the next usable `stateId`; consume it directly instead of observing again. Observe again only after an uncertain external mutation or state eviction.
+
+Truncated textual output receives an immutable session-local ref such as `@o1`. Continue it with `read_text({ ref: "@o1", offset })`; output refs don't use a UI state id. Tool-provided `@o` offsets are UTF-8 byte offsets, while `@e` text offsets count Unicode characters.
 
 Nodes marked `pictureOnly` have visual evidence but no platform accessibility element. Semantic actions cannot target them. Coordinate actions are available only from a current image-bearing desktop state.
 
@@ -41,7 +43,7 @@ expand_ui({ stateId, ref: "@e7", depth: 3 })
 inspect_ui({ stateId, ref: "@e12" })
 ```
 
-`semantic` observation is cheapest, `fused` is the default, and `visual` forces visual text evidence. Search can escalate OCR once when the original desktop look omitted it; that refresh is checked against the state's resource epoch.
+`semantic` observation is cheapest, `fused` is the default, and `visual` forces visual text evidence. Search requires at least one of `text`, `role`, or `capability`. It ranks exact, prefix, and substring text before conservative fuzzy matches, returns a fixed top set with the total match count, and asks the caller to refine broad queries. Search can escalate OCR once when the original desktop look omitted it; that refresh is checked against the state's resource epoch.
 
 ## Acting and batching
 
@@ -59,15 +61,15 @@ the delivered event:
 ```js
 act_ui({
   stateId,
-  headless: true,
   actions: [{ action: "press", ref: "@e12" }],
-  expect: { text: "Archive completed", timeoutMs: 3000 }
+  expect: { text: "Archive completed", until: "present", timeoutMs: 3000 }
 })
 ```
 
 Verification reports `verified`, `preexisting`, or `failed`. A preexisting
 condition means the requested end state holds, but is not evidence that the
-action caused it.
+action caused it. Use `ref` for one exact element or `scopeRef` for a subtree;
+role-only conditions must be scoped, and value checks require an exact `ref`.
 
 Batch steps only when the second step does not need to inspect the result of the first:
 
@@ -116,19 +118,22 @@ Coordinate fallback uses image pixels from the observed state:
 act_ui({ stateId, actions: [{ action: "click", x: 420, y: 300 }] })
 ```
 
+## Bounded output
+
+Every model-visible textual result is limited to 48 KiB or 2,000 lines. Oversized results return a 16 KiB preview, focused-query guidance, and an immutable `@o` continuation. Discovery tools don't page through irrelevant matches: refine `find_roots` and `search_ui` instead. Continuation is intended for concrete long text, evaluation values, and diagnostics.
+
 ## Browser use
 
-Browser pages use the same roots, states, and element refs:
+Browser-specific commands operate only on CDP browser-page states. `launch_browser` chooses the configured browser and debugging port internally and immediately returns an observed state:
 
 ```ts
-launch_browser({ browser: "helium", url: "https://example.com" })
-find_roots({ kind: "browser_page" })
-observe_ui({ root: "@r3" })
-act_ui({ stateId, actions: [{ action: "press", ref: "@e7" }] })
+const launched = launch_browser({ url: "https://example.com" })
+act_ui({ stateId: launched.stateId, actions: [{ action: "press", ref: "@e7" }] })
 navigate_browser({ stateId: returnedStateId, url: "https://openai.com" })
+evaluate_browser({ stateId: returnedStateId, expression: "document.title" })
 ```
 
-`read_text`, `wait_for`, and `evaluate_browser` also need only the browser observation's `stateId`; there is no public `contextId` or separate snapshot flow.
+Browser states use the same outline, action, text, and condition contracts as desktop states. Native browser windows remain ordinary desktop UI; use `observe_ui` and `act_ui` rather than `navigate_browser` or `evaluate_browser` on them.
 
 ## Parallel calls
 

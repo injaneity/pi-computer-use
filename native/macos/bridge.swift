@@ -2263,6 +2263,7 @@ final class Bridge {
 		let text = optionalStringArg(request, "text")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 		let expectedValue = optionalStringArg(request, "value")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 		let waitForGone = boolArg(request, "gone") ?? false
+		let scopeExact = boolArg(request, "scopeExact") ?? false
 		let timeoutMs = max(100, min(60_000, optionalIntArg(request, "timeoutMs") ?? 10_000))
 		let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
 		guard role?.isEmpty == false || text?.isEmpty == false || expectedValue?.isEmpty == false else {
@@ -2270,6 +2271,15 @@ final class Bridge {
 		}
 		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
 			return ["found": false, "reason": "window_not_found"]
+		}
+		let rootElement: AXUIElement
+		if let scopeRef = optionalStringArg(request, "scopeRef") {
+			guard let scoped = refStore.element(for: scopeRef), isElement(scoped, descendantOf: window) else {
+				throw BridgeFailure(message: "Condition scope ref is stale or outside the target root", code: "element_ref_invalid")
+			}
+			rootElement = scoped
+		} else {
+			rootElement = window
 		}
 		_ = ensureRootObserver(pid: pid)
 
@@ -2295,7 +2305,8 @@ final class Bridge {
 		var lastCount = 0
 		repeat {
 			let changeGeneration = rootChangeGeneration(pid: pid)
-			let descendants = collectDescendantsWithContext(startingAt: window, maxDepth: 12, maxNodes: 2000)
+			let collected = collectDescendantsWithContext(startingAt: rootElement, maxDepth: 12, maxNodes: 2000)
+			let descendants = scopeExact ? Array(collected.prefix(1)) : collected
 			lastCount = descendants.count
 			if let match = descendants.first(where: { matches($0.element) }) {
 				if waitForGone {
