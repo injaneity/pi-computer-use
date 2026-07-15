@@ -1547,6 +1547,12 @@ function outlineConditionPresent(outline: Outline, condition: ReturnType<typeof 
 		.some((match) => (!condition.role || normalizedRole(match.node.role) === normalizedRole(condition.role)) && nodeWithinScope(match.node, condition.scopeRef, condition.scopeExact) && (!condition.value || normalizeText(match.node.value) === normalizeText(condition.value)));
 }
 
+function conditionScopeNode(outline: Outline, condition: ReturnType<typeof validateCondition>): OutlineNode | undefined {
+	const scopeNode = condition.scopeRef ? nodeByRef(outline, condition.scopeRef) : undefined;
+	if (condition.scopeRef && !scopeNode) throw new Error(`Condition scope ref '${condition.scopeRef}' is unavailable in this state.`);
+	return scopeNode;
+}
+
 async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Promise<AgentToolResult<WaitForDetails>> {
 	const contextId = operationState().contextId;
 	const condition = validateCondition(params);
@@ -1557,6 +1563,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		if (!state.resourceKey) throw new Error("The browser observation has no live resource identity. Observe again.");
 		const baseSnapshot = state.browserSnapshot;
 		if (!baseSnapshot) throw new Error("Browser wait requires a complete base observation.");
+		conditionScopeNode(restoreOutline(baseSnapshot.outline), condition);
 		const deadline = Date.now() + timeoutMs;
 		let lastSnapshot: CdpPageSnapshot | undefined;
 		let lastEpoch = state.epoch ?? resourceScheduler.epoch(state.resourceKey);
@@ -1588,8 +1595,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 	const baseView = { stateId: state.currentCapture!.stateId, outline: state.currentOutline! };
 	let target = await resolveCurrentTarget(signal);
 	target = await ensureTargetWindowId(target, signal);
-	const scopeNode = scopeRef ? nodeByRef(state.currentOutline!, scopeRef) : undefined;
-	if (scopeRef && !scopeNode) throw new Error(`Condition scope ref '${scopeRef}' is unavailable in this state.`);
+	const scopeNode = conditionScopeNode(state.currentOutline!, condition);
 	const raw = await currentPlatformBackend.waitFor({
 		...nativeWindowRequest(target),
 		lookId: state.currentOutline!.lookId,
@@ -1873,19 +1879,18 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 	validateStateId(params.stateId);
 	const look = currentLookOrThrow();
 	const baseView = { stateId: state.currentCapture!.stateId, outline: state.currentOutline! };
+	const condition = params.expect ? validateCondition(params.expect) : undefined;
+	const scopeNode = condition ? conditionScopeNode(look.parsedOutline!, condition) : undefined;
 	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
 	const noteBefore = state.currentNote;
 	return await withWindowWriteLock(target, async () => {
 		const headless = getComputerUseConfig().headless;
 		const execution = await dispatchUiTransaction(actions, target, look, headless, signal);
 		const executedActions = actions.slice(0, execution.actionCount ?? actions.length);
-		const condition = params.expect ? validateCondition(params.expect) : undefined;
 		if (condition) {
 			const { text: expectedText, role: expectedRole, value: expectedValue, scopeRef, scopeExact, gone, timeoutMs } = condition;
 			const beforePresent = outlineConditionPresent(look.parsedOutline!, condition);
 			const desiredWasPreexisting = beforePresent !== gone;
-			const scopeNode = scopeRef ? nodeByRef(look.parsedOutline!, scopeRef) : undefined;
-			if (scopeRef && !scopeNode) throw new Error(`Condition scope ref '${scopeRef}' is unavailable in this state.`);
 			const verification = await currentPlatformBackend.waitFor({
 				...nativeWindowRequest(target),
 				lookId: look.parsedOutline!.lookId,
@@ -1930,8 +1935,11 @@ async function performBrowserTransaction(params: ActParams, actions: UiAction[],
 	const baseSnapshot = operationState().browserSnapshot;
 	if (!baseSnapshot) throw new Error("Browser transaction requires a complete base observation.");
 	const baseView = { stateId: baseSnapshot.snapshotId, outline: baseSnapshot.outline };
+	const condition = params.expect ? validateCondition(params.expect) : undefined;
+	if (condition) conditionScopeNode(restoreOutline(baseSnapshot.outline), condition);
 	const prepared = actions.map((action) => {
 		if (!BROWSER_TRANSACTION_ACTIONS.has(action.action)) throw new Error(`Browser transactions do not support '${action.action}'.`);
+		if (action.action === "click" && action.ref && action.button && action.button !== "left") throw new Error("Browser ref clicks support only the left button; use coordinate clicks for right or middle buttons.");
 		const target = browserSnapshotTarget(params.stateId, trimOrUndefined(action.ref));
 		if ((action.action === "press" || action.action === "setText" || (action.action === "click" && action.ref) || (action.action === "typeText" && action.ref)) && !Number.isFinite(target?.backendNodeId)) {
 			throw new Error(`Browser ${action.action} requires an actionable @e ref owned by ${params.stateId}.`);
@@ -1946,8 +1954,8 @@ async function performBrowserTransaction(params: ActParams, actions: UiAction[],
 				worked = true;
 				for (let count = 0; count < (action.clickCount ?? 1); count += 1) worked = await cdpClickForContext(contextId, target!.backendNodeId!) && worked;
 			} else if (action.action === "click") {
-				worked = await cdpMouseForContext(contextId, action.x!, action.y!, "mousePressed", action.clickCount ?? 1)
-					&& await cdpMouseForContext(contextId, action.x!, action.y!, "mouseReleased", action.clickCount ?? 1);
+				worked = await cdpMouseForContext(contextId, action.x!, action.y!, "mousePressed", action.button ?? "left", action.clickCount ?? 1)
+					&& await cdpMouseForContext(contextId, action.x!, action.y!, "mouseReleased", action.button ?? "left", action.clickCount ?? 1);
 			} else if (action.action === "setText") worked = await cdpTypeForContext(contextId, target!.backendNodeId!, action.text ?? "", true);
 			else if (action.action === "typeText") worked = target?.backendNodeId
 				? await cdpTypeForContext(contextId, target.backendNodeId, action.text ?? "", false)
@@ -1958,7 +1966,6 @@ async function performBrowserTransaction(params: ActParams, actions: UiAction[],
 			else if (action.action === "moveMouse") worked = await cdpMouseForContext(contextId, action.x!, action.y!, "mouseMoved");
 			if (!worked) throw new Error("The browser root became unavailable during the action transaction. Observe it again.");
 		}
-		const condition = params.expect ? validateCondition(params.expect) : undefined;
 		if (condition) {
 			const deadline = Date.now() + condition.timeoutMs;
 			let satisfied = false;
