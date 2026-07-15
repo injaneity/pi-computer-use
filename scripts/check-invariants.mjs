@@ -212,6 +212,15 @@ check("INV-18 consolidated actions and diff-first resulting views", () => {
 	assert(!ts.includes("preserveFocus") && macBackend.includes("preserveFocus") && swift.includes("!preserveFocus"), "native focus continuity leaks through the coordinator or is not enforced by the backend");
 });
 
+check("INV-19 macOS root identity resolution", () => {
+	assert(swift.includes("let requestedRoot = windowRef.flatMap { refStore.window(for: $0) }"), "look does not resolve native root refs from the window store");
+	assert(swift.includes("else if let requestedRoot, let owner = pidForElement(requestedRoot)"), "look cannot recover the owner pid from a stored native root");
+	assert(!swift.includes("CGWindowListCopyWindowInfo([.optionIncludingWindow]"), "window lookup uses optionIncludingWindow without an above/below selector");
+	assert(swift.includes("CGWindowListCreateDescriptionFromArray(requestedIds)"), "window lookup does not use the targeted window-description API");
+	assert(swift.includes("CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID)"), "window lookup does not fall back to all onscreen and offscreen windows");
+	assert(swift.includes("($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowId"), "window lookup does not verify the returned stable ID");
+});
+
 check("INV-8 swift typecheck", () => {
 	const triple = process.arch === "x64" ? "x86_64-apple-macosx14.0" : "arm64-apple-macosx14.0";
 	execFileSync("xcrun", [
