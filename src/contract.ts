@@ -1,16 +1,13 @@
-export type RootSelector = string | number;
+export type RootSelector = string;
 export type ImageMode = "auto" | "always" | "never";
 export type MouseButtonName = "left" | "right" | "middle";
 
 export interface ObserveTargetParams {
-	app?: string;
-	windowTitle?: string;
 	root?: RootSelector;
-	image?: ImageMode;
 }
 
 export interface FindParams {
-	query?: string;
+	text?: string;
 	app?: string;
 	bundleId?: string;
 	pid?: number;
@@ -20,7 +17,6 @@ export interface FindParams {
 
 export interface StateTargetParams {
 	stateId?: string;
-	image?: ImageMode;
 }
 
 export interface NavigateBrowserParams extends StateTargetParams {
@@ -28,9 +24,7 @@ export interface NavigateBrowserParams extends StateTargetParams {
 }
 
 export interface LaunchBrowserParams {
-	browser?: "helium" | "chrome";
 	url?: string;
-	port?: number;
 }
 
 export interface EvaluateBrowserParams {
@@ -40,14 +34,14 @@ export interface EvaluateBrowserParams {
 
 export interface ObserveParams extends ObserveTargetParams {
 	mode?: "semantic" | "visual" | "fused";
+	/** Internal capture override; not part of the model-facing schema. */
 	readText?: "auto" | "always" | "never";
 }
 
 export interface SearchUiParams extends StateTargetParams {
 	text?: string;
 	role?: string;
-	action?: string;
-	limit?: number;
+	capability?: string;
 }
 
 export interface ExpandUiParams extends StateTargetParams {
@@ -57,11 +51,20 @@ export interface ExpandUiParams extends StateTargetParams {
 
 export interface InspectUiParams extends StateTargetParams {
 	ref: string;
-	includeRaw?: boolean;
+}
+
+export interface UiCondition {
+	ref?: string;
+	scopeRef?: string;
+	text?: string;
+	role?: string;
+	value?: string;
+	until?: "present" | "absent";
+	timeoutMs?: number;
 }
 
 export interface UiAction {
-	action: "press" | "click" | "doubleClick" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse" | "wait";
+	action: "press" | "click" | "setText" | "typeText" | "keypress" | "scroll" | "drag" | "moveMouse";
 	ref?: string;
 	x?: number;
 	y?: number;
@@ -72,35 +75,19 @@ export interface UiAction {
 	path?: Array<{ x: number; y: number } | [number, number]>;
 	button?: MouseButtonName;
 	clickCount?: number;
-	ms?: number;
 }
 
 export interface ActParams extends StateTargetParams {
 	actions: UiAction[];
-	/** Prohibits foreground fallback when true. Background is always attempted first. */
-	headless?: boolean;
-	/** Optional semantic postcondition checked before the transaction reports success. */
-	expect?: {
-		text?: string;
-		role?: string;
-		value?: string;
-		gone?: boolean;
-		timeoutMs?: number;
-	};
+	expect?: UiCondition;
 }
 
 export interface ReadTextParams extends StateTargetParams {
-	ref?: string;
+	ref: string;
 	offset?: number;
-	limit?: number;
 }
 
-export interface WaitForParams extends StateTargetParams {
-	text?: string;
-	role?: string;
-	gone?: boolean;
-	timeoutMs?: number;
-}
+export interface WaitForParams extends StateTargetParams, UiCondition {}
 
 export const AGENT_TOOL_NAMES = new Set([
 	"find_roots",

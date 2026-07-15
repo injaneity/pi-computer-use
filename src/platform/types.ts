@@ -185,9 +185,12 @@ export interface PlatformReadTextResponse {
 }
 
 export interface PlatformWaitForRequest extends PlatformTarget {
+	lookId?: string;
 	text?: string;
 	role?: string;
 	value?: string;
+	scopeRef?: string;
+	scopeExact?: boolean;
 	gone: boolean;
 	timeoutMs: number;
 }

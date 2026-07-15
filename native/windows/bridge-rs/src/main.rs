@@ -1289,6 +1289,21 @@ fn handle_wait_for(args: &Value) -> Result<Value, ProtocolError> {
         .and_then(Value::as_str)
         .map(|s| s.trim().to_lowercase());
     let gone = args.get("gone").and_then(Value::as_bool).unwrap_or(false);
+    let scope_exact = args.get("scopeExact").and_then(Value::as_bool).unwrap_or(false);
+    let scope_runtime_id = match (
+        args.get("lookId").and_then(Value::as_str),
+        args.get("scopeRef").and_then(Value::as_str),
+    ) {
+        (Some(look_id), Some(scope_ref)) => Some(
+            helper_state()
+                .lock()
+                .map_err(|_| internal("helper state lock poisoned"))?
+                .element_for_look(look_id, scope_ref)?
+                .runtime_id,
+        ),
+        (None, Some(_)) => return Err(invalid("scopeRef requires lookId")),
+        _ => None,
+    };
     if text.is_none() && role.is_none() && expected_value.is_none() {
         return Err(invalid("uiaWaitFor requires text, role, or value"));
     }
@@ -1298,7 +1313,28 @@ fn handle_wait_for(args: &Value) -> Result<Value, ProtocolError> {
     while Instant::now() < deadline {
         let elements = windows_bridge::uia::live_elements(hwnd).map_err(internal)?;
         node_count = elements.len();
+        let parents: HashMap<String, String> = elements
+            .iter()
+            .filter_map(|element| {
+                let runtime = element.get("runtimeId")?.as_array()?;
+                let parent = element.get("parentRuntimeId")?.as_array()?;
+                Some((serde_json::to_string(runtime).ok()?, serde_json::to_string(parent).ok()?))
+            })
+            .collect();
+        let scope_key = scope_runtime_id.as_ref().and_then(|id| serde_json::to_string(id).ok());
         let found = elements.iter().any(|element| {
+            if let Some(scope_key) = &scope_key {
+                let Some(mut current) = element.get("runtimeId").and_then(Value::as_array).and_then(|id| serde_json::to_string(id).ok()) else { return false; };
+                let mut within_scope = false;
+                for _ in 0..64 {
+                    if &current == scope_key { within_scope = true; break; }
+                    if scope_exact { break; }
+                    let Some(parent) = parents.get(&current) else { break; };
+                    if parent == &current { break; }
+                    current = parent.clone();
+                }
+                if !within_scope { return false; }
+            }
             let candidate_text = ["value", "label", "name", "title"]
                 .iter()
                 .filter_map(|key| element.get(*key).and_then(Value::as_str))

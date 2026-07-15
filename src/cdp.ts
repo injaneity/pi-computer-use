@@ -127,7 +127,7 @@ export class CdpTab {
 
 	/** Evaluates a JS expression in the page and returns its primitive value. */
 	async evaluate(expression: string): Promise<unknown> {
-		const result = await this.send("Runtime.evaluate", { expression, returnByValue: true });
+		const result = await this.send("Runtime.evaluate", { expression, returnByValue: true, timeout: COMMAND_TIMEOUT_MS, awaitPromise: true });
 		return result?.result?.value;
 	}
 
@@ -163,6 +163,31 @@ export class CdpTab {
 			return;
 		}
 		await this.send("Runtime.evaluate", { expression: `window.scrollBy(${JSON.stringify(deltaX)}, ${JSON.stringify(deltaY)})` });
+	}
+
+	async typeIntoFocused(text: string): Promise<void> {
+		await this.send("Input.insertText", { text });
+	}
+
+	async keypress(keys: string[]): Promise<void> {
+		const modifierBits: Record<string, number> = { alt: 1, option: 1, control: 2, ctrl: 2, meta: 4, command: 4, cmd: 4, shift: 8 };
+		const modifiers = keys.reduce((bits, key) => bits | (modifierBits[key.toLowerCase()] ?? 0), 0);
+		for (const key of keys.filter((candidate) => modifierBits[candidate.toLowerCase()] === undefined)) {
+			await this.send("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, text: key.length === 1 && modifiers === 0 ? key : undefined, modifiers });
+			await this.send("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, modifiers });
+		}
+	}
+
+	async mouseAt(x: number, y: number, type: "mouseMoved" | "mousePressed" | "mouseReleased", clickCount = 1): Promise<void> {
+		await this.send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" ? "none" : "left", clickCount });
+	}
+
+	async dragPath(path: Array<{ x: number; y: number }>): Promise<void> {
+		if (path.length < 2) throw new Error("CDP drag requires at least two points.");
+		await this.mouseAt(path[0].x, path[0].y, "mousePressed");
+		for (const point of path.slice(1)) await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "left", buttons: 1 });
+		const end = path[path.length - 1];
+		await this.mouseAt(end.x, end.y, "mouseReleased");
 	}
 
 	private async withBackendNode(backendNodeId: number, functionDeclaration: string, args: unknown[] = []): Promise<void> {
@@ -376,6 +401,22 @@ export async function cdpScrollForContext(contextId: string, deltaX: number, del
 		await tab.scrollBy(deltaX, deltaY, backendNodeId);
 		return true;
 	})) === true;
+}
+
+export async function cdpTypeFocusedForContext(contextId: string, text: string): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => { await tab.typeIntoFocused(text); return true; })) === true;
+}
+
+export async function cdpKeypressForContext(contextId: string, keys: string[]): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => { await tab.keypress(keys); return true; })) === true;
+}
+
+export async function cdpMouseForContext(contextId: string, x: number, y: number, type: "mouseMoved" | "mousePressed" | "mouseReleased", clickCount = 1): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => { await tab.mouseAt(x, y, type, clickCount); return true; })) === true;
+}
+
+export async function cdpDragForContext(contextId: string, path: Array<{ x: number; y: number }>): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => { await tab.dragPath(path); return true; })) === true;
 }
 
 export async function cdpNavigateContext(contextId: string, url: string): Promise<boolean> {
