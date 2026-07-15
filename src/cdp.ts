@@ -178,8 +178,8 @@ export class CdpTab {
 		}
 	}
 
-	async mouseAt(x: number, y: number, type: "mouseMoved" | "mousePressed" | "mouseReleased", clickCount = 1): Promise<void> {
-		await this.send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" ? "none" : "left", clickCount });
+	async mouseAt(x: number, y: number, type: "mouseMoved" | "mousePressed" | "mouseReleased", button: "left" | "right" | "middle" = "left", clickCount = 1): Promise<void> {
+		await this.send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" ? "none" : button, clickCount });
 	}
 
 	async dragPath(path: Array<{ x: number; y: number }>): Promise<void> {
@@ -411,8 +411,8 @@ export async function cdpKeypressForContext(contextId: string, keys: string[]): 
 	return (await withCdpContextTab(contextId, async (tab) => { await tab.keypress(keys); return true; })) === true;
 }
 
-export async function cdpMouseForContext(contextId: string, x: number, y: number, type: "mouseMoved" | "mousePressed" | "mouseReleased", clickCount = 1): Promise<boolean> {
-	return (await withCdpContextTab(contextId, async (tab) => { await tab.mouseAt(x, y, type, clickCount); return true; })) === true;
+export async function cdpMouseForContext(contextId: string, x: number, y: number, type: "mouseMoved" | "mousePressed" | "mouseReleased", button: "left" | "right" | "middle" = "left", clickCount = 1): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => { await tab.mouseAt(x, y, type, button, clickCount); return true; })) === true;
 }
 
 export async function cdpDragForContext(contextId: string, path: Array<{ x: number; y: number }>): Promise<boolean> {
