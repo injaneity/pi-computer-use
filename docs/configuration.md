@@ -57,7 +57,7 @@ When `true`, actions must remain in the background. Raw pointer events, raw keyb
 
 Default: `true`
 
-When `true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point for both accessibility and physical delivery. It doesn't move the system pointer, accept input, or delay the action. Set it to `false` for invisible automation. `headless: true` always suppresses it regardless of this setting.
+When `true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point during non-headless background delivery. Foreground actions that control the physical cursor don't display the overlay. The overlay doesn't move the system pointer, accept input, or delay the action. Set it to `false` for invisible automation. `headless: true` always suppresses it regardless of this setting.
 
 ## Environment variables
 
