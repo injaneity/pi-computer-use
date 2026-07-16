@@ -1886,6 +1886,7 @@ final class Bridge {
 		func animateCursor(at point: CGPoint) {
 			guard supportsAgentCursor,
 				(request["cursorOverlay"] as? Bool ?? true),
+				delivery == "pid",
 				policy != "ax_only",
 				["press", "click", "moveMouse", "scroll", "drag"].contains(action)
 			else { return }
