@@ -12,6 +12,9 @@ final class AgentCursor {
     private init() {}
 
     func animate(to point: CGPoint, above windowId: UInt32) {
+        idleHideTask?.cancel()
+        idleHideTask = nil
+
         let window = ensureWindow()
         if !window.isVisible { window.orderFrontRegardless() }
         window.order(.above, relativeTo: Int(windowId))
@@ -26,11 +29,17 @@ final class AgentCursor {
         }
         renderer.moveTo(point: point)
 
-        idleHideTask?.cancel()
-        idleHideTask = Task { @MainActor [weak self] in
+        idleHideTask = Task { @MainActor [weak self, weak window] in
             try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled else { return }
-            self?.overlay?.orderOut(nil)
+            guard !Task.isCancelled, let self, let window else { return }
+            guard self.overlay === window else { return }
+
+            renderer.cancelAnimation()
+            window.orderOut(nil)
+            window.contentView = nil
+            window.close()
+            overlay = nil
+            idleHideTask = nil
         }
     }
 
@@ -70,7 +79,7 @@ private struct AgentCursorView: View {
     @Bindable private var renderer = AgentCursorRenderer.shared
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 120.0)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 120.0, paused: !renderer.isAnimating)) { context in
             Canvas { graphics, _ in
                 renderer.tick(now: context.date.timeIntervalSinceReferenceDate)
                 drawCursor(in: graphics)
