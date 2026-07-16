@@ -1,0 +1,77 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "extensions/computer-use.ts"
+      - "native/macos/**"
+      - "native/windows/**"
+      - "src/bridge.ts"
+      - "src/config.ts"
+      - "src/platform/macos/**"
+      - "src/platform/windows/**"
+      - "scripts/setup-helper.mjs"
+      - "scripts/check-docs.mjs"
+      - "scripts/docs-generators/**"
+      - "package.json"
+      - ".github/workflows/docs.yml"
+      - ".github/workflows/publish-npm.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "extensions/computer-use.ts"
+      - "native/macos/**"
+      - "native/windows/**"
+      - "src/bridge.ts"
+      - "src/config.ts"
+      - "src/platform/macos/**"
+      - "src/platform/windows/**"
+      - "scripts/setup-helper.mjs"
+      - "scripts/check-docs.mjs"
+      - "scripts/docs-generators/**"
+      - "package.json"
+      - ".github/workflows/docs.yml"
+      - ".github/workflows/publish-npm.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Generate, check, and build docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            docs/package-lock.json
+
+      - name: Install repository dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install docs dependencies
+        run: npm ci --prefix docs --no-audit --no-fund
+
+      - name: Check generated and curated docs
+        run: npm run docs:check
+
+      - name: Typecheck and build website
+        run: npm run docs:site:check

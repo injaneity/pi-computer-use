@@ -1,0 +1,8 @@
+{
+  "title": "Agent",
+  "icon": "Bot",
+  "pages": [
+    "contract",
+    "tools"
+  ]
+}

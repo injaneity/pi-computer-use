@@ -1,0 +1,46 @@
+---
+title: 'Get started with pi-computer-use'
+description: 'Install the extension and complete a first checked desktop action.'
+---
+
+This tutorial installs the extension, verifies platform setup, and completes a first observation-and-action loop.
+
+## 1. Install the extension
+
+```bash
+pi install npm:@injaneity/pi-computer-use
+```
+
+Start Pi after installation. On macOS 14 or newer, grant Accessibility and Screen Recording to `/Applications/pi-computer-use.app`, then choose Recheck. The [macOS reference](../reference/platforms/macos/accessibility.mdx#trust-and-permission) documents the exact checks. On Windows, run Pi in an unlocked interactive desktop session; the macOS helper is not used.
+
+## 2. Check the active configuration
+
+Run this command inside Pi:
+
+```text
+/computer-use
+```
+
+The response shows whether browser access, strict background execution, and the macOS agent cursor are enabled, along with the source of each configuration file.
+
+## 3. Ask the agent to inspect an app
+
+Open a simple desktop app such as Calculator or TextEdit, then ask Pi:
+
+```text
+find the app's window, inspect its visible controls, and tell me what you can act on. don't change anything yet.
+```
+
+The agent first calls `find_roots`, then `observe_ui`. The observation returns a `stateId` and element refs such as `@e12`; those refs belong to that immutable state.
+
+## 4. Ask for one checked action
+
+Give the agent a small action with an observable result, for example:
+
+```text
+click the 7 button and verify that the display shows 7.
+```
+
+The agent acts from the observed `stateId` and attaches the expected result to `act_ui`. A successful action returns the next state, often as a compact diff. The agent should use that returned state directly rather than immediately observing again.
+
+You now have a working desktop loop. Use the generated [agent state and action contract](../reference/agent/contract.mdx) for state, batching, browser, and fallback behavior, or the generated [tool schema reference](../reference/agent/tools.mdx) for exact parameters.

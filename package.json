@@ -37,6 +37,7 @@
 		"prebuilt/macos",
 		"prebuilt/windows",
 		"assets/reference/img.jpg",
+		"docs/content/docs",
 		"README.md",
 		"LICENSE"
 	],
@@ -48,6 +49,11 @@
 	},
 	"scripts": {
 		"postinstall": "node scripts/setup-helper.mjs --postinstall",
+		"docs:generate": "node scripts/docs-generators/generate-tool-reference.mjs && node scripts/docs-generators/generate-source-references.mjs",
+		"docs:check": "node scripts/docs-generators/generate-tool-reference.mjs --check && node scripts/docs-generators/generate-source-references.mjs --check && node scripts/check-docs.mjs",
+		"docs:dev": "npm --prefix docs run dev",
+		"docs:build": "npm --prefix docs run build",
+		"docs:site:check": "npm --prefix docs run typecheck && npm --prefix docs run build",
 		"typecheck": "tsc -p tsconfig.json",
 		"test:schema": "node scripts/check-tool-schemas.mjs",
 		"test:invariants": "node scripts/check-invariants.mjs",
@@ -58,7 +64,7 @@
 		"test:platform": "node --experimental-strip-types scripts/check-platform-windows.mjs",
 		"test:windows-scripts": "node scripts/check-windows-build-scripts.mjs",
 		"test:signing": "node scripts/check-local-signing.mjs",
-		"test": "npm run typecheck && npm run test:schema && npm run test:output && npm run test:lifecycle && npm run test:runtime && npm run test:invariants && npm run test:signing",
+		"test": "npm run typecheck && npm run docs:check && npm run test:schema && npm run test:output && npm run test:lifecycle && npm run test:runtime && npm run test:invariants && npm run test:signing",
 		"build:native": "node scripts/build-native.mjs",
 		"build:windows": "node scripts/build-native.mjs --platform windows"
 	},

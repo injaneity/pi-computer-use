@@ -1,4 +1,7 @@
-# Development
+---
+title: 'Develop and validate changes'
+description: 'Repository layout, validation, native helper development, and release signing.'
+---
 
 ## Repository layout
 
@@ -76,31 +79,14 @@ The adapter uses Cubench only for the instruction and final oracle; UI observati
 
 ## Native platform helpers
 
-On macOS, the helper installed for permissions is:
+The macOS runtime expects `/Applications/pi-computer-use.app`. It targets macOS 14 and links ApplicationServices, AppKit, ScreenCaptureKit, Foundation, SwiftUI, Vision, and ImageIO through the Swift sources and build scripts. The [macOS implementation reference](../reference/platforms/macos/implementation.mdx) records the exact platform behavior and Apple API citations; update it whenever the helper changes.
 
-```text
-/Applications/pi-computer-use.app
-```
+Local setup chooses a Developer ID identity when one is available, otherwise its managed local signing identity, and finally ad-hoc signing. The installer refuses to replace an existing helper with an ad-hoc rebuild unless `PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1` is set. This is project safety policy, not a guarantee about permission retention ([setup-helper.mjs](https://github.com/injaneity/pi-computer-use/blob/main/scripts/setup-helper.mjs#L318)).
 
-The macOS helper targets macOS 14+ and uses ScreenCaptureKit. Local development can use ad-hoc signing. Release builds must use the release workflow so the helper app is signed with the stable release certificate.
+On Windows, development uses the Windows platform backend/helper and the active desktop session rather than the macOS app bundle.
 
-On Windows, development uses the Windows platform backend/helper and the active desktop session rather than the macOS app bundle or TCC permission model.
+## macOS release signing
 
-## Release signing
+`.github/workflows/publish-npm.yml` is the release source of truth. It builds a universal helper on `macos-14`, assembles the app with a `14.0` minimum system version, signs it with the configured certificate and hardened runtime, and verifies the signature. When the repository variable `NOTARIZE` is `true`, it submits and staples the app before packaging ([publish-npm.yml](https://github.com/injaneity/pi-computer-use/blob/main/.github/workflows/publish-npm.yml#L31)).
 
-This section applies to macOS releases. macOS TCC keys Accessibility and Screen Recording grants to an app's code-signing identity. Ad-hoc and locally self-signed development builds may require permission review whenever their native code changes. Only Developer ID-signed release bundles should be treated as having a stable update identity.
-
-Release setup:
-
-1. Run `./scripts/make-signing-cert.sh` once, or use a Developer ID Application certificate.
-2. Add repository secrets:
-   - `APPLICATION_CERT_BASE64`
-   - `CERT_PASSWORD`
-   - `SIGN_IDENTITY`
-3. For Developer ID notarization, set repository variable `NOTARIZE=true` and add:
-   - `TEAM_ID`
-   - `APPLE_ID`
-   - `APP_SPECIFIC_PASSWORD`
-4. Push a `v*` tag or run the `Release` workflow manually.
-
-For macOS, `.github/workflows/publish-npm.yml` builds the universal helper, signs it, optionally notarizes it, stages a draft GitHub Release, injects the same signed helper app into the npm package, publishes npm, and only then publishes the GitHub Release.
+The workflow requires `APPLICATION_CERT_BASE64`, `CERT_PASSWORD`, and `SIGN_IDENTITY`. Optional notarization additionally requires `TEAM_ID`, `APPLE_ID`, and `APP_SPECIFIC_PASSWORD`. It stages the helper in a draft GitHub Release, injects the same artifact into the npm package, publishes npm, and publishes the GitHub Release last.

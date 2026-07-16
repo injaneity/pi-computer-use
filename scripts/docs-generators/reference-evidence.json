@@ -1,0 +1,81 @@
+{
+  "$schema": "./reference-evidence.schema.json",
+  "schemaVersion": 1,
+  "repositoryUrl": "https://github.com/injaneity/pi-computer-use/blob/main/",
+  "pages": [
+    {
+      "key": "reference/agent/contract",
+      "outputPath": "docs/content/docs/reference/agent/contract.mdx",
+      "title": "Agent state and action contract",
+      "description": "Operating contract for refs, immutable state, progressive disclosure, actions, batching, browser roots, and parallel calls.",
+      "sourcePath": "src/bridge.ts",
+      "requiredSymbols": ["find_roots", "observe_ui", "act_ui", "stateId"]
+    },
+    {
+      "key": "reference/configuration",
+      "outputPath": "docs/content/docs/reference/configuration.mdx",
+      "title": "Configuration",
+      "description": "Configuration files, options, environment variables, and browser support reference.",
+      "sourcePath": "src/config.ts",
+      "requiredSymbols": ["DEFAULT_CONFIG", "browser_use", "headless", "cursor_overlay"]
+    },
+    {
+      "key": "reference/platforms/macos/accessibility",
+      "outputPath": "docs/content/docs/reference/platforms/macos/accessibility.mdx",
+      "title": "Accessibility and AX",
+      "description": "macOS Accessibility trust, root discovery, AX extraction, semantic operations, and limits reference.",
+      "sourcePath": "native/macos/bridge.swift",
+      "requiredSymbols": ["AXIsProcessTrustedWithOptions", "AXUIElementCreateApplication", "AXUIElementPerformAction"],
+      "requiredCitations": [
+        "https://developer.apple.com/documentation/applicationservices/1460720-axisprocesstrusted",
+        "https://developer.apple.com/documentation/applicationservices/axuielement",
+        "https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction"
+      ]
+    },
+    {
+      "key": "reference/platforms/macos/capture",
+      "outputPath": "docs/content/docs/reference/platforms/macos/capture.mdx",
+      "title": "Capture and OCR",
+      "description": "Screen Recording, Core Graphics pairing, ScreenCaptureKit, fallback capture, and Vision OCR reference.",
+      "sourcePath": "native/macos/bridge.swift",
+      "requiredSymbols": ["CGPreflightScreenCaptureAccess", "SCScreenshotManager.captureImage", "VNRecognizeTextRequest"],
+      "requiredCitations": [
+        "https://developer.apple.com/documentation/coregraphics/cgpreflightscreencaptureaccess",
+        "https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager/captureimage",
+        "https://developer.apple.com/documentation/vision/vnrecognizetextrequest"
+      ]
+    },
+    {
+      "key": "reference/platforms/macos/actions",
+      "outputPath": "docs/content/docs/reference/platforms/macos/actions.mdx",
+      "title": "Actions and input delivery",
+      "description": "AX delivery, synthesized event, foreground fallback, strict headless, and outcome evidence reference.",
+      "sourcePath": "native/macos/bridge.swift",
+      "requiredSymbols": ["postToPid", "cghidEventTap", "ax_only", "AgentCursor"],
+      "requiredCitations": [
+        "https://developer.apple.com/documentation/coregraphics/cgevent/posttopid",
+        "https://developer.apple.com/documentation/coregraphics/cgevent/post"
+      ]
+    },
+    {
+      "key": "reference/platforms/macos/implementation",
+      "outputPath": "docs/content/docs/reference/platforms/macos/implementation.mdx",
+      "title": "macOS implementation reference",
+      "description": "Source-backed macOS requirements, APIs, permissions, capture, actions, and current limits.",
+      "sourcePath": "native/macos/bridge.swift",
+      "requiredSymbols": ["CGWindowListCopyWindowInfo", "SCScreenshotManager.captureImage", "AXUIElementSetAttributeValue", "/usr/sbin/screencapture"],
+      "requiredCitations": [
+        "https://developer.apple.com/documentation/",
+        "https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift#L"
+      ]
+    },
+    {
+      "key": "reference/platforms/windows",
+      "outputPath": "docs/content/docs/reference/platforms/windows.mdx",
+      "title": "Windows bridge reference",
+      "description": "Windows backend contract, UIA behavior, refs, actions, deltas, protocol, and constraints.",
+      "sourcePath": "native/windows/bridge-rs/src/lib.rs",
+      "requiredSymbols": ["protocol", "uia", "capture", "input"]
+    }
+  ]
+}

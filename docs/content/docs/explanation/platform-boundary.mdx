@@ -1,0 +1,33 @@
+---
+title: 'Platform boundary'
+description: 'How the shared runtime delegates observation and input to macOS, Windows, and browser backends without hiding platform differences.'
+---
+
+The agent contract is shared, but operating-system mechanics are not forced into identical source structures. A platform-neutral seam keeps state ownership and outcomes consistent while allowing each backend to use credible native APIs.
+
+## Shared contract
+
+[`src/platform/types.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/platform/types.ts) defines the backend operations consumed by the runtime. Shared TypeScript code owns public refs, state IDs, resource epochs, action intent, and result rendering. Backends own native root enumeration, observation, coordinate grounding, delivery, and platform evidence.
+
+## macOS path
+
+[`src/platform/macos/`](https://github.com/injaneity/pi-computer-use/tree/main/src/platform/macos) manages helper lifecycle, permissions, and protocol translation. [`native/macos/bridge.swift`](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/bridge.swift) integrates Accessibility, Core Graphics, ScreenCaptureKit, Vision, AppKit, and synthesized events.
+
+The macOS reference is organized by those implementation subsystems:
+
+- [Accessibility and AX](../reference/platforms/macos/accessibility.mdx)
+- [Capture and OCR](../reference/platforms/macos/capture.mdx)
+- [Actions and input delivery](../reference/platforms/macos/actions.mdx)
+- [Complete implementation reference](../reference/platforms/macos/implementation.mdx)
+
+## Windows path
+
+[`src/platform/windows/`](https://github.com/injaneity/pi-computer-use/tree/main/src/platform/windows) translates the shared contract to the Windows native bridge. UI Automation provides semantic extraction and actions, while the helper owns Windows capture, input, event journals, and authoritative snapshots. Exact protocol behavior is in the [Windows bridge reference](../reference/platforms/windows.mdx).
+
+## Browser path
+
+Browser pages are roots in the same multi-root forest. CDP accessibility trees become normal outlines, and page-target identity supplies the resource key. Browser tools derive the internal CDP target from public root or state ownership rather than asking the agent to manage protocol identifiers.
+
+## Parity without pretending equivalence
+
+Platform parity means preserving shared invariants: immutable states, bounded observations, honest truncation, checked transactions, resource ordering, and explicit uncertainty. It does not mean claiming that AX and UIA expose identical roles, actions, window identity, or capture behavior.

@@ -1,0 +1,108 @@
+---
+title: 'Troubleshoot setup and runtime failures'
+description: 'Repair helper installation, permissions, capture, stale state, and action delivery problems.'
+---
+
+Start with `/computer-use` in Pi to confirm the active configuration and its source. For macOS implementation details and Apple API citations, use the [macOS reference](../reference/platforms/macos/implementation.mdx).
+
+## Repair a missing macOS helper
+
+The normal runtime requires this executable:
+
+```text
+/Applications/pi-computer-use.app/Contents/MacOS/bridge
+```
+
+Install the packaged, downloaded, or locally buildable helper with:
+
+```bash
+node scripts/setup-helper.mjs --runtime
+```
+
+For source development, rebuild first and then run the same installer:
+
+```bash
+npm run build:native
+node scripts/setup-helper.mjs --runtime
+```
+
+There is no `--force` installer option. If replacement is refused because only an ad-hoc signing identity is available, prefer a signed helper or managed local signing identity. Set `PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1` only when intentionally replacing a development helper.
+
+## Grant macOS permissions
+
+Grant Accessibility and Screen Recording to `/Applications/pi-computer-use.app`, then choose Recheck. Recheck restarts the helper before checking again.
+
+The helper checks Accessibility with `AXIsProcessTrusted` and Screen Recording with Core Graphics preflight plus a ScreenCaptureKit content query ([macOS permissions reference](../reference/platforms/macos/accessibility.mdx#trust-and-permission)). System Settings labels can vary by macOS version, so identify the app by its name and path rather than relying on one pane label.
+
+If setup reports `source.attribution: caller`, the bridge is not running as the installed helper app. Restart Pi and rerun setup so the client launches the bundle at `/Applications/pi-computer-use.app`.
+
+If permission checks still disagree after recheck, reset only this bundle's entries and grant them again:
+
+```bash
+tccutil reset Accessibility com.injaneity.pi-computer-use
+tccutil reset ScreenCapture com.injaneity.pi-computer-use
+```
+
+A successful reset command only removes the stored decision; it does not grant permission.
+
+## Fix an empty Accessibility outline
+
+Confirm Accessibility is enabled for `pi-computer-use.app`, choose Recheck, and observe again. If one app alone remains sparse, inspect it in fused or visual mode because the target may expose little Accessibility data:
+
+```ts
+observe_ui({ root: "@r1", mode: "fused" })
+```
+
+The helper can only report attributes and actions exposed through the target's Accessibility tree. OCR can add visual text evidence, but OCR-only `pictureOnly` nodes are not semantic action targets.
+
+## Fix a failed or black window capture
+
+Confirm that:
+
+- Screen Recording is enabled for `pi-computer-use.app`;
+- the target still has an open window;
+- the root has a Core Graphics window ID;
+- the window wasn't closed between discovery and observation.
+
+The helper captures with ScreenCaptureKit first and then tries `/usr/sbin/screencapture` for the same window ID. A successful permission readiness check does not guarantee that either method can capture every later window ([capture reference](../reference/platforms/macos/capture.mdx)).
+
+If the target is ambiguous, find its root explicitly before observing:
+
+```ts
+find_roots({ app: "TextEdit", query: "Untitled" })
+observe_ui({ root: "@r1" })
+```
+
+## Handle strict headless rejection
+
+`headless: true` permits only Accessibility actions on macOS. It rejects coordinate targeting and synthesized pointer or keyboard delivery rather than activating an app or posting events.
+
+Use a current semantic ref when the target exposes the required action. If the workflow genuinely needs synthesized events, run that action without strict headless mode and let the checked fallback policy decide whether foreground delivery is allowed.
+
+## Recover from stale state or refs
+
+A mutation must use the `stateId` that owns its refs and must still match the resource epoch. Use the successor state returned by `act_ui`. If another actor changed the app, the state was evicted, or the target identity is uncertain, call `observe_ui` and resolve the target again.
+
+The native helper may reacquire an element from stored role, identifier, label, and geometry, but this is best effort and does not override epoch checks.
+
+## Recover from rejected coordinates
+
+Coordinates are image pixels owned by one image-bearing state. Observe again if the window moved, resized, changed, or was replaced. Outline-only roots, including unmatched macOS menus, cannot accept coordinate actions.
+
+## Enable browser JavaScript fallback on macOS
+
+The macOS browser fallback uses `osascript` for supported browser-window operations. If the returned error specifically says that JavaScript through Apple Events is disabled, enable “Allow JavaScript from Apple Events” in that browser's developer settings and retry. This setting is only relevant when that fallback path reports the error.
+
+## Enable browser windows
+
+If browser roots are refused, run `/computer-use`. When `browser_use` is disabled, enable it in the project or global configuration:
+
+```json
+{
+  "browser_use": true
+}
+```
+
+## Use an interactive desktop
+
+When macOS grants are missing, start Pi with its UI available so the setup selector can open System Settings and recheck. After permissions are granted, Pi can run noninteractively, but macOS automation still requires a logged-in graphical user session. On Windows, use an unlocked interactive desktop session.

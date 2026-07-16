@@ -1,0 +1,66 @@
+---
+title: 'pi-computer-use documentation'
+description: 'Learn the state-scoped model for observing and controlling macOS and Windows interfaces from Pi.'
+full: true
+---
+
+<section className="quiet-docs-intro">
+  <div className="quiet-intro-copy">
+    <span className="quiet-eyebrow"><span className="signal signal-live" /> technical documentation / pi extension</span>
+    <h1>pi-computer-use</h1>
+    <p>Learn how an agent discovers, reads, and operates real desktop software through immutable observations and checked actions.</p>
+  </div>
+  <aside className="quiet-learning-index" aria-label="What this documentation covers">
+    <span>in this documentation</span>
+    <ol>
+      <li><b>01</b><p><strong>set up the runtime</strong>install the extension and grant platform access.</p></li>
+      <li><b>02</b><p><strong>understand the model</strong>move from roots to observations to state-scoped actions.</p></li>
+      <li><b>03</b><p><strong>operate reliably</strong>inspect exact contracts, limits, and recovery paths.</p></li>
+    </ol>
+  </aside>
+</section>
+
+<section className="quiet-start-panel">
+  <div>
+    <span>recommended first lesson</span>
+    <h2>get one checked desktop action working</h2>
+    <p>Install the extension, inspect a controllable root, create an immutable observation, and perform an action against that state.</p>
+  </div>
+  <a className="quiet-button quiet-button-primary" href="/docs/tutorials/getting-started">open the tutorial <span aria-hidden="true">→</span></a>
+</section>
+
+<section className="quiet-model-section">
+  <div className="quiet-model-copy">
+    <span>core concept / 01</span>
+    <h2>the operating model</h2>
+    <p>Every action refers to a saved observation. Acting produces a new state, so the agent never has to treat a stale screenshot as current truth.</p>
+    <a href="/docs/explanation/architecture">read the architecture explanation →</a>
+  </div>
+  <div className="system-figure" aria-label="Find, observe, and act workflow">
+    <div className="system-figure-label">state-scoped control loop</div>
+    <div className="system-node system-node-source"><span>01</span><strong>find roots</strong><small>desktop / browser</small></div>
+    <div className="system-connector"><i /></div>
+    <div className="system-node system-node-active"><span>02</span><strong>observe</strong><small>immutable state s1</small></div>
+    <div className="system-connector"><i /></div>
+    <div className="system-node"><span>03</span><strong>act</strong><small>checked transition</small></div>
+    <div className="system-return"><span>new state s2</span></div>
+  </div>
+</section>
+
+<div className="quiet-section-heading">
+  <span>browse the manual</span>
+  <h2>choose by intent</h2>
+</div>
+
+<div className="quiet-route-grid">
+  <a href="/docs/tutorials"><span>01 / learn</span><strong>tutorials</strong><p>follow a guided path from installation to a working action.</p></a>
+  <a href="/docs/how-to-guides"><span>02 / do</span><strong>how-to guides</strong><p>solve setup, capture, permission, and runtime problems.</p></a>
+  <a href="/docs/explanation"><span>03 / understand</span><strong>explanation</strong><p>understand immutable state, scheduling, and checked execution.</p></a>
+  <a href="/docs/reference"><span>04 / look up</span><strong>reference</strong><p>inspect exact tools, configuration, platform APIs, and limits.</p></a>
+</div>
+
+<div className="quiet-status-line">
+  <span><i className="signal signal-live" /> macos 14+</span>
+  <span><i className="signal signal-live" /> windows interactive desktop</span>
+  <span><i className="signal signal-active" /> generated tool schemas</span>
+</div>
