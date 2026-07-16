@@ -1,0 +1,19 @@
+---
+title: 'Overview'
+description: 'Understand why pi-computer-use uses immutable state, resource scheduling, progressive disclosure, and checked execution.'
+---
+
+Explanation pages build a mental model of the system. They answer why the runtime is structured this way; use [reference](/reference) when you need exact APIs, options, platform mechanisms, or limits.
+
+## Start with the system view
+
+- [Architecture](./architecture.mdx) — how the complete runtime fits together.
+
+## Follow a runtime concern
+
+- [State ownership and scheduling](./state-and-scheduling.mdx) — `state.ts`, resource epochs, concurrency, and stale-write rejection.
+- [Observation and progressive disclosure](./observation-pipeline.mdx) — platform observations, `outline.ts`, immutable storage, folded views, and scoped expansion.
+- [Action execution and evidence](./action-pipeline.mdx) — `actions.ts`, bridge coordination, native delivery, checked outcomes, and successor states.
+- [Platform boundary](./platform-boundary.mdx) — how the shared runtime delegates to macOS, Windows, and browser backends without pretending their APIs are identical.
+
+If your question names a concrete operating-system API—such as macOS AX, ScreenCaptureKit, or Windows UIA—go directly to [platform reference](/reference/platforms).

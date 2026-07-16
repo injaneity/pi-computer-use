@@ -1,0 +1,19 @@
+{
+  "$schema": "./config.schema.json",
+  "description": "Source and ownership map for generated reference documentation",
+  "generators": {
+    "pi-tools": {
+      "name": "Pi tool reference",
+      "sourcePath": "extensions/computer-use.ts",
+      "docsOutputPath": "docs/content/docs/reference/agent/tools.mdx",
+      "generatorScript": "scripts/docs-generators/generate-tool-reference.mjs",
+      "extractionMethod": "TypeBox tool-definition introspection",
+      "watchPaths": [
+        "extensions/computer-use.ts",
+        "scripts/docs-generators/generate-tool-reference.mjs"
+      ],
+      "enabled": true,
+      "notes": "Generates the exact agent-facing tool descriptions, prompt guidance, parameter types, enum values, and constraints. The state and action contract is generated from the source-owned documentation block in src/bridge.ts."
+    }
+  }
+}

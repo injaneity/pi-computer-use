@@ -1,0 +1,10 @@
+{
+  "title": "Reference",
+  "icon": "BookOpenText",
+  "pages": [
+    "agent",
+    "configuration",
+    "platforms",
+    "codebase"
+  ]
+}

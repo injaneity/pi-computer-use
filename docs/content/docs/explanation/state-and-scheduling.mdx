@@ -1,0 +1,35 @@
+---
+title: 'State ownership and scheduling'
+description: 'Why observations are immutable, refs are state-owned, and live work is serialized by physical resource.'
+---
+
+The runtime has no session-wide “current UI.” That choice prevents one concurrent tool call from silently changing the meaning of refs used by another call.
+
+## State ownership
+
+[`src/state.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/state.ts) owns saved observations, request-local hydration, restoration, and bounded storage. An `@e` ref belongs to exactly one `stateId`; it is meaningful only inside that immutable observation. [`src/view.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/view.ts) assigns public refs and renders either a full view or a trustworthy successor diff.
+
+This produces a simple rule: cached reading can reuse a state, but mutation must prove that the state still represents the resource epoch from which it was observed.
+
+## Resource scheduling
+
+[`src/bridge.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/bridge.ts) coordinates live work by physical resource rather than by tool name or whole session.
+
+- desktop work is conservatively keyed by process because focus, menus, and input can cross windows inside one app;
+- browser work is keyed by CDP page target;
+- cached search, expansion, and ordinary inspection do not enter a live resource lane;
+- global synthesized input remains serialized by the native helper.
+
+Independent apps and browser pages can therefore progress concurrently, while operations that could interfere with one another remain ordered.
+
+## Epoch checks
+
+Each resource has a monotonically increasing epoch. A mutating call presents the epoch captured by its base state. If another mutation has already advanced the resource, the stale call is rejected before delivery and the caller must observe again.
+
+This is stricter than checking whether a window still exists: the root may remain present while its actionable state has changed.
+
+## Why immutable states matter
+
+Immutability enables deterministic cached queries, explicit stale-state errors, safe parallelism across unrelated roots, and successor diffs that compare two complete observations. It also keeps recovery honest: the runtime never patches a partially trusted model-side tree and calls it current.
+
+Continue to [Observation and progressive disclosure](./observation-pipeline.mdx) for how a complete state is built, or [Action execution and evidence](./action-pipeline.mdx) for how a state becomes a checked successor.

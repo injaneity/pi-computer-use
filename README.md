@@ -6,7 +6,7 @@
 
 `pi-computer-use` lets AI agents use desktop apps on macOS and Windows.
 
-The macOS helper requires macOS 14 or newer.
+The macOS helper requires macOS 14 or newer; the [macOS reference](./docs/content/docs/reference/platforms/macos/implementation.mdx) maps each platform claim to Apple documentation and the implementation.
 
 An agent can look at an app window, understand the buttons and text inside it, and perform actions like clicking, typing, scrolling, and waiting for something to change. This is useful when the agent needs to work with a normal desktop app instead of an API, a terminal command, or a file.
 
@@ -39,20 +39,9 @@ pi install npm:@injaneity/pi-computer-use
 
 Start Pi and complete the platform setup flow.
 
-On macOS, grant permissions to:
+On macOS, the runtime installs `/Applications/pi-computer-use.app` and requests Accessibility and Screen Recording. Enable both grants for that app in System Settings, then choose Recheck. The [macOS reference](./docs/content/docs/reference/platforms/macos/accessibility.mdx#trust-and-permission) documents the exact APIs and avoids relying on version-specific pane labels.
 
-```text
-/Applications/pi-computer-use.app
-```
-
-Required macOS permissions:
-
-- Accessibility
-- Screen Recording, shown as Screen and System Audio Recording on newer macOS versions
-
-The macOS setup flow registers the helper first, so it should already appear in both Settings panes. Enable the toggles and choose Recheck.
-
-On Windows, use an interactive desktop session. Windows support uses the platform accessibility APIs and does not use the macOS helper app or TCC permission flow.
+On Windows, use an interactive desktop session. Windows support uses the platform accessibility APIs and does not use the macOS helper app.
 
 Use `/computer-use` inside Pi to show the active configuration and where it came from.
 
@@ -67,15 +56,16 @@ Use `/computer-use` inside Pi to show the active configuration and where it came
 - `read_text`
 - `wait_for`
 
-See [docs/usage.md](./docs/usage.md) for the full tool reference.
+Follow the [getting-started tutorial](./docs/content/docs/tutorials/getting-started.mdx), then use the generated [agent state and action contract](./docs/content/docs/reference/agent/contract.mdx) for operating behavior or the generated [tool schema reference](./docs/content/docs/reference/agent/tools.mdx) for exact parameters.
 
 ## Documentation
 
-- [Usage](./docs/usage.md)
-- [Architecture](./docs/architecture.md)
-- [Configuration](./docs/configuration.md)
-- [Development](./docs/development.md)
-- [Troubleshooting](./docs/troubleshooting.md)
+The docs follow [Diátaxis](https://diataxis.fr/) and render through the Next.js/Fumadocs app in [`docs/`](./docs/README.md). Run `npm install --prefix docs` once, then `npm run docs:dev` and open `http://localhost:8080/docs`.
+
+- [Tutorials](./docs/content/docs/tutorials/getting-started.mdx)
+- [How-to guides](./docs/content/docs/how-to-guides/troubleshooting.mdx)
+- [Explanation](./docs/content/docs/explanation/architecture.mdx)
+- [Reference](./docs/content/docs/reference/index.mdx)
 - [Contributing](./CONTRIBUTING.md)
 
 ## Development status

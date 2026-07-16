@@ -1,0 +1,5 @@
+{
+  "title": "Explanation",
+  "icon": "Network",
+  "pages": ["index", "architecture", "state-and-scheduling", "observation-pipeline", "action-pipeline", "platform-boundary"]
+}

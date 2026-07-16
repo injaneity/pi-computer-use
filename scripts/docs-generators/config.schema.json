@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/injaneity/pi-computer-use/scripts/docs-generators/config.schema.json",
+  "type": "object",
+  "required": ["generators"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "description": { "type": "string" },
+    "generators": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name", "sourcePath", "docsOutputPath", "generatorScript", "watchPaths", "enabled"],
+        "properties": {
+          "name": { "type": "string" },
+          "sourcePath": { "type": "string" },
+          "docsOutputPath": { "type": "string" },
+          "generatorScript": { "type": "string" },
+          "extractionMethod": { "type": "string" },
+          "watchPaths": { "type": "array", "items": { "type": "string" } },
+          "enabled": { "type": "boolean" },
+          "notes": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
