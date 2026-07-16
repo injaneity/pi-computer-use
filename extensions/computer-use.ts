@@ -141,6 +141,7 @@ const launchBrowserTool = defineTool({
 	label: "Launch Browser Context",
 	description: "Launch the configured Pi-managed CDP browser and return an observed browser-page state.",
 	promptSnippet: "Use for browser work that needs a managed CDP context.",
+	promptGuidelines: ["Prefer curl through bash when the page is directly fetchable."],
 	parameters: Type.Object({ url: Type.Optional(Type.String({ maxLength: 8192 })) }),
 	execute: executeLaunchBrowser,
 });
