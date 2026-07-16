@@ -73,7 +73,8 @@ export class WindowsHelperClient {
 
 	async ensureInstalled(signal?: AbortSignal): Promise<void> {
 		if ((await isExecutable(WINDOWS_HELPER_PATH)) && this.installChecked) return;
-		await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--platform", "windows", "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal, { ...process.env, ELECTRON_RUN_AS_NODE: "1" });
+		// Re-enter Electron and Bun standalone hosts as their JavaScript runtimes.
+		await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--platform", "windows", "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal, { ...process.env, ELECTRON_RUN_AS_NODE: "1", BUN_BE_BUN: "1" });
 		this.installChecked = true;
 		if (!(await isExecutable(WINDOWS_HELPER_PATH))) throw new Error(`Failed to install Windows helper at ${WINDOWS_HELPER_PATH}.`);
 	}

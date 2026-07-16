@@ -146,10 +146,11 @@ export class MacosHelperClient {
 			return;
 		}
 
-		// setup-helper syncs the installed helper version/signature once per session.
+		// Re-enter Electron and Bun standalone hosts as their JavaScript runtimes.
 		await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal, {
 			...process.env,
 			ELECTRON_RUN_AS_NODE: "1",
+			BUN_BE_BUN: "1",
 		});
 		this.helperInstallChecked = true;
 
