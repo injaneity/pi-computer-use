@@ -188,8 +188,9 @@ check("INV-16 clean headless contract and non-destructive helper install", () =>
 	assert(setupHelper.includes("PI_COMPUTER_USE_HELPER_APP_PATH"), "helper installer lacks an isolated test destination");
 });
 
-check("INV-17 macOS agent cursor stays native, configurable, and headless-safe", () => {
+check("INV-17 macOS agent cursor stays native, configurable, and background-only", () => {
 	assert(configTs.includes("cursor_overlay: boolean") && configTs.includes("PI_COMPUTER_USE_CURSOR_OVERLAY"), "agent cursor config is incomplete");
+	assert(swift.includes('delivery == "pid"'), "physical cursor delivery can display the agent cursor");
 	assert(swift.includes('policy != "ax_only"'), "strict-headless actions can display the agent cursor");
 	assert(swift.includes('request["cursorOverlay"] as? Bool ?? true'), "native helper ignores the cursor overlay flag");
 	assert(swift.includes("app.processIdentifier != getpid()"), "helper overlay can leak into root discovery");
