@@ -10,6 +10,7 @@ final class AgentCursorRenderer {
 
     private(set) var position = CGPoint(x: -200, y: -200)
     private(set) var heading: Double = .pi / 4
+    private(set) var isAnimating = false
 
     private var path: PlannedPath?
     private var spring: Spring?
@@ -30,18 +31,26 @@ final class AgentCursorRenderer {
         spring = nil
         springTarget = nil
         distanceSoFar = 0
+        lastFrameTime = nil
+        isAnimating = true
     }
 
     func setInitialPosition(_ point: CGPoint) {
         position = point
+        cancelAnimation()
+    }
+
+    func cancelAnimation() {
         path = nil
         spring = nil
         springTarget = nil
         distanceSoFar = 0
         lastFrameTime = nil
+        isAnimating = false
     }
 
     func tick(now: CFTimeInterval) {
+        guard isAnimating else { return }
         let previous = lastFrameTime ?? now
         let dt = min(0.05, now - previous)
         lastFrameTime = now
@@ -85,6 +94,8 @@ final class AgentCursorRenderer {
                 position = target.point
                 self.spring = nil
                 springTarget = nil
+                lastFrameTime = nil
+                isAnimating = false
             } else {
                 self.spring = spring
             }
