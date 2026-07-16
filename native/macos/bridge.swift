@@ -421,6 +421,7 @@ final class Bridge {
 	}
 
 	private func runServer(socketPath: String) {
+		_ = signal(SIGPIPE, SIG_IGN)
 		try? FileManager.default.createDirectory(atPath: (socketPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
 		// LaunchServices may race multiple `open -n` requests while the first
 		// daemon is still binding. Keep process ownership separate from socket
@@ -450,25 +451,27 @@ final class Bridge {
 		while true {
 			let client = accept(server, nil, nil)
 			if client < 0 { continue }
+			var noSigPipe: Int32 = 1
+			_ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout.size(ofValue: noSigPipe)))
 			Thread.detachNewThread { [weak self] in self?.processClient(client) }
 		}
 	}
 
 	private func processClient(_ client: Int32) {
-		let clientOutput = FileHandle(fileDescriptor: client, closeOnDealloc: true)
+		let clientInput = FileHandle(fileDescriptor: client, closeOnDealloc: true)
 		var buffer = Data()
 		let newline = Data([0x0A])
 		while true {
-			let data = clientOutput.availableData
+			let data = clientInput.availableData
 			if data.isEmpty { break }
 			buffer.append(data)
 			while let range = buffer.range(of: newline) {
 				let lineData = buffer.subdata(in: 0..<range.lowerBound)
 				buffer.removeSubrange(0..<range.upperBound)
-				if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { handleLine(line, to: clientOutput) }
+				if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { handleLine(line, to: client) }
 			}
 		}
-		clientOutput.closeFile()
+		clientInput.closeFile()
 	}
 
 	private func processBufferedInput() {
@@ -483,7 +486,7 @@ final class Bridge {
 		}
 	}
 
-	private func handleLine(_ line: String, to responseOutput: FileHandle? = nil) {
+	private func handleLine(_ line: String, to responseSocket: Int32? = nil) {
 		let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard !trimmed.isEmpty else { return }
 
@@ -503,7 +506,7 @@ final class Bridge {
 					"id": id,
 					"ok": true,
 					"result": result,
-				], to: responseOutput)
+				], to: responseSocket)
 			} catch let failure as BridgeFailure {
 				send([
 					"id": id,
@@ -512,7 +515,7 @@ final class Bridge {
 						"message": failure.message,
 						"code": failure.code,
 					],
-				], to: responseOutput)
+				], to: responseSocket)
 			} catch {
 				send([
 					"id": id,
@@ -521,7 +524,7 @@ final class Bridge {
 						"message": error.localizedDescription,
 						"code": "internal_error",
 					],
-				], to: responseOutput)
+				], to: responseSocket)
 			}
 		} catch let failure as BridgeFailure {
 			send([
@@ -531,7 +534,7 @@ final class Bridge {
 					"message": failure.message,
 					"code": failure.code,
 				],
-			], to: responseOutput)
+			], to: responseSocket)
 		} catch {
 			send([
 				"id": fallbackId,
@@ -540,20 +543,31 @@ final class Bridge {
 					"message": error.localizedDescription,
 					"code": "internal_error",
 				],
-			], to: responseOutput)
+			], to: responseSocket)
 		}
 	}
 
-	private func send(_ payload: [String: Any], to responseOutput: FileHandle? = nil) {
+	private func send(_ payload: [String: Any], to responseSocket: Int32? = nil) {
 		guard JSONSerialization.isValidJSONObject(payload),
 			let data = try? JSONSerialization.data(withJSONObject: payload),
-			let line = String(data: data, encoding: .utf8)
+			let line = String(data: data, encoding: .utf8),
+			let out = (line + "\n").data(using: .utf8)
 		else {
 			return
 		}
 
-		if let out = (line + "\n").data(using: .utf8) {
-			(responseOutput ?? output).write(out)
+		guard let responseSocket else {
+			try? output.write(contentsOf: out)
+			return
+		}
+		out.withUnsafeBytes { raw in
+			guard let base = raw.baseAddress else { return }
+			var offset = 0
+			while offset < raw.count {
+				let sent = Darwin.send(responseSocket, base.advanced(by: offset), raw.count - offset, 0)
+				if sent <= 0 { return }
+				offset += sent
+			}
 		}
 	}
 
@@ -903,7 +917,7 @@ final class Bridge {
 		// even when their windows are visible and AX-controllable. Add CGWindow
 		// owners as acquisition candidates so callers can still resolve by pid/title
 		// and then build the normal AX scene through listWindows(pid:).
-		for owner in cgWindowOwners() where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
+		for owner in cgWindowOwners() + cgPopupMenuOwners() where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
 			seen.insert(owner.pid)
 			output.append([
 				"appName": owner.name,
@@ -1111,25 +1125,40 @@ final class Bridge {
 		["pairing": ["confidence": pairing.confidence, "score": pairing.score], "sheetCount": sheetCount]
 	}
 
-	private func listRoots(pid: Int32?, title: String? = nil) throws -> [String: Any] {
-		let requestedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-		let apps: [[String: Any]]
+	private func rootCandidateApps(pid: Int32?, title: String?) -> [[String: Any]] {
+		let apps = listApps()
 		if let pid {
-			apps = [["pid": Int(pid)]]
-		} else if !requestedTitle.isEmpty,
+			return apps.first(where: { ($0["pid"] as? Int) == Int(pid) }).map { [$0] }
+				?? [["pid": Int(pid)]]
+		}
+
+		let requestedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+		if !requestedTitle.isEmpty,
 			let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] {
 			let matchingPids = Set(entries.compactMap { entry -> Int32? in
 				let candidate = ((entry[kCGWindowName as String] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 				guard candidate == requestedTitle || candidate.contains(requestedTitle) else { return nil }
 				return (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
 			})
-			apps = listApps().filter { app in
+			return apps.filter { app in
 				guard let rawPid = app["pid"] as? Int else { return false }
 				return matchingPids.contains(Int32(rawPid))
 			}
-		} else {
-			apps = listApps()
 		}
+
+		// Root discovery should cross AX only for processes that can own a
+		// controllable top-level surface. listApps intentionally remains broad for
+		// app resolution, while this preflight excludes WebKit/XPC children that
+		// cannot contribute roots and may not answer AX requests.
+		let ownerPids = Set((cgWindowOwners() + cgPopupMenuOwners()).map(\.pid))
+		return apps.filter { app in
+			guard let rawPid = app["pid"] as? Int else { return false }
+			return ownerPids.contains(Int32(rawPid))
+		}
+	}
+
+	private func listRoots(pid: Int32?, title: String? = nil) throws -> [String: Any] {
+		let apps = rootCandidateApps(pid: pid, title: title)
 		var roots: [[String: Any]] = []
 		for app in apps {
 			guard let rawPid = app["pid"] as? Int else { continue }
@@ -1142,9 +1171,13 @@ final class Bridge {
 				if let bundleId { root["bundleId"] = bundleId }
 				roots.append(root)
 			}
-			let menuElements = openMenuElements(pid: appPid)
-			for (index, candidate) in cgPopupMenuCandidates(pid: appPid).enumerated() {
-				let menuElement = index < menuElements.count ? menuElements[index] : nil
+			let popupCandidates = cgPopupMenuCandidates(pid: appPid)
+			let menuElements = popupCandidates.isEmpty ? [] : openMenuElements(pid: appPid)
+			let menuPairings = windowPairings(windows: menuElements, candidates: popupCandidates)
+			for candidate in popupCandidates {
+				let menuElement = menuElements.first {
+					menuPairings[ObjectIdentifier($0)]?.candidate?.windowId == candidate.windowId
+				}
 				let menuRef = menuElement.map { refStore.storeWindow($0) } ?? "cgmenu:\(candidate.windowId)"
 				var menu: [String: Any] = [
 					"kind": "menu",
@@ -2898,6 +2931,23 @@ final class Bridge {
 			)
 		}
 		return candidates
+	}
+
+	private func cgPopupMenuOwners() -> [CGWindowOwnerSummary] {
+		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+			return []
+		}
+		let popupLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
+		var seen = Set<Int32>()
+		return entries.compactMap { entry -> CGWindowOwnerSummary? in
+			let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+			guard layer == popupLevel,
+				let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+				seen.insert(pid).inserted
+			else { return nil }
+			let name = (entry[kCGWindowOwnerName as String] as? String) ?? processName(pid: pid) ?? "Unknown App"
+			return CGWindowOwnerSummary(pid: pid, name: name)
+		}
 	}
 
 	private func cgPopupMenuCandidates(pid: Int32?) -> [CGWindowCandidate] {
