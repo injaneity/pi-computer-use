@@ -23,6 +23,7 @@ Example:
 ```json
 {
   "browser_use": true,
+  "managed_browser": "chrome",
   "headless": false,
   "cursor_overlay": true
 }
@@ -39,6 +40,12 @@ Default: `true`
 When `false`, the extension refuses known browser windows. This is useful for projects that should not control browsers.
 
 Known browser families include Safari, Chrome and Chromium-family browsers, Firefox, Arc, Brave, Edge, Vivaldi, and Helium.
+
+### `managed_browser`
+
+Default: `"chrome"`
+
+Selects `"helium"` or `"chrome"` for `launch_browser`. The debugging port is always allocated internally and isn't part of the model-facing contract.
 
 ### `headless`
 
@@ -57,6 +64,8 @@ When `true`, macOS pointer actions enqueue a click-through agent cursor animatio
 ```bash
 PI_COMPUTER_USE_BROWSER_USE=0
 PI_COMPUTER_USE_BROWSER_USE=1
+PI_COMPUTER_USE_MANAGED_BROWSER=helium
+PI_COMPUTER_USE_MANAGED_BROWSER=chrome
 PI_COMPUTER_USE_HEADLESS=0
 PI_COMPUTER_USE_HEADLESS=1
 PI_COMPUTER_USE_CURSOR_OVERLAY=0
@@ -66,16 +75,12 @@ PI_COMPUTER_USE_DELIVERY_POLICY=foreground
 PI_COMPUTER_USE_CDP_PORT=9222
 ```
 
-`PI_COMPUTER_USE_HEADLESS=1` prohibits foreground fallback. `PI_COMPUTER_USE_DELIVERY_POLICY` is a debugging input; normal callers should use `headless`.
+`PI_COMPUTER_USE_HEADLESS=1` prohibits foreground fallback. `PI_COMPUTER_USE_DELIVERY_POLICY` is a debugging input; normal policy belongs in configuration rather than individual model calls.
 
 ## CDP browser support
 
 `PI_COMPUTER_USE_CDP_PORT` enables Chrome DevTools Protocol support for Chromium-family browsers. Launch the browser with `--remote-debugging-port=<port>` and set this variable to the same port.
 
-When CDP is active:
-
-- `navigate_browser` uses CDP navigation when possible.
-- Browser console messages are attached to relevant tool results.
-- The desktop observe/act tools still work for browser windows.
+When CDP is active, discovered pages participate in the same root and state system as desktop UI. `launch_browser` configures CDP automatically and returns an observed page state. `navigate_browser` and `evaluate_browser` accept only CDP browser-page states; native browser windows continue to use the normal desktop observe/act tools.
 
 With the variable unset, CDP is inactive.

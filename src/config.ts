@@ -6,6 +6,7 @@ export interface ComputerUseConfig {
 	browser_use: boolean;
 	headless: boolean;
 	cursor_overlay: boolean;
+	managed_browser: "helium" | "chrome";
 }
 
 export interface ComputerUseConfigSource {
@@ -25,6 +26,7 @@ const DEFAULT_CONFIG: ComputerUseConfig = {
 	browser_use: true,
 	headless: false,
 	cursor_overlay: true,
+	managed_browser: "chrome",
 };
 
 let activeConfig: ComputerUseConfig = { ...DEFAULT_CONFIG };
@@ -50,6 +52,8 @@ function normalizePartial(raw: unknown): Partial<ComputerUseConfig> {
 	if (browserUse !== undefined) out.browser_use = browserUse;
 	if (headless !== undefined) out.headless = headless;
 	if (cursorOverlay !== undefined) out.cursor_overlay = cursorOverlay;
+	const managedBrowser = (source as any).managed_browser;
+	if (managedBrowser === "helium" || managedBrowser === "chrome") out.managed_browser = managedBrowser;
 	return out;
 }
 
@@ -71,6 +75,8 @@ function readEnv(): Partial<ComputerUseConfig> {
 	if (browserUse !== undefined) out.browser_use = browserUse;
 	if (headless !== undefined) out.headless = headless;
 	if (cursorOverlay !== undefined) out.cursor_overlay = cursorOverlay;
+	const managedBrowser = process.env.PI_COMPUTER_USE_MANAGED_BROWSER;
+	if (managedBrowser === "helium" || managedBrowser === "chrome") out.managed_browser = managedBrowser;
 	return out;
 }
 

@@ -180,10 +180,16 @@ export function noteRegionKeyForRef(outline: Outline, ref: string): string | und
 export function renderNote(note: WindowNote | undefined): string {
 	if (!note) return "";
 	const looked = note.lastLookId ? "looked just now" : "not looked";
-	const lines = [`note ${note.windowRef} ${JSON.stringify(note.title)} (pairing ${note.pairing}, ${looked})`];
-	for (const region of note.regions) {
-		const detail = region.detail ? `   (${region.detail})` : "";
-		lines.push(`  ${region.label.padEnd(14, " ")} ${region.status}${detail}`);
+	const lines = [`note ${note.windowRef} ${JSON.stringify(note.title.slice(0, 512))} (pairing ${note.pairing}, ${looked})`];
+	const visible = note.regions.slice(0, 64);
+	for (const region of visible) {
+		const detail = region.detail ? `   (${region.detail.slice(0, 256)})` : "";
+		lines.push(`  ${region.label.slice(0, 512).padEnd(14, " ")} ${region.status}${detail}`);
 	}
-	return lines.join("\n");
+	if (note.regions.length > visible.length) lines.push(`  … ${note.regions.length - visible.length} more note regions; use search_ui or expand_ui`);
+	const encoded = new TextEncoder().encode(lines.join("\n"));
+	if (encoded.byteLength <= 8 * 1024) return new TextDecoder().decode(encoded);
+	let end = 8 * 1024;
+	while (end > 0 && (encoded[end] & 0xc0) === 0x80) end -= 1;
+	return `${new TextDecoder().decode(encoded.subarray(0, end))}\n… note byte budget reached`;
 }

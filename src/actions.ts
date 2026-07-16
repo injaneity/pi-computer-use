@@ -91,10 +91,7 @@ function containsEditable(node: OutlineNode): boolean {
 }
 
 export function prepareAction(action: UiAction, state: ActionState, env: ActionEnvironment): PreparedAction {
-	if (action.action === "wait") {
-		return { action: "wait", params: { ms: Math.max(0, Math.min(60_000, Math.round(toFiniteNumber(action.ms, 1_000)))) }, establishesFocus: false, usesCurrentFocus: false, needsForeground: false };
-	}
-	const operation = action.action === "doubleClick" ? "click" : action.action;
+	const operation = action.action;
 	const usesCurrentFocus = !env.headless && state.currentFocus && !action.ref && (operation === "typeText" || operation === "keypress");
 	const target = usesCurrentFocus ? focusedTarget(env) : nativeTarget(action, operation, env);
 	const establishesFocus = !env.headless && Boolean(action.ref) && (operation === "click" || operation === "press") && containsEditable(env.node(action.ref!));
@@ -102,7 +99,7 @@ export function prepareAction(action: UiAction, state: ActionState, env: ActionE
 
 	switch (operation) {
 		case "press":
-		case "click": return { action: operation, target, params: { button: mouseButton(action.button), clickCount: action.action === "doubleClick" ? 2 : clickCount(action.clickCount) }, establishesFocus, usesCurrentFocus: false, needsForeground };
+		case "click": return { action: operation, target, params: { button: mouseButton(action.button), clickCount: clickCount(action.clickCount) }, establishesFocus, usesCurrentFocus: false, needsForeground };
 		case "setText": return { action: operation, target, params: { text: action.text ?? "" }, establishesFocus: false, usesCurrentFocus: false, needsForeground: false };
 		case "typeText": return { action: operation, target, params: { text: action.text ?? "" }, establishesFocus: false, usesCurrentFocus, needsForeground: false };
 		case "keypress": return { action: operation, target, params: { keys: keys(action.keys) }, establishesFocus: false, usesCurrentFocus, needsForeground: false };
@@ -127,8 +124,7 @@ export function outcomeAfterObservedValues(
 	actions: UiAction[],
 	valueForRef: (ref: string) => string | undefined,
 ): "worked" | "didnt" | "unknown" {
-	const meaningful = actions.filter((action) => action.action !== "wait");
-	if (meaningful.length === 0 || meaningful.some((action) => action.action !== "setText" || !action.ref)) return current;
-	const matches = meaningful.every((action) => valueForRef(action.ref!) === (action.text ?? ""));
+	if (actions.length === 0 || actions.some((action) => action.action !== "setText" || !action.ref)) return current;
+	const matches = actions.every((action) => valueForRef(action.ref!) === (action.text ?? ""));
 	return matches ? "worked" : current;
 }
