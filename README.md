@@ -39,11 +39,13 @@ pi install npm:@injaneity/pi-computer-use
 
 Start Pi and complete the platform setup flow.
 
-On macOS, grant permissions to:
+On macOS, the helper is installed per user by default. Grant permissions to:
 
 ```text
-/Applications/pi-computer-use.app
+~/Applications/pi-computer-use.app
 ```
+
+Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`.
 
 Required macOS permissions:
 

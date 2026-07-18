@@ -25,11 +25,13 @@ If you change native code, rebuild the helper:
 npm run build:native
 ```
 
-macOS permissions should be granted to:
+macOS permissions should normally be granted to:
 
 ```text
-/Applications/pi-computer-use.app
+~/Applications/pi-computer-use.app
 ```
+
+Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`.
 
 ## Validation
 

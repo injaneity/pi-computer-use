@@ -76,13 +76,13 @@ The adapter uses Cubench only for the instruction and final oracle; UI observati
 
 ## Native platform helpers
 
-On macOS, the helper installed for permissions is:
+On macOS, the helper installed for permissions is normally:
 
 ```text
-/Applications/pi-computer-use.app
+~/Applications/pi-computer-use.app
 ```
 
-The macOS helper targets macOS 14+ and uses ScreenCaptureKit. Local development can use ad-hoc signing. Release builds must use the release workflow so the helper app is signed with the stable release certificate.
+Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. The macOS helper targets macOS 14+ and uses ScreenCaptureKit. Local development can use ad-hoc signing. Release builds must use the release workflow so the helper app is signed with the stable release certificate.
 
 On Windows, development uses the Windows platform backend/helper and the active desktop session rather than the macOS app bundle or TCC permission model.
 
