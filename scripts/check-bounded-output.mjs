@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { applyOutputEnvelope, boundToolError, clearStoredOutputs, MODEL_TEXT_MAX_BYTES, readStoredOutput } from "../src/output.ts";
-import { searchOutlineRanked } from "../src/outline.ts";
+import { searchOutlineRanked, serializeOutlineSearchMatch } from "../src/outline.ts";
 
 clearStoredOutputs();
 const oversized = "🙂".repeat(30_000);
@@ -29,6 +29,12 @@ const outline = { lookId: "look", root, nodes: [root, ...root.children], refToWi
 const ranked = searchOutlineRanked(outline, "save", "button", "press", 12);
 assert.deepEqual(ranked.matches.map((match) => match.matchReason), ["exact", "prefix", "substring", "fuzzy"]);
 assert.equal(ranked.totalMatches, 4);
+const serializedMatch = serializeOutlineSearchMatch(ranked.matches[0]);
+assert.equal("node" in serializedMatch, false, "agent-facing matches must not expose cyclic outline nodes");
+assert.doesNotThrow(
+	() => JSON.stringify({ tool: "wait_for", target: serializedMatch }),
+	"successful wait_for details must be session-serializable",
+);
 clearStoredOutputs();
 
 console.log("Bounded output and ranked search checks passed.");

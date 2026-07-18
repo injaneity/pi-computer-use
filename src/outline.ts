@@ -93,6 +93,8 @@ export interface OutlineSearchMatch {
 	node: OutlineNode;
 }
 
+export type SerializedOutlineSearchMatch = Omit<OutlineSearchMatch, "node">;
+
 export interface FoldResult {
 	text: string;
 	renderedRefs: string[];
@@ -488,6 +490,11 @@ export function searchOutline(outline: Outline, text?: string, role?: string, ac
 		if (matches.length >= limit) break;
 	}
 	return matches;
+}
+
+export function serializeOutlineSearchMatch(match: OutlineSearchMatch): SerializedOutlineSearchMatch {
+	const { node: _node, ...serialized } = match;
+	return serialized;
 }
 
 export function countOutlineNodes(root: OutlineNode): number {

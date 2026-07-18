@@ -10,7 +10,7 @@ import { canRetryInForeground, outcomeAfterCheck, outcomeAfterObservedValues, pr
 import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypressForContext, cdpMouseForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeFocusedForContext, cdpTypeForContext, disconnectCdp, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
-import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, type LookResponse, type Outline, type OutlineChange, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode } from "./outline.ts";
+import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
 import { applyOutputEnvelope, boundToolError, clearStoredOutputs, OUTPUT_PAGE_BYTES, readStoredOutput, UI_TEXT_PAGE_CHARS } from "./output.ts";
 import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type MouseButtonName, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type StateTargetParams, type UiAction, type WaitForParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
@@ -200,7 +200,7 @@ interface WaitForDetails {
 	found: boolean;
 	gone?: boolean;
 	timedOut?: boolean;
-	target?: OutlineSearchMatch;
+	target?: SerializedOutlineSearchMatch;
 	nodeCount?: number;
 	text?: string;
 	role?: string;
@@ -219,7 +219,7 @@ interface OutlineToolDetails {
 	totalMatches?: number;
 	returned?: number;
 	hasMore?: boolean;
-	matches?: Array<Omit<OutlineSearchMatch, "node"> & { node?: SerializedOutlineNode }>;
+	matches?: SerializedOutlineSearchMatch[];
 	target?: SerializedOutlineNode;
 	note?: WindowNote;
 }
@@ -1622,7 +1622,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		found: raw.found,
 		gone: raw.gone || undefined,
 		timedOut: raw.timedOut || undefined,
-		target: foundTarget,
+		target: foundTarget ? serializeOutlineSearchMatch(foundTarget) : undefined,
 		nodeCount: Number.isFinite(raw.nodeCount) ? Number(raw.nodeCount) : refreshed.outline.nodes.length,
 		text,
 		role,
@@ -1729,7 +1729,7 @@ async function performSearchUi(params: SearchUiParams, signal?: AbortSignal): Pr
 		matches = ranked.matches;
 		escalatedOCR = true;
 	}
-	const detailMatches = matches.map(({ node: _node, ...match }) => match);
+	const detailMatches = matches.map(serializeOutlineSearchMatch);
 	const details: OutlineToolDetails = { tool: "search_ui", stateId: state.currentCapture?.stateId, lookId: outline.lookId, matches: detailMatches, totalMatches: ranked.totalMatches, returned: matches.length, hasMore: ranked.totalMatches > matches.length, note: state.currentNote };
 	const lines = matches.map((match) => `${match.ref} ${match.role || "Unknown"} ${JSON.stringify(match.label || "(unlabeled)")} [${match.matchReason}${match.matchReason === "fuzzy" ? ` ${match.score?.toFixed(2)}` : ""}]\n  path: ${match.path}`);
 	const noteHeader = renderNote(state.currentNote);
