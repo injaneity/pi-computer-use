@@ -10,11 +10,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveMacosHelperAppPath } from "../src/platform/macos/helper-path.mjs";
 
 const execFile = promisify(execFileCallback);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const defaultHelperAppPath = "/Applications/pi-computer-use.app";
-const helperAppPath = process.env.PI_COMPUTER_USE_HELPER_APP_PATH || defaultHelperAppPath;
+const helperAppPath = resolveMacosHelperAppPath();
 const helperAppExecutablePath = path.join(helperAppPath, "Contents", "MacOS", "bridge");
 const helperSourceHashPath = path.join(helperAppPath, "Contents", "Resources", "source.sha256");
 const helperBundleId = "com.injaneity.pi-computer-use";
@@ -347,14 +347,19 @@ async function helperHasAdhocSignature() {
 }
 
 async function registerHelperApp() {
-	if (helperAppPath !== defaultHelperAppPath) return;
 	const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 	if (!(await exists(lsregister))) return;
 	await run(lsregister, ["-f", helperAppPath]).catch(() => {});
 }
 
+async function ensureHelperParentDirectory() {
+	const parentPath = path.dirname(helperAppPath);
+	await fs.mkdir(parentPath, { recursive: true });
+	await fs.access(parentPath, fsConstants.W_OK);
+}
+
 async function installPrebuiltHelperApp(sourceAppPath) {
-	await fs.access(path.dirname(helperAppPath), fsConstants.W_OK);
+	await ensureHelperParentDirectory();
 	const sourceExecutablePath = path.join(sourceAppPath, "Contents", "MacOS", "bridge");
 	const sourceInfoPath = path.join(sourceAppPath, "Contents", "Info.plist");
 	const existingExecutable = await fs.readFile(helperAppExecutablePath).catch(() => undefined);
@@ -379,7 +384,7 @@ async function installPrebuiltHelperApp(sourceAppPath) {
 }
 
 async function installHelperApp(sourcePath) {
-	await fs.access(path.dirname(helperAppPath), fsConstants.W_OK);
+	await ensureHelperParentDirectory();
 	const version = await packageVersion();
 	const infoPlistPath = path.join(helperAppPath, "Contents", "Info.plist");
 	const infoPlist = `<?xml version="1.0" encoding="UTF-8"?>

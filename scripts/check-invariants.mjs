@@ -12,6 +12,7 @@ const ts = fs.readFileSync(path.join(root, "src/bridge.ts"), "utf8");
 const noteTs = fs.readFileSync(path.join(root, "src/note.ts"), "utf8");
 const configTs = fs.readFileSync(path.join(root, "src/config.ts"), "utf8");
 const setupHelper = fs.readFileSync(path.join(root, "scripts/setup-helper.mjs"), "utf8");
+const macosHelperPath = fs.readFileSync(path.join(root, "src/platform/macos/helper-path.mjs"), "utf8");
 const srcFiles = fs.readdirSync(path.join(root, "src"), { recursive: true })
 	.filter((file) => typeof file === "string" && file.endsWith(".ts"))
 	.map((file) => [file, fs.readFileSync(path.join(root, "src", file), "utf8")]);
@@ -185,7 +186,8 @@ check("INV-16 clean headless contract and non-destructive helper install", () =>
 	assert(!/stealth_mode|stealthMode|PI_COMPUTER_USE_STEALTH|PI_COMPUTER_USE_STRICT_AX/.test(configTs), "obsolete stealth configuration aliases remain");
 	assert(!/tccutil[\s\S]{0,80}reset|resetTcc/i.test(setupHelper), "helper installation can reset macOS privacy grants");
 	assert(setupHelper.includes("pi-computer-use Local Signing (com.injaneity.pi-computer-use)"), "stable bundle-specific local signing identity is missing");
-	assert(setupHelper.includes("PI_COMPUTER_USE_HELPER_APP_PATH"), "helper installer lacks an isolated test destination");
+	assert(macosHelperPath.includes("PI_COMPUTER_USE_HELPER_APP_PATH"), "helper installer lacks an isolated test destination");
+	assert(setupHelper.includes("resolveMacosHelperAppPath"), "helper installer bypasses shared macOS path resolution");
 });
 
 check("INV-17 macOS agent cursor stays native, configurable, and headless-safe", () => {

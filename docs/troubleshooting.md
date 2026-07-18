@@ -2,7 +2,7 @@
 
 ## Platform setup
 
-macOS uses an installed helper app and TCC permissions. Windows support uses the active desktop session and Windows accessibility/input APIs; it does not use `/Applications/pi-computer-use.app` or the macOS TCC permission flow.
+macOS uses an installed helper app and TCC permissions. Windows support uses the active desktop session and Windows accessibility/input APIs; it does not use the macOS helper app or TCC permission flow.
 
 ## macOS helper app is missing
 
@@ -19,15 +19,17 @@ npm run build:native
 node scripts/setup-helper.mjs --force
 ```
 
-The helper app should exist at:
+The helper app should normally exist at:
 
 ```text
-/Applications/pi-computer-use.app
+~/Applications/pi-computer-use.app
 ```
+
+Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. Set `PI_COMPUTER_USE_HELPER_APP_PATH` only when an explicit location is needed for development or testing.
 
 ## macOS permissions fail
 
-Grant these permissions to `/Applications/pi-computer-use.app`:
+Grant these permissions to the resolved `pi-computer-use.app`, normally `~/Applications/pi-computer-use.app`:
 
 - Accessibility
 - Screen Recording, shown as Screen and System Audio Recording on newer macOS versions
