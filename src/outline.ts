@@ -93,7 +93,7 @@ export interface OutlineSearchMatch {
 	node: OutlineNode;
 }
 
-export type SerializedOutlineSearchMatch = Omit<OutlineSearchMatch, "node">;
+export type SerializedOutlineSearchMatch = Omit<OutlineSearchMatch, "node"> & { node?: never };
 
 export interface FoldResult {
 	text: string;
