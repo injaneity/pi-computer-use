@@ -8,6 +8,8 @@ import { countOutlineNodes, foldToBudget, graftScopedOutline, nodeByRef, parseLo
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const swift = fs.readFileSync(path.join(root, "native/macos/bridge.swift"), "utf8");
+const agentCursorSwift = fs.readFileSync(path.join(root, "native/macos/agent_cursor.swift"), "utf8");
+const agentCursorMotionSwift = fs.readFileSync(path.join(root, "native/macos/agent_cursor_motion.swift"), "utf8");
 const ts = fs.readFileSync(path.join(root, "src/bridge.ts"), "utf8");
 const noteTs = fs.readFileSync(path.join(root, "src/note.ts"), "utf8");
 const configTs = fs.readFileSync(path.join(root, "src/config.ts"), "utf8");
@@ -198,6 +200,11 @@ check("INV-17 macOS agent cursor stays native, configurable, and background-only
 	assert(swift.includes("app.processIdentifier != getpid()"), "helper overlay can leak into root discovery");
 	assert(swift.includes("AgentCursor.shared.animate(to:"), "native grounded actions do not drive the agent cursor");
 	assert(!swift.includes("completed.wait()") && !swift.includes("agentCursorLock"), "agent cursor can delay action delivery");
+	assert(agentCursorMotionSwift.includes("private(set) var isAnimating"), "agent cursor renderer does not expose active motion state");
+	assert(agentCursorSwift.includes("paused: !renderer.isAnimating"), "agent cursor timeline continues rendering while idle");
+	assert(agentCursorSwift.includes("renderer.cancelAnimation()"), "agent cursor timeout does not cancel in-flight rendering");
+	assert(agentCursorSwift.includes("guard self.overlay === window else { return }"), "stale agent cursor timeout can tear down a newer overlay");
+	assert(agentCursorSwift.includes("window.contentView = nil") && agentCursorSwift.includes("window.close()") && agentCursorSwift.includes("overlay = nil"), "agent cursor timeout retains its offscreen view tree");
 });
 
 check("INV-18 consolidated actions and diff-first resulting views", () => {
@@ -257,6 +264,23 @@ check("INV-8 swift typecheck", () => {
 		"native/macos/agent_cursor_motion.swift",
 		"native/macos/bridge.swift",
 	], { cwd: root, stdio: "pipe" });
+});
+
+check("INV-17 macOS agent cursor motion lifecycle", () => {
+	const triple = process.arch === "x64" ? "x86_64-apple-macosx14.0" : "arm64-apple-macosx14.0";
+	const binary = path.join(os.tmpdir(), `pi-computer-use-cursor-motion-tests-${process.pid}`);
+	try {
+		execFileSync("xcrun", [
+			"swiftc", "-target", triple, "-parse-as-library",
+			"-module-cache-path", path.join(os.tmpdir(), `pi-computer-use-cursor-test-cache-${process.arch}`),
+			"native/macos/agent_cursor_motion.swift",
+			"native/macos/agent_cursor_motion_tests.swift",
+			"-o", binary,
+		], { cwd: root, stdio: "pipe" });
+		execFileSync(binary, [], { cwd: root, stdio: "pipe" });
+	} finally {
+		fs.rmSync(binary, { force: true });
+	}
 });
 
 function call(socketPath, payload, timeoutMs = 10000) {
