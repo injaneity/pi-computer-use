@@ -51,11 +51,11 @@
 		"typecheck": "tsc -p tsconfig.json",
 		"test:schema": "node scripts/check-tool-schemas.mjs",
 		"test:invariants": "node scripts/check-invariants.mjs",
-		"test:lifecycle": "node --experimental-transform-types scripts/check-session-lifecycle.mjs",
-		"test:runtime": "node --experimental-transform-types scripts/check-runtime-concurrency.mjs",
-		"test:output": "node --experimental-transform-types scripts/check-bounded-output.mjs",
+		"test:lifecycle": "tsx scripts/check-session-lifecycle.mjs",
+		"test:runtime": "tsx scripts/check-runtime-concurrency.mjs",
+		"test:output": "tsx scripts/check-bounded-output.mjs",
 		"test:commits": "node scripts/check-commit-messages.mjs",
-		"test:platform": "node --experimental-strip-types scripts/check-platform-windows.mjs",
+		"test:platform": "tsx scripts/check-platform-windows.mjs",
 		"test:windows-scripts": "node scripts/check-windows-build-scripts.mjs",
 		"test:signing": "node scripts/check-local-signing.mjs",
 		"test:macos-path": "node scripts/check-macos-helper-path.mjs",
@@ -70,6 +70,7 @@
 	},
 	"devDependencies": {
 		"@types/node": "^25.6.0",
+		"tsx": "^4.23.1",
 		"typescript": "^6.0.3"
 	}
 }
