@@ -390,6 +390,8 @@ final class Bridge {
 	private let maxRootObservers = 4
 	private let permissionCacheLock = NSLock()
 	private var grantedPermissionStatus: [String: Any]?
+	private let completedRequestLock = NSLock()
+	private var recentCompletedRequestIds: [String] = []
 
 	func run() {
 		if CommandLine.arguments.contains("serve") {
@@ -421,6 +423,7 @@ final class Bridge {
 	}
 
 	private func runServer(socketPath: String) {
+		_ = signal(SIGPIPE, SIG_IGN)
 		try? FileManager.default.createDirectory(atPath: (socketPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
 		// LaunchServices may race multiple `open -n` requests while the first
 		// daemon is still binding. Keep process ownership separate from socket
@@ -450,25 +453,27 @@ final class Bridge {
 		while true {
 			let client = accept(server, nil, nil)
 			if client < 0 { continue }
+			var noSigPipe: Int32 = 1
+			_ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout.size(ofValue: noSigPipe)))
 			Thread.detachNewThread { [weak self] in self?.processClient(client) }
 		}
 	}
 
 	private func processClient(_ client: Int32) {
-		let clientOutput = FileHandle(fileDescriptor: client, closeOnDealloc: true)
+		let clientInput = FileHandle(fileDescriptor: client, closeOnDealloc: true)
 		var buffer = Data()
 		let newline = Data([0x0A])
 		while true {
-			let data = clientOutput.availableData
+			let data = clientInput.availableData
 			if data.isEmpty { break }
 			buffer.append(data)
 			while let range = buffer.range(of: newline) {
 				let lineData = buffer.subdata(in: 0..<range.lowerBound)
 				buffer.removeSubrange(0..<range.upperBound)
-				if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { handleLine(line, to: clientOutput) }
+				if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { handleLine(line, to: client) }
 			}
 		}
-		clientOutput.closeFile()
+		clientInput.closeFile()
 	}
 
 	private func processBufferedInput() {
@@ -483,11 +488,15 @@ final class Bridge {
 		}
 	}
 
-	private func handleLine(_ line: String, to responseOutput: FileHandle? = nil) {
+	private func handleLine(_ line: String, to responseSocket: Int32? = nil) {
 		let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard !trimmed.isEmpty else { return }
 
 		let fallbackId = "invalid"
+		var completionId: String?
+		defer {
+			if responseSocket != nil, let completionId { recordCompletedRequest(completionId) }
+		}
 		do {
 			guard let jsonData = trimmed.data(using: .utf8) else {
 				throw BridgeFailure(message: "Input was not valid UTF-8", code: "invalid_request")
@@ -496,6 +505,7 @@ final class Bridge {
 				throw BridgeFailure(message: "Request must be a JSON object", code: "invalid_request")
 			}
 			let id = (object["id"] as? String) ?? fallbackId
+			completionId = id
 
 			do {
 				let result = try handleRequest(object)
@@ -503,7 +513,7 @@ final class Bridge {
 					"id": id,
 					"ok": true,
 					"result": result,
-				], to: responseOutput)
+				], to: responseSocket)
 			} catch let failure as BridgeFailure {
 				send([
 					"id": id,
@@ -512,7 +522,7 @@ final class Bridge {
 						"message": failure.message,
 						"code": failure.code,
 					],
-				], to: responseOutput)
+				], to: responseSocket)
 			} catch {
 				send([
 					"id": id,
@@ -521,7 +531,7 @@ final class Bridge {
 						"message": error.localizedDescription,
 						"code": "internal_error",
 					],
-				], to: responseOutput)
+				], to: responseSocket)
 			}
 		} catch let failure as BridgeFailure {
 			send([
@@ -531,7 +541,7 @@ final class Bridge {
 					"message": failure.message,
 					"code": failure.code,
 				],
-			], to: responseOutput)
+			], to: responseSocket)
 		} catch {
 			send([
 				"id": fallbackId,
@@ -540,21 +550,48 @@ final class Bridge {
 					"message": error.localizedDescription,
 					"code": "internal_error",
 				],
-			], to: responseOutput)
+			], to: responseSocket)
 		}
 	}
 
-	private func send(_ payload: [String: Any], to responseOutput: FileHandle? = nil) {
+	private func send(_ payload: [String: Any], to responseSocket: Int32? = nil) {
 		guard JSONSerialization.isValidJSONObject(payload),
 			let data = try? JSONSerialization.data(withJSONObject: payload),
-			let line = String(data: data, encoding: .utf8)
+			let line = String(data: data, encoding: .utf8),
+			let out = (line + "\n").data(using: .utf8)
 		else {
 			return
 		}
 
-		if let out = (line + "\n").data(using: .utf8) {
-			(responseOutput ?? output).write(out)
+		guard let responseSocket else {
+			try? output.write(contentsOf: out)
+			return
 		}
+		out.withUnsafeBytes { raw in
+			guard let base = raw.baseAddress else { return }
+			var offset = 0
+			while offset < raw.count {
+				let sent = Darwin.send(responseSocket, base.advanced(by: offset), raw.count - offset, 0)
+				if sent <= 0 { return }
+				offset += sent
+			}
+		}
+	}
+
+	private func recordCompletedRequest(_ id: String) {
+		completedRequestLock.lock()
+		recentCompletedRequestIds.removeAll { $0 == id }
+		recentCompletedRequestIds.append(id)
+		if recentCompletedRequestIds.count > 32 {
+			recentCompletedRequestIds.removeFirst(recentCompletedRequestIds.count - 32)
+		}
+		completedRequestLock.unlock()
+	}
+
+	private func completedRequestIds() -> [String] {
+		completedRequestLock.lock()
+		defer { completedRequestLock.unlock() }
+		return recentCompletedRequestIds
 	}
 
 	private func handleRequest(_ request: [String: Any]) throws -> Any {
@@ -721,6 +758,7 @@ final class Bridge {
 			"arch": arch,
 			"accessibility": permissions["accessibility"] ?? false,
 			"screenRecording": permissions["screenRecording"] ?? false,
+			"recentCompletedRequestIds": completedRequestIds(),
 		]
 		if let parentPath {
 			output["parentPath"] = parentPath
@@ -1111,6 +1149,17 @@ final class Bridge {
 		["pairing": ["confidence": pairing.confidence, "score": pairing.score], "sheetCount": sheetCount]
 	}
 
+	private func broadRootCandidateApps() -> [[String: Any]] {
+		cgBroadRootOwners().compactMap { owner in
+			guard owner.pid != getpid(), pidIsAlive(owner.pid) else { return nil }
+			var app: [String: Any] = ["appName": owner.name, "pid": Int(owner.pid)]
+			if let bundleId = NSRunningApplication(processIdentifier: owner.pid)?.bundleIdentifier {
+				app["bundleId"] = bundleId
+			}
+			return app
+		}
+	}
+
 	private func listRoots(pid: Int32?, title: String? = nil) throws -> [String: Any] {
 		let requestedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
 		let apps: [[String: Any]]
@@ -1128,7 +1177,7 @@ final class Bridge {
 				return matchingPids.contains(Int32(rawPid))
 			}
 		} else {
-			apps = listApps()
+			apps = broadRootCandidateApps()
 		}
 		var roots: [[String: Any]] = []
 		for app in apps {
@@ -1142,8 +1191,9 @@ final class Bridge {
 				if let bundleId { root["bundleId"] = bundleId }
 				roots.append(root)
 			}
-			let menuElements = openMenuElements(pid: appPid)
-			for (index, candidate) in cgPopupMenuCandidates(pid: appPid).enumerated() {
+			let popupCandidates = cgPopupMenuCandidates(pid: appPid)
+			let menuElements = popupCandidates.isEmpty ? [] : openMenuElements(pid: appPid)
+			for (index, candidate) in popupCandidates.enumerated() {
 				let menuElement = index < menuElements.count ? menuElements[index] : nil
 				let menuRef = menuElement.map { refStore.storeWindow($0) } ?? "cgmenu:\(candidate.windowId)"
 				var menu: [String: Any] = [
@@ -2898,6 +2948,23 @@ final class Bridge {
 			)
 		}
 		return candidates
+	}
+
+	private func cgBroadRootOwners() -> [CGWindowOwnerSummary] {
+		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+			return []
+		}
+		let popupLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
+		var seen = Set<Int32>()
+		return entries.compactMap { entry -> CGWindowOwnerSummary? in
+			let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+			guard layer == 0 || layer == popupLevel,
+				let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+				seen.insert(pid).inserted
+			else { return nil }
+			let name = (entry[kCGWindowOwnerName as String] as? String) ?? processName(pid: pid) ?? "Unknown App"
+			return CGWindowOwnerSummary(pid: pid, name: name)
+		}
 	}
 
 	private func cgPopupMenuCandidates(pid: Int32?) -> [CGWindowCandidate] {

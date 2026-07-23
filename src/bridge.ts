@@ -1293,41 +1293,59 @@ function rootDeltaLines(execution: ExecutionTrace): string[] {
 	});
 }
 
+function windowDetails(app: HelperApp, window: HelperWindow, config: ReturnType<typeof getComputerUseConfig>): ListWindowsDetails["windows"][number] {
+	const storedRef = storeWindowRefForAppWindow(app, window);
+	return {
+		app: app.appName,
+		bundleId: app.bundleId,
+		pid: app.pid,
+		kind: window.kind,
+		windowTitle: window.title || "(untitled)",
+		windowId: window.windowId,
+		windowRef: storedRef.ref,
+		nativeWindowRef: window.windowRef,
+		framePoints: window.framePoints,
+		scaleFactor: window.scaleFactor,
+		isMinimized: window.isMinimized,
+		isOnscreen: window.isOnscreen,
+		isMain: window.isMain,
+		isFocused: window.isFocused,
+		isModal: window.isModal,
+		sheetCount: platformRootSheetCount(window),
+		role: window.role,
+		subrole: window.subrole,
+		pairing: platformRootPairing(window),
+		zOrder: window.zOrder,
+		browserUseAllowed: config.browser_use || !currentPlatformBackend.isBrowserApp(app.appName, app.bundleId),
+		score: scoreWindow(window),
+	};
+}
+
+function sortWindowDetails(windows: ListWindowsDetails["windows"]): ListWindowsDetails["windows"] {
+	return windows.sort((a, b) => b.score - a.score || a.app.localeCompare(b.app) || a.windowTitle.localeCompare(b.windowTitle));
+}
+
 // Side effect: stores stable @r refs for discovered windows in runtimeState.
 async function collectWindowDetails(apps: HelperApp[], config: ReturnType<typeof getComputerUseConfig>, signal?: AbortSignal): Promise<ListWindowsDetails["windows"]> {
 	const perApp = await Promise.all(apps.map(async (app) => ({ app, windows: await listWindows(app.pid, signal) })));
+	return sortWindowDetails(perApp.flatMap(({ app, windows }) => windows.map((window) => windowDetails(app, window, config))));
+}
+
+function collectBroadWindowDetails(roots: HelperWindow[], config: ReturnType<typeof getComputerUseConfig>): ListWindowsDetails["windows"] {
 	const windows: ListWindowsDetails["windows"] = [];
-	for (const { app, windows: appWindows } of perApp) {
-		for (const window of appWindows) {
-			const storedRef = storeWindowRefForAppWindow(app, window);
-			windows.push({
-				app: app.appName,
-				bundleId: app.bundleId,
-				pid: app.pid,
-				kind: window.kind,
-				windowTitle: window.title || "(untitled)",
-				windowId: window.windowId,
-				windowRef: storedRef.ref,
-				nativeWindowRef: window.windowRef,
-				framePoints: window.framePoints,
-				scaleFactor: window.scaleFactor,
-				isMinimized: window.isMinimized,
-				isOnscreen: window.isOnscreen,
-				isMain: window.isMain,
-				isFocused: window.isFocused,
-				isModal: window.isModal,
-				sheetCount: platformRootSheetCount(window),
-				role: window.role,
-				subrole: window.subrole,
-				pairing: platformRootPairing(window),
-				zOrder: window.zOrder,
-				browserUseAllowed: config.browser_use || !currentPlatformBackend.isBrowserApp(app.appName, app.bundleId),
-				score: scoreWindow(window),
-			});
-		}
+	for (const window of roots) {
+		if (!window.pid) continue;
+		windows.push(windowDetails({ appName: window.appName ?? "Unknown App", bundleId: window.bundleId, pid: window.pid }, window, config));
 	}
-	windows.sort((a, b) => b.score - a.score || a.app.localeCompare(b.app) || a.windowTitle.localeCompare(b.windowTitle));
-	return windows;
+	return sortWindowDetails(windows);
+}
+
+async function windowDetailsForFind(query: FindParams, config: ReturnType<typeof getComputerUseConfig>, signal?: AbortSignal): Promise<ListWindowsDetails["windows"]> {
+	if (!query.app && !query.bundleId && !Number.isFinite(query.pid)) {
+		return collectBroadWindowDetails(await currentPlatformBackend.listRoots({}, signal), config);
+	}
+	const apps = (await listApps(signal)).filter((app) => appMatchesWindowQuery(app, query));
+	return await collectWindowDetails(apps, config, signal);
 }
 
 async function performListWindows(params: FindParams, signal?: AbortSignal): Promise<AgentToolResult<ListWindowsDetails>> {
@@ -1339,9 +1357,8 @@ async function performListWindows(params: FindParams, signal?: AbortSignal): Pro
 		pid: Number.isFinite(rawParams.pid) ? Math.trunc(rawParams.pid!) : undefined,
 		kind: rawParams.kind,
 	};
-	const matchingApps = (await listApps(signal)).filter((app) => appMatchesWindowQuery(app, query));
 	const config = getComputerUseConfig();
-	const desktopForest = await collectWindowDetails(matchingApps, config, signal);
+	const desktopForest = await windowDetailsForFind(query, config, signal);
 	const includeBrowserPages = !query.pid && !query.bundleId && (!query.app || normalizeText(query.app) === "browser") && config.browser_use;
 	const browserForest: ListWindowsDetails["windows"] = !includeBrowserPages ? [] : (await listCdpPageContexts().catch(() => []))
 		.map((page) => ({
