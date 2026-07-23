@@ -225,17 +225,21 @@ check("INV-19 macOS root identity resolution", () => {
 });
 
 check("INV-20 bounded broad root discovery", () => {
-	assert(swift.includes("private func rootCandidateApps"), "macOS helper lacks a root-candidate preflight");
-	assert(swift.includes("Set((cgWindowOwners() + cgPopupMenuOwners()).map(\\.pid))"), "broad root discovery is not bounded by top-level and popup-menu owners");
-	assert(swift.includes("for owner in cgWindowOwners() + cgPopupMenuOwners()"), "listApps omits menu-only accessory owners");
+	assert(swift.includes("private func broadRootCandidateApps"), "macOS helper lacks a broad root-candidate preflight");
+	assert(swift.includes("private func cgBroadRootOwners"), "macOS helper lacks a dedicated broad-owner preflight");
+	assert(swift.includes("layer == 0 || layer == popupLevel"), "broad root discovery is not bounded by layer-0 and popup-menu owners");
+	assert(swift.includes("bounds.width >= 100") && swift.includes("bounds.height >= 80"), "listApps no longer retains its established owner threshold");
+	assert(!swift.includes("for owner in cgWindowOwners() + cgPopupMenuOwners()"), "listApps includes unrelated popup-owner expansion");
+	assert(swift.includes("if let pid {\n\t\t\tapps = [[\"pid\": Int(pid)]]"), "explicit-pid root discovery no longer stays immediate");
 	assert(swift.includes("popupCandidates.isEmpty ? [] : openMenuElements"), "root discovery traverses menus when no popup exists");
-	assert(swift.includes("let menuPairings = windowPairings(windows: menuElements, candidates: popupCandidates)"), "popup roots are paired by traversal order instead of geometry and identity evidence");
-	assert(ts.includes("async function rootsForFind"), "find_roots lacks a root-acquisition module");
-	assert(/if \(!query\.app && !query\.bundleId\)[\s\S]{0,160}listRoots\(\{\}, signal\)/.test(ts), "broad find_roots does not use one platform listRoots call");
-	assert(!ts.includes("collectWindowDetails(await listApps(signal)"), "broad root discovery still uses listApps as its acquisition seam");
+	assert(!swift.includes("let menuPairings = windowPairings(windows: menuElements, candidates: popupCandidates)"), "root discovery includes unrelated menu-pairing changes");
+	assert(ts.includes("async function windowDetailsForFind"), "find_roots lacks an explicit root-acquisition boundary");
+	assert(/if \(!query\.app && !query\.bundleId && !Number\.isFinite\(query\.pid\)\)[\s\S]{0,160}listRoots\(\{\}, signal\)/.test(ts), "broad find_roots does not use one platform listRoots call");
+	assert(ts.includes("return await collectWindowDetails(apps, config, signal)"), "filtered find_roots does not retain per-app discovery");
 	assert(swift.includes("signal(SIGPIPE, SIG_IGN)"), "helper daemon does not ignore process-wide SIGPIPE");
 	assert(swift.includes("SO_NOSIGPIPE"), "helper sockets can terminate the daemon on a late response");
 	assert(swift.includes("Darwin.send(responseSocket"), "helper socket responses do not use failure-tolerant writes");
+	assert(swift.includes("recentCompletedRequestIds"), "helper diagnostics cannot establish abandoned-request completion");
 });
 
 check("INV-8 swift typecheck", () => {
@@ -293,6 +297,16 @@ function abandon(socketPath, payload) {
 		});
 		socket.on("error", reject);
 	});
+}
+
+async function waitForCompletedRequest(socketPath, requestId, timeoutMs = 10000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const diagnostics = await call(socketPath, { id: `inv-completion-${Date.now()}`, cmd: "diagnostics" });
+		if (diagnostics.recentCompletedRequestIds?.includes(requestId)) return diagnostics;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error(`request ${requestId} did not complete within ${timeoutMs}ms`);
 }
 
 function callEnvelope(socketPath, payload, timeoutMs = 10000) {
@@ -358,9 +372,9 @@ async function liveChecks() {
 			assert(broadDiscoveryMs < 10000, `broad listRoots took ${broadDiscoveryMs}ms`);
 			assert(diagnosticsAfterBroadDiscovery.protocolVersion === 6, "helper did not survive broad listRoots");
 		});
-		await abandon(socketPath, { id: "inv-abandoned-roots", cmd: "listRoots" });
-		await new Promise((resolve) => setTimeout(resolve, Math.min(5000, Math.max(1000, broadDiscoveryMs * 2))));
-		const diagnosticsAfterAbandon = await call(socketPath, { id: "inv-diagnostics-after-abandon", cmd: "diagnostics" });
+		const abandonedRequestId = `inv-abandoned-roots-${process.pid}-${Date.now()}`;
+		await abandon(socketPath, { id: abandonedRequestId, cmd: "listRoots" });
+		const diagnosticsAfterAbandon = await waitForCompletedRequest(socketPath, abandonedRequestId);
 		check("LIVE abandoned root discovery keeps helper alive", () => {
 			assert(diagnosticsAfterAbandon.protocolVersion === 6, "helper died after writing to an abandoned root-discovery socket");
 		});

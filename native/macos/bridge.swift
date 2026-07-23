@@ -390,6 +390,8 @@ final class Bridge {
 	private let maxRootObservers = 4
 	private let permissionCacheLock = NSLock()
 	private var grantedPermissionStatus: [String: Any]?
+	private let completedRequestLock = NSLock()
+	private var recentCompletedRequestIds: [String] = []
 
 	func run() {
 		if CommandLine.arguments.contains("serve") {
@@ -491,6 +493,10 @@ final class Bridge {
 		guard !trimmed.isEmpty else { return }
 
 		let fallbackId = "invalid"
+		var completionId: String?
+		defer {
+			if responseSocket != nil, let completionId { recordCompletedRequest(completionId) }
+		}
 		do {
 			guard let jsonData = trimmed.data(using: .utf8) else {
 				throw BridgeFailure(message: "Input was not valid UTF-8", code: "invalid_request")
@@ -499,6 +505,7 @@ final class Bridge {
 				throw BridgeFailure(message: "Request must be a JSON object", code: "invalid_request")
 			}
 			let id = (object["id"] as? String) ?? fallbackId
+			completionId = id
 
 			do {
 				let result = try handleRequest(object)
@@ -569,6 +576,22 @@ final class Bridge {
 				offset += sent
 			}
 		}
+	}
+
+	private func recordCompletedRequest(_ id: String) {
+		completedRequestLock.lock()
+		recentCompletedRequestIds.removeAll { $0 == id }
+		recentCompletedRequestIds.append(id)
+		if recentCompletedRequestIds.count > 32 {
+			recentCompletedRequestIds.removeFirst(recentCompletedRequestIds.count - 32)
+		}
+		completedRequestLock.unlock()
+	}
+
+	private func completedRequestIds() -> [String] {
+		completedRequestLock.lock()
+		defer { completedRequestLock.unlock() }
+		return recentCompletedRequestIds
 	}
 
 	private func handleRequest(_ request: [String: Any]) throws -> Any {
@@ -735,6 +758,7 @@ final class Bridge {
 			"arch": arch,
 			"accessibility": permissions["accessibility"] ?? false,
 			"screenRecording": permissions["screenRecording"] ?? false,
+			"recentCompletedRequestIds": completedRequestIds(),
 		]
 		if let parentPath {
 			output["parentPath"] = parentPath
@@ -917,7 +941,7 @@ final class Bridge {
 		// even when their windows are visible and AX-controllable. Add CGWindow
 		// owners as acquisition candidates so callers can still resolve by pid/title
 		// and then build the normal AX scene through listWindows(pid:).
-		for owner in cgWindowOwners() + cgPopupMenuOwners() where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
+		for owner in cgWindowOwners() where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
 			seen.insert(owner.pid)
 			output.append([
 				"appName": owner.name,
@@ -1125,40 +1149,36 @@ final class Bridge {
 		["pairing": ["confidence": pairing.confidence, "score": pairing.score], "sheetCount": sheetCount]
 	}
 
-	private func rootCandidateApps(pid: Int32?, title: String?) -> [[String: Any]] {
-		let apps = listApps()
-		if let pid {
-			return apps.first(where: { ($0["pid"] as? Int) == Int(pid) }).map { [$0] }
-				?? [["pid": Int(pid)]]
+	private func broadRootCandidateApps() -> [[String: Any]] {
+		cgBroadRootOwners().compactMap { owner in
+			guard owner.pid != getpid(), pidIsAlive(owner.pid) else { return nil }
+			var app: [String: Any] = ["appName": owner.name, "pid": Int(owner.pid)]
+			if let bundleId = NSRunningApplication(processIdentifier: owner.pid)?.bundleIdentifier {
+				app["bundleId"] = bundleId
+			}
+			return app
 		}
+	}
 
+	private func listRoots(pid: Int32?, title: String? = nil) throws -> [String: Any] {
 		let requestedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-		if !requestedTitle.isEmpty,
+		let apps: [[String: Any]]
+		if let pid {
+			apps = [["pid": Int(pid)]]
+		} else if !requestedTitle.isEmpty,
 			let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] {
 			let matchingPids = Set(entries.compactMap { entry -> Int32? in
 				let candidate = ((entry[kCGWindowName as String] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 				guard candidate == requestedTitle || candidate.contains(requestedTitle) else { return nil }
 				return (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
 			})
-			return apps.filter { app in
+			apps = listApps().filter { app in
 				guard let rawPid = app["pid"] as? Int else { return false }
 				return matchingPids.contains(Int32(rawPid))
 			}
+		} else {
+			apps = broadRootCandidateApps()
 		}
-
-		// Root discovery should cross AX only for processes that can own a
-		// controllable top-level surface. listApps intentionally remains broad for
-		// app resolution, while this preflight excludes WebKit/XPC children that
-		// cannot contribute roots and may not answer AX requests.
-		let ownerPids = Set((cgWindowOwners() + cgPopupMenuOwners()).map(\.pid))
-		return apps.filter { app in
-			guard let rawPid = app["pid"] as? Int else { return false }
-			return ownerPids.contains(Int32(rawPid))
-		}
-	}
-
-	private func listRoots(pid: Int32?, title: String? = nil) throws -> [String: Any] {
-		let apps = rootCandidateApps(pid: pid, title: title)
 		var roots: [[String: Any]] = []
 		for app in apps {
 			guard let rawPid = app["pid"] as? Int else { continue }
@@ -1173,11 +1193,8 @@ final class Bridge {
 			}
 			let popupCandidates = cgPopupMenuCandidates(pid: appPid)
 			let menuElements = popupCandidates.isEmpty ? [] : openMenuElements(pid: appPid)
-			let menuPairings = windowPairings(windows: menuElements, candidates: popupCandidates)
-			for candidate in popupCandidates {
-				let menuElement = menuElements.first {
-					menuPairings[ObjectIdentifier($0)]?.candidate?.windowId == candidate.windowId
-				}
+			for (index, candidate) in popupCandidates.enumerated() {
+				let menuElement = index < menuElements.count ? menuElements[index] : nil
 				let menuRef = menuElement.map { refStore.storeWindow($0) } ?? "cgmenu:\(candidate.windowId)"
 				var menu: [String: Any] = [
 					"kind": "menu",
@@ -2933,7 +2950,7 @@ final class Bridge {
 		return candidates
 	}
 
-	private func cgPopupMenuOwners() -> [CGWindowOwnerSummary] {
+	private func cgBroadRootOwners() -> [CGWindowOwnerSummary] {
 		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
 			return []
 		}
@@ -2941,7 +2958,7 @@ final class Bridge {
 		var seen = Set<Int32>()
 		return entries.compactMap { entry -> CGWindowOwnerSummary? in
 			let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-			guard layer == popupLevel,
+			guard layer == 0 || layer == popupLevel,
 				let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
 				seen.insert(pid).inserted
 			else { return nil }
