@@ -4,16 +4,23 @@ import SwiftUI
 /// Visual-only cursor; native action delivery remains authoritative.
 @MainActor
 final class AgentCursor {
-    static let shared = AgentCursor()
+    typealias IdleHideScheduler = @MainActor (@escaping @MainActor () -> Void) -> Task<Void, Never>
+
+    static let shared = AgentCursor(scheduleIdleHide: scheduleDefaultIdleHide)
 
     private var overlay: AgentCursorOverlayWindow?
     private var idleHideTask: Task<Void, Never>?
+    private var idleGeneration: UInt = 0
+    private let scheduleIdleHide: IdleHideScheduler
 
-    private init() {}
+    init(scheduleIdleHide: @escaping IdleHideScheduler) {
+        self.scheduleIdleHide = scheduleIdleHide
+    }
 
     func animate(to point: CGPoint, above windowId: UInt32) {
         idleHideTask?.cancel()
         idleHideTask = nil
+        idleGeneration &+= 1
 
         let window = ensureWindow()
         if !window.isVisible { window.orderFrontRegardless() }
@@ -29,10 +36,10 @@ final class AgentCursor {
         }
         renderer.moveTo(point: point)
 
-        idleHideTask = Task { @MainActor [weak self, weak window] in
-            try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled, let self, let window else { return }
-            guard self.overlay === window else { return }
+        let generation = idleGeneration
+        idleHideTask = scheduleIdleHide { [weak self, weak window] in
+            guard let self, let window else { return }
+            guard generation == idleGeneration, self.overlay === window else { return }
 
             renderer.cancelAnimation()
             window.orderOut(nil)
@@ -40,6 +47,14 @@ final class AgentCursor {
             window.close()
             overlay = nil
             idleHideTask = nil
+        }
+    }
+
+    private static func scheduleDefaultIdleHide(_ hide: @escaping @MainActor () -> Void) -> Task<Void, Never> {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            hide()
         }
     }
 
