@@ -166,7 +166,7 @@ jobs:
           shasum -a 256 pi-computer-use.app.zip > SHA256SUMS
 
       - name: Upload release payload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets-${{ env.RELEASE_TAG }}
           path: release-assets/*
@@ -201,7 +201,7 @@ jobs:
         run: test -f prebuilt/windows/windows-bridge.exe
 
       - name: Upload Windows helper payload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-helper-${{ env.RELEASE_TAG }}
           path: prebuilt/windows/windows-bridge.exe
