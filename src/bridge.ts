@@ -11,8 +11,8 @@ import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypre
 import { getComputerUseConfig, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
 import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
-import { applyOutputEnvelope, boundToolError, clearStoredOutputs, OUTPUT_PAGE_BYTES, readStoredOutput, UI_TEXT_PAGE_CHARS } from "./output.ts";
-import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type MouseButtonName, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type StateTargetParams, type UiAction, type WaitForParams } from "./contract.ts";
+import { applyOutputEnvelope, boundToolError, clearStoredOutputs, readStoredOutput, UI_TEXT_PAGE_CHARS } from "./output.ts";
+import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
 import { currentPlatformBackend } from "./platform/index.ts";
 import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformActRequest, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformRoot as HelperWindow } from "./platform/types.ts";
@@ -271,9 +271,7 @@ const CURRENT_TARGET_GONE_ERROR =
 const COMMAND_TIMEOUT_MS = 15_000;
 const LOOK_TIMEOUT_MS = 33_000;
 
-const SCREENSHOT_TIMEOUT_MS = 25_000;
 const ACTION_SETTLE_MS = 280;
-const DEFAULT_WAIT_MS = 1_000;
 
 const BROWSER_CONTEXT_PREFIX = "browser:";
 const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
@@ -340,10 +338,6 @@ export async function shutdownComputerUseSession(): Promise<void> {
 	runtimeState.helperDiagnostics = undefined;
 	runtimeState.lastPermissionCheckAt = 0;
 	await currentPlatformBackend.shutdown?.();
-}
-
-function normalizeError(error: unknown): Error {
-	return error instanceof Error ? error : new Error(String(error));
 }
 
 function currentRuntimeMode(): ExecutionVariant {
@@ -442,10 +436,6 @@ function normalizeText(value: string | undefined): string {
 	return (value ?? "").trim().toLowerCase();
 }
 
-function toOptionalString(value: unknown): string | undefined {
-	return typeof value === "string" ? value : undefined;
-}
-
 function toBoolean(value: unknown): boolean {
 	return value === true;
 }
@@ -473,10 +463,6 @@ function validateStateId(stateId?: string): CurrentCapture {
 		throw new Error("The latest state belongs to a different window. Call observe_ui for the target window and retry.");
 	}
 	return state.currentCapture;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
 }
 
 function formatOutlineNodeLabel(node: OutlineNode): string {
@@ -542,15 +528,6 @@ function currentTargetOrThrow(): CurrentTarget {
 
 function emptyActivation(): ActivationFlags {
 	return { activated: false, unminimized: false, raised: false };
-}
-
-async function isExecutable(filePath: string): Promise<boolean> {
-	try {
-		await access(filePath, fsConstants.X_OK);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
@@ -628,15 +605,6 @@ function formatWindowLine(window: ListWindowsDetails["windows"][number]): string
 
 async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
 	return await currentPlatformBackend.getFrontmost(signal);
-}
-
-async function focusControlledWindow(target: ResolvedTarget, signal?: AbortSignal): Promise<void> {
-	const result = await currentPlatformBackend.focusWindow(nativeWindowRequest(target), signal);
-	if (!toBoolean(result?.focused)) {
-		throw new Error(
-			`Unable to focus controlled window '${target.windowTitle}' before input${result?.reason ? `: ${result.reason}` : "."}`,
-		);
-	}
 }
 
 function assertBrowserUseAllowed(target: { appName: string; bundleId?: string }): void {
@@ -873,25 +841,6 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 	return resolved;
 }
 
-async function selectWindowIfProvided(selector: RootSelector | undefined, signal?: AbortSignal): Promise<void> {
-	if (!normalizeWindowSelector(selector)) return;
-	const state = operationState();
-	const previous = state.currentTarget;
-	const selected = await resolveTargetByWindowSelector(selector!, signal);
-	const changedWindow =
-		!previous ||
-		previous.pid !== selected.pid ||
-		(previous.windowId > 0 && selected.windowId > 0 ? previous.windowId !== selected.windowId : previous.windowRef !== selected.windowRef);
-	if (changedWindow) {
-		state.currentCapture = undefined;
-		state.currentLook = undefined;
-		state.currentOutline = undefined;
-		delete state.currentNote;
-		state.resourceKey = undefined;
-		state.epoch = undefined;
-	}
-}
-
 function shouldPreferForegroundModalWindow(current: HelperWindow, candidate: HelperWindow): boolean {
 	if (candidate.windowId === current.windowId && candidate.windowRef === current.windowRef) return false;
 	if (!candidate.isOnscreen || candidate.isMinimized) return false;
@@ -1035,10 +984,6 @@ function noteWindowForTarget(target: ResolvedTarget | CurrentTarget, look?: Look
 		pairing: look?.window.metadata?.pairing && typeof look.window.metadata.pairing === "object" ? (look.window.metadata.pairing as { confidence?: "exact" | "high" | "low" }).confidence : undefined,
 		pairingScore: look?.window.metadata?.pairing && typeof look.window.metadata.pairing === "object" ? (look.window.metadata.pairing as { score?: number }).score : undefined,
 	};
-}
-
-function actTargetPublicRef(params: { ref?: string }): string | undefined {
-	return trimOrUndefined(params.ref);
 }
 
 async function captureCurrentTarget(signal?: AbortSignal, readText: "auto" | "always" | "never" = "auto", maxDimension = AUTO_IMAGE_MAX_DIMENSION, targetOverride?: ResolvedTarget, includeImage = true): Promise<CaptureResult> {
@@ -1790,8 +1735,8 @@ async function performExpandUi(params: ExpandUiParams, signal?: AbortSignal): Pr
 	return { content: [{ type: "text", text: `${formatOutlineNodeLabel(target)}\npath: ${outlineNodePath(target)}\n\n${folded.text}` }], details };
 }
 
-/** Pure cached-outline inspection unless a window selector is supplied. */
-async function performInspectUi(params: InspectUiParams, signal?: AbortSignal): Promise<AgentToolResult<OutlineToolDetails>> {
+/** Pure cached-outline inspection. */
+async function performInspectUi(params: InspectUiParams): Promise<AgentToolResult<OutlineToolDetails>> {
 	const state = operationState();
 	const outline = currentOutlineOrThrow(params.stateId);
 	const ref = trimOrUndefined(params.ref);
@@ -1905,7 +1850,7 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 		const execution = await dispatchUiTransaction(actions, target, look, headless, signal);
 		const executedActions = actions.slice(0, execution.actionCount ?? actions.length);
 		if (condition) {
-			const { text: expectedText, role: expectedRole, value: expectedValue, scopeRef, scopeExact, gone, timeoutMs } = condition;
+			const { text: expectedText, role: expectedRole, value: expectedValue, scopeExact, gone, timeoutMs } = condition;
 			const beforePresent = outlineConditionPresent(look.parsedOutline!, condition);
 			const desiredWasPreexisting = beforePresent !== gone;
 			const verification = await currentPlatformBackend.waitFor({

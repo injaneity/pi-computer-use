@@ -137,7 +137,6 @@ export async function runProcess(
 }
 
 export class MacosHelperClient {
-	private helperInstallChecked = false;
 	private daemonAvailable = false;
 	private requestSequence = 0;
 	private diagnosticsCache?: PlatformDiagnostics;
@@ -152,7 +151,6 @@ export class MacosHelperClient {
 		// agent process's hot path. Protocol compatibility is checked against the
 		// live daemon immediately afterwards.
 		if (await isExecutable(HELPER_APP_EXECUTABLE_PATH)) {
-			this.helperInstallChecked = true;
 			return;
 		}
 
@@ -162,7 +160,6 @@ export class MacosHelperClient {
 			ELECTRON_RUN_AS_NODE: "1",
 			BUN_BE_BUN: "1",
 		});
-		this.helperInstallChecked = true;
 
 		if (!(await isExecutable(HELPER_APP_EXECUTABLE_PATH))) {
 			throw new Error(`Failed to install pi-computer-use helper app at ${HELPER_APP_PATH}.`);
