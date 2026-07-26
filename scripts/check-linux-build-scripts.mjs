@@ -49,8 +49,14 @@ try {
 			path.join(fixtureHelperPathDir, "helper-path.mjs"),
 		),
 	]);
+	let fixtureEntry = path.join(fixtureScriptsDir, "setup-helper.mjs");
+	const linkedTempDir = `${tempDir}-link`;
+	if (process.platform !== "win32") {
+		await fs.symlink(tempDir, linkedTempDir);
+		fixtureEntry = path.join(linkedTempDir, "scripts", "setup-helper.mjs");
+	}
 	const result = await new Promise((resolve) => {
-		const child = spawn(process.execPath, [path.join(fixtureScriptsDir, "setup-helper.mjs"), "--platform", "linux"], { env: { ...process.env, PI_COMPUTER_USE_LINUX_HELPER_PATH: helperDest }, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(process.execPath, [fixtureEntry, "--platform", "linux"], { env: { ...process.env, PI_COMPUTER_USE_LINUX_HELPER_PATH: helperDest }, stdio: ["ignore", "pipe", "pipe"] });
 		let output = "";
 		child.stdout.on("data", (chunk) => { output += chunk; }); child.stderr.on("data", (chunk) => { output += chunk; });
 		child.on("close", (code) => resolve({ code, output }));
@@ -59,6 +65,7 @@ try {
 	assert.match(result.output, /No Linux prebuilt helper found for (x64|arm64)/);
 	assert.equal(await fs.stat(helperDest).then(() => true, () => false), false);
 } finally {
+	await fs.rm(`${tempDir}-link`, { force: true });
 	await fs.rm(tempDir, { recursive: true, force: true });
 }
 console.log("Linux build/setup script checks passed");

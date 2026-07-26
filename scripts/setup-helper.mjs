@@ -2,10 +2,9 @@
 
 import { createHash } from "node:crypto";
 import { spawn, execFile as execFileCallback } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { constants as fsConstants, createWriteStream, realpathSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -606,7 +605,7 @@ async function setup() {
 	);
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] && realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) setup().catch((error) => {
 	if (isPostinstall) {
 		console.warn(`[pi-computer-use] postinstall helper setup skipped: ${error instanceof Error ? error.message : String(error)}`);
