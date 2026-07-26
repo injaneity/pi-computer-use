@@ -41,8 +41,10 @@ flowchart TB
     B1 --> Cdp["Target-keyed CDP connections"]
     P --> M["macOS AX/capture helper"]
     P --> W["Windows UIA/input helper"]
+    P --> L["Linux AT-SPI2 helper"]
     M --> O["OS UI resources"]
     W --> O
+    L --> O
     Cdp --> O
 ```
 
@@ -124,6 +126,8 @@ Browser pages are roots, not a second agent-facing context hierarchy. `launch_br
 
 The macOS socket server and Windows line protocol accept multiple in-flight requests and correlate responses by request id. macOS protects shared AX ref/look stores and the root-event sequence; Windows uses a fixed worker pool and initializes UIA per worker thread. Both platforms keep eight immutable native look records and serialize global physical input. Target focus, bounded occlusion preflight, and HID delivery share that same critical section; another worker cannot change the foreground between validation and delivery. UIA-only Windows batches do not acquire the global physical-input lock, while any batch that may fall back to pointer or keyboard delivery holds it for the complete transaction.
 
+The Linux helper is a local JSON-lines child process with correlated concurrent requests. It snapshots roots over AT-SPI2 and attempts semantic `Action`/`EditableText` delivery first. On X11, EWMH enriches root identity/focus, XComposite (with `GetImage` fallback) supplies PNG capture, and non-headless policies may use serialized XTEST physical input. Strict headless/background policy blocks XTEST and focus. Wayland diagnostics only reads portal version and capability properties; it never creates or starts a session. Dormant session plumbing is not connected to runtime capture or input dispatch, so interactive portal use remains disabled and fails closed.
+
 Windows UIA extraction is bounded. When the native limit omits descendants, the nearest retained ancestors are marked `truncated`; `expand_ui` performs a scoped look and the helper carries forward the untouched refs into the new immutable look record. Windows root deltas combine an event journal with authoritative before/after snapshots. `SetWinEventHook` accelerates settling and retains short-lived root transitions, while snapshots remain the source of truth for persistent state.
 
 ## Preventing platform drift
@@ -136,7 +140,7 @@ Changes to a native backend should therefore include three layers of evidence:
 2. target-native compilation and deterministic native unit tests;
 3. the same black-box Cubench properties on an interactive host for that platform.
 
-OS-specific mechanisms can differ—AX, ScreenCaptureKit, and the AppKit agent-cursor overlay on macOS; UIA and Windows capture/input APIs on Windows—but state ownership, bounds, progressive disclosure, transaction boundaries, and honest outcomes may not. The overlay lives inside the existing helper because native action grounding owns the final screen point; keeping it there avoids a second coordinate transform or public cursor tool surface. The helper's socket server runs off the main thread while AppKit owns the main run loop, and the helper excludes its click-through overlay from root discovery. Cursor animation is observational: newer actions may supersede an in-flight path, but rendering never blocks action delivery or verification.
+OS-specific mechanisms can differ—AX, ScreenCaptureKit, and the AppKit agent-cursor overlay on macOS; UIA and Windows capture/input APIs on Windows; AT-SPI2 plus optional X11 EWMH/XComposite/XTEST on Linux—but state ownership, bounds, progressive disclosure, transaction boundaries, and honest outcomes may not. The overlay lives inside the existing helper because native action grounding owns the final screen point; keeping it there avoids a second coordinate transform or public cursor tool surface. The helper's socket server runs off the main thread while AppKit owns the main run loop, and the helper excludes its click-through overlay from root discovery. Cursor animation is observational: newer actions may supersede an in-flight path, but rendering never blocks action delivery or verification.
 
 ## Design constraints
 

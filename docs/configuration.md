@@ -66,6 +66,8 @@ PI_COMPUTER_USE_BROWSER_USE=0
 PI_COMPUTER_USE_BROWSER_USE=1
 PI_COMPUTER_USE_MANAGED_BROWSER=helium
 PI_COMPUTER_USE_MANAGED_BROWSER=chrome
+PI_COMPUTER_USE_CHROME_EXECUTABLE=/absolute/path/to/chrome
+PI_COMPUTER_USE_HELIUM_EXECUTABLE=/absolute/path/to/helium
 PI_COMPUTER_USE_HEADLESS=0
 PI_COMPUTER_USE_HEADLESS=1
 PI_COMPUTER_USE_CURSOR_OVERLAY=0
@@ -77,9 +79,13 @@ PI_COMPUTER_USE_CDP_PORT=9222
 
 `PI_COMPUTER_USE_HEADLESS=1` prohibits foreground fallback. `PI_COMPUTER_USE_DELIVERY_POLICY` is a debugging input; normal policy belongs in configuration rather than individual model calls.
 
+`launch_browser` searches common platform install locations and `PATH`. Use `PI_COMPUTER_USE_CHROME_EXECUTABLE` or `PI_COMPUTER_USE_HELIUM_EXECUTABLE` for an AppImage, portable install, or any non-standard location. An explicit override is authoritative and must name an executable file.
+
 ## CDP browser support
 
 `PI_COMPUTER_USE_CDP_PORT` enables Chrome DevTools Protocol support for Chromium-family browsers. Launch the browser with `--remote-debugging-port=<port>` and set this variable to the same port.
+
+Use a dedicated, non-default profile with `--user-data-dir=<directory>`. Chrome 136 and later ignore remote-debugging switches for the default data directory as a security measure. `launch_browser` already creates a temporary, separate CDP profile and binds discovery to a randomly allocated loopback port.
 
 When CDP is active, discovered pages participate in the same root and state system as desktop UI. `launch_browser` configures CDP automatically and returns an observed page state. `navigate_browser` and `evaluate_browser` accept only CDP browser-page states; native browser windows continue to use the normal desktop observe/act tools.
 

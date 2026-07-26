@@ -278,8 +278,6 @@ const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
 const AUTO_IMAGE_MAX_DIMENSION = 900;
 const EXPLICIT_IMAGE_MAX_DIMENSION = 1_600;
 const BROWSER_TRANSACTION_ACTIONS = new Set<UiAction["action"]>(["press", "click", "setText", "typeText", "keypress", "scroll", "drag", "moveMouse"]);
-const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
-const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 const runtimeState: RuntimeState = {
 	lastPermissionCheckAt: 0,
@@ -1971,8 +1969,71 @@ async function performAct(params: ActParams, signal?: AbortSignal): Promise<Agen
 	return await performDesktopTransaction(params, actions, signal);
 }
 
-function managedBrowserExecutable(browser: "helium" | "chrome"): string {
-	return browser === "helium" ? HELIUM_EXECUTABLE : CHROME_EXECUTABLE;
+function managedBrowserExecutableCandidates(browser: "helium" | "chrome"): string[] {
+	const overrideName = browser === "helium" ? "PI_COMPUTER_USE_HELIUM_EXECUTABLE" : "PI_COMPUTER_USE_CHROME_EXECUTABLE";
+	const override = trimOrUndefined(process.env[overrideName]);
+	if (override) return [path.resolve(override)];
+
+	const platformCandidates = process.platform === "darwin"
+		? browser === "helium"
+			? [
+				"/Applications/Helium.app/Contents/MacOS/Helium",
+				path.join(os.homedir(), "Applications", "Helium.app", "Contents", "MacOS", "Helium"),
+			]
+			: [
+				"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+				path.join(os.homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
+			]
+		: process.platform === "win32"
+			? browser === "helium"
+				? [
+					process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Helium", "Application", "helium.exe"),
+					process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Helium", "Application", "helium.exe"),
+				]
+				: [
+					process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+					process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+					process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+				]
+			: browser === "helium"
+				? [
+					"/usr/bin/helium",
+					"/usr/bin/helium-browser",
+					"/opt/helium/chrome",
+					path.join(os.homedir(), ".local", "helium", "chrome"),
+				]
+				: [
+					"/usr/bin/google-chrome",
+					"/usr/bin/google-chrome-stable",
+					"/usr/bin/chromium",
+					"/usr/bin/chromium-browser",
+					"/snap/bin/chromium",
+				];
+	const pathNames = browser === "helium"
+		? process.platform === "win32" ? ["helium.exe"] : ["helium", "helium-browser"]
+		: process.platform === "win32" ? ["chrome.exe"] : ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+	const pathCandidates = (process.env.PATH ?? "")
+		.split(path.delimiter)
+		.filter(Boolean)
+		.flatMap((directory) => pathNames.map((name) => path.join(directory, name)));
+	return [...new Set([...platformCandidates.filter((candidate): candidate is string => Boolean(candidate)), ...pathCandidates])];
+}
+
+async function managedBrowserExecutable(browser: "helium" | "chrome"): Promise<string> {
+	const candidates = managedBrowserExecutableCandidates(browser);
+	for (const candidate of candidates) {
+		try {
+			await access(candidate, fsConstants.X_OK);
+			return candidate;
+		} catch {
+			// Try the next platform-appropriate installation location.
+		}
+	}
+	const overrideName = browser === "helium" ? "PI_COMPUTER_USE_HELIUM_EXECUTABLE" : "PI_COMPUTER_USE_CHROME_EXECUTABLE";
+	if (trimOrUndefined(process.env[overrideName])) {
+		throw new Error(`${browser} executable from ${overrideName} was not found or is not executable: ${candidates[0]}.`);
+	}
+	throw new Error(`${browser} executable was not found. Set ${overrideName} to its absolute path.`);
 }
 
 function freeTcpPort(): Promise<number> {
@@ -2006,10 +2067,7 @@ async function waitForCdpPort(port: number, signal?: AbortSignal): Promise<void>
 // and sets PI_COMPUTER_USE_CDP_PORT for subsequent CDP context discovery.
 async function performLaunchBrowser(params: LaunchBrowserParams, signal?: AbortSignal): Promise<AgentToolResult<BrowserObservationDetails>> {
 	const browser = getComputerUseConfig().managed_browser;
-	const executable = managedBrowserExecutable(browser);
-	await access(executable, fsConstants.X_OK).catch(() => {
-		throw new Error(`${browser} executable was not found at ${executable}.`);
-	});
+	const executable = await managedBrowserExecutable(browser);
 	const port = await freeTcpPort();
 	const requestedUrl = trimOrUndefined(params.url);
 	if (requestedUrl && !/^https?:\/\//i.test(requestedUrl)) throw new Error("launch_browser.url must be an absolute HTTP(S) URL.");

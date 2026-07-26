@@ -13,6 +13,7 @@ src/outline.ts                   Outline parsing, folding, search, and ref mappi
 src/note.ts                      Disposable running-note generation
 native/macos/bridge.swift        macOS helper for AX, capture, permissions, and input
 native/windows/                 Windows backend/helper code when developing on Windows
+native/linux/bridge-rs/         Linux AT-SPI2 helper (Rust)
 scripts/build-native.mjs         macOS helper build script
 scripts/setup-helper.mjs         macOS helper install script
 scripts/check-invariants.mjs     Architecture invariant checks
@@ -85,6 +86,8 @@ On macOS, the helper installed for permissions is normally:
 Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. The macOS helper targets macOS 14+ and uses ScreenCaptureKit. Local development can use ad-hoc signing. Release builds must use the release workflow so the helper app is signed with the stable release certificate.
 
 On Windows, development uses the Windows platform backend/helper and the active desktop session rather than the macOS app bundle or TCC permission model.
+
+On Linux, install Rust/Cargo and run `npm run build:linux`, `npm run test:linux`, and `npm run test:linux-scripts`. Live checks must run inside the target user's graphical D-Bus session. The helper installs to `~/.pi/agent/helpers/pi-computer-use/linux-bridge`.
 
 ## Release signing
 
