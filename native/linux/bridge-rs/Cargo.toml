@@ -9,7 +9,6 @@ base64 = "0.22"
 png = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 x11rb = { version = "0.13", features = ["composite", "xtest"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }

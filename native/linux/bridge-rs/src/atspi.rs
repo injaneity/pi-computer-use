@@ -376,7 +376,7 @@ pub fn root_json(reference: &str, root: &RootSnapshot, z_order: usize) -> Value 
         "rootRef": reference,
         "windowRef": reference,
         "ref": reference,
-        "windowId": root.x11_window.unwrap_or(root.pid as u32),
+        "windowId": root.x11_window,
         "title": root.name,
         "pid": root.pid,
         "appName": root.app_name,
@@ -398,12 +398,7 @@ pub fn root_json(reference: &str, root: &RootSnapshot, z_order: usize) -> Value 
     })
 }
 
-pub fn outline_json(
-    _root_ref: &str,
-    _root: &RootSnapshot,
-    nodes: &[NodeSnapshot],
-    max_nodes: usize,
-) -> Value {
+pub fn outline_json(root: &RootSnapshot, nodes: &[NodeSnapshot], max_nodes: usize) -> Value {
     let mut descendants: HashMap<AccessibleRef, Vec<Value>> = HashMap::new();
     let mut roots = Vec::new();
     for node in nodes.iter().rev() {
@@ -411,8 +406,8 @@ pub fn outline_json(
             .bounds
             .as_ref()
             .map(|r| {
-                let origin_x = _root.frame.as_ref().map(|f| f.x).unwrap_or(0);
-                let origin_y = _root.frame.as_ref().map(|f| f.y).unwrap_or(0);
+                let origin_x = root.frame.as_ref().map(|f| f.x).unwrap_or(0);
+                let origin_y = root.frame.as_ref().map(|f| f.y).unwrap_or(0);
                 json!({"x":relative_coordinate(r.x, origin_x),"y":relative_coordinate(r.y, origin_y),"w":r.width,"h":r.height})
             })
             .unwrap_or_else(|| json!({"x":0,"y":0,"w":0,"h":0}));
@@ -632,9 +627,14 @@ mod tests {
         let value = root_json("@w1", &root, 0);
         assert_eq!(value["rootRef"], "@w1");
         assert_eq!(value["windowRef"], "@w1");
+        assert_eq!(value["windowId"], 99);
         assert_eq!(value["metadata"]["backend"], "at-spi2");
         assert_eq!(value["title"], "Editor");
         assert_eq!(value["appName"], "Text Editor");
         assert_eq!(value["processName"], "Text Editor");
+
+        let mut wayland_root = root;
+        wayland_root.x11_window = None;
+        assert!(root_json("@w2", &wayland_root, 0)["windowId"].is_null());
     }
 }

@@ -180,8 +180,8 @@ async function buildWindowsHelper(prebuiltOutput) {
 }
 
 function linuxBinaryPath(crateDir, target) {
-	const releaseDir = target ? path.join(crateDir, "target", target, "release") : path.join(crateDir, "target", "release");
-	return path.join(releaseDir, "linux-bridge");
+	const targetDir = target ? path.join("target", target) : "target";
+	return path.join(crateDir, targetDir, "release", "linux-bridge");
 }
 
 function defaultLinuxOutputPath(arch) {

@@ -264,6 +264,13 @@ fn initial_image_size(root: &RootSnapshot, base_size: Option<(u16, u16)>) -> (u1
 async fn look(state: &Arc<Mutex<HelperState>>, args: &Value) -> Result<Value, ProtocolError> {
     let started = Instant::now();
     let (root_ref, root) = resolve_root(state, args).await?;
+    let read_text = args
+        .get("readText")
+        .and_then(Value::as_str)
+        .unwrap_or("auto");
+    if !matches!(read_text, "auto" | "always" | "never") {
+        return Err(invalid("readText must be auto, always, or never"));
+    }
     let max_nodes = args
         .get("maxNodes")
         .and_then(Value::as_u64)
@@ -299,7 +306,7 @@ async fn look(state: &Arc<Mutex<HelperState>>, args: &Value) -> Result<Value, Pr
         (client.snapshot(&root, max_nodes, max_depth).await?, None)
     };
     let (look_id, nodes) = lock(state)?.insert_look(root.clone(), nodes, base.as_ref());
-    let mut outline = outline_json(scope_ref.unwrap_or(&root_ref), &root, &nodes, max_nodes);
+    let mut outline = outline_json(&root, &nodes, max_nodes);
     let elapsed = started.elapsed().as_millis() as u64;
     let frame = root
         .frame
@@ -346,7 +353,7 @@ async fn look(state: &Arc<Mutex<HelperState>>, args: &Value) -> Result<Value, Pr
         "lookId": look_id,
         "capturedAt": now_seconds(),
         "window": {
-            "windowId": root.x11_window.unwrap_or(root.pid as u32),
+            "windowId": root.x11_window,
             "rootRef": root_ref,
             "kind": "window",
             "framePoints": frame,
@@ -358,7 +365,7 @@ async fn look(state: &Arc<Mutex<HelperState>>, args: &Value) -> Result<Value, Pr
         },
         "outline": outline,
         "timings": {"captureMs":0,"describeMs":elapsed,"readTextMs":0,"totalMs":elapsed},
-        "readText": {"requested":args.get("readText").and_then(Value::as_str).unwrap_or("auto"),"executed":true}
+        "readText": {"requested":read_text,"executed":false}
     });
     if let Some(image) = image {
         response["image"] = image;

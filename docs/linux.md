@@ -42,7 +42,7 @@ The standardized [ScreenCast portal](https://flatpak.github.io/xdg-desktop-porta
 
 On Wayland, diagnostics performs only a read-only property probe and reports the RemoteDesktop and ScreenCast interface versions plus advertised device, source, and cursor-mode bitmasks. It does not create a portal request or session and cannot display a chooser.
 
-The native module contains dormant session plumbing, but interactive portal use is not enabled: no runtime command starts a session, decodes PipeWire frames, dispatches portal input, or persists restore tokens. Installing a portal backend therefore does not enable Wayland capture or input.
+There is no portal session, PipeWire frame, input dispatch, or restore-token implementation. Installing a portal backend therefore does not enable Wayland capture or input.
 
 ## Security boundaries
 
@@ -50,7 +50,7 @@ The native module contains dormant session plumbing, but interactive portal use 
 - It can inspect applications exposed on the current user's AT-SPI bus; run only trusted agents and extensions in that session.
 - Password-role values are omitted and explicit reads are rejected, though application mislabeling remains possible.
 - On X11, capture can read window pixels and non-headless physical fallback can control the global pointer/keyboard and request focus. These are broad desktop capabilities; strict headless/background policy blocks XTEST and focus, but does not make AT-SPI or requested X11 observation private.
-- On Wayland, portal plumbing does not yet decode frames or deliver actions. Portal session creation would be explicit and potentially interactive, not an automatic background escalation.
+- On Wayland, portal diagnostics are read-only; capture and input are not implemented.
 - CDP is separate and gives local processes that can reach its loopback port powerful page access. `launch_browser` uses a fresh non-default temporary profile, matching modern Chrome's [remote-debugging security policy](https://developer.chrome.com/blog/remote-debugging-port), rather than the user's normal profile.
 
 ## Browser discovery
