@@ -119,6 +119,23 @@ interface ComputerUseDetails {
 		| "duplicated_ax_labels"
 		| "browser_wait_verification";
 }
+interface TerminalDesktopActionDetails {
+	tool: "act_ui";
+	status: "target_closed" | "post_action_observation_failed";
+	baseStateId: string;
+	target: {
+		app: string;
+		bundleId?: string;
+		pid: number;
+		windowTitle: string;
+		windowId: number;
+		windowRef?: string;
+		nativeWindowRef?: string;
+	};
+	execution: ExecutionTrace;
+	error: { code: string; message: string };
+}
+
 
 interface ListWindowsDetails {
 	tool: "find_roots";
@@ -278,8 +295,6 @@ const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
 const AUTO_IMAGE_MAX_DIMENSION = 900;
 const EXPLICIT_IMAGE_MAX_DIMENSION = 1_600;
 const BROWSER_TRANSACTION_ACTIONS = new Set<UiAction["action"]>(["press", "click", "setText", "typeText", "keypress", "scroll", "drag", "moveMouse"]);
-const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
-const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 const runtimeState: RuntimeState = {
 	lastPermissionCheckAt: 0,
@@ -1835,7 +1850,102 @@ function aggregateExecutions(steps: ExecutionTrace[]): ExecutionTrace {
 	});
 }
 
-async function performDesktopTransaction(params: ActParams, actions: UiAction[], signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+function exactPlatformRootMatchesTarget(root: HelperWindow, target: ResolvedTarget): boolean {
+	if (root.pid !== target.pid) return false;
+	const nativeRefMatches = Boolean(target.nativeWindowRef && (root.rootRef === target.nativeWindowRef || root.windowRef === target.nativeWindowRef));
+	const windowIdMatches = target.windowId > 0 && root.windowId === target.windowId;
+	return nativeRefMatches || windowIdMatches;
+}
+
+function clearDesktopOperationState(state: OperationState): void {
+	state.currentTarget = undefined;
+	state.currentCapture = undefined;
+	state.currentStateTarget = undefined;
+	state.currentLook = undefined;
+	state.currentOutline = undefined;
+	state.currentNote = undefined;
+}
+
+async function terminalDesktopActionResult(
+	target: ResolvedTarget,
+	baseStateId: string,
+	execution: ExecutionTrace,
+	error: unknown,
+	condition?: ReturnType<typeof validateCondition>,
+): Promise<AgentToolResult<TerminalDesktopActionDetails>> {
+	let exactRootAvailable: boolean | undefined;
+	try {
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const roots = await currentPlatformBackend.listRoots({ pid: target.pid });
+			exactRootAvailable = roots.some((root) => exactPlatformRootMatchesTarget(root, target));
+			if (exactRootAvailable) break;
+			if (attempt < 2) await sleep(75);
+		}
+	} catch {
+		// A failed identity probe cannot prove that the root closed.
+	}
+	const targetClosed = exactRootAvailable === false;
+	if (targetClosed && !(execution.rootDelta ?? []).some((delta) => delta.change === "closed" && delta.pid === target.pid && (delta.ref === target.windowRef || delta.ref === target.nativeWindowRef))) {
+		execution.rootDelta = [
+			...(execution.rootDelta ?? []),
+			{
+				change: "closed",
+				kind: "window",
+				ref: target.windowRef,
+				title: target.windowTitle,
+				pid: target.pid,
+				metadata: { source: "post_action_identity_probe" },
+			},
+		];
+	}
+	if (targetClosed && condition) {
+		const verificationStatus = condition.gone ? "verified" : "failed";
+		execution.verification = {
+			status: verificationStatus,
+			text: condition.text,
+			role: condition.role,
+			value: condition.value,
+			gone: condition.gone || undefined,
+			timeoutMs: condition.timeoutMs,
+		};
+		execution.outcome = outcomeAfterCheck(execution.outcome ?? "unknown", verificationStatus);
+		if (verificationStatus === "failed") {
+			execution.error = {
+				code: "postcondition_failed",
+				message: "The source root closed before the requested presence or value postcondition could be verified.",
+			};
+		}
+	}
+	const status = targetClosed ? "target_closed" : "post_action_observation_failed";
+	const code = targetClosed ? "target_closed" : "post_action_observation_failed";
+	const message = error instanceof Error ? error.message : String(error);
+	clearDesktopOperationState(operationState());
+	const details: TerminalDesktopActionDetails = {
+		tool: "act_ui",
+		status,
+		baseStateId,
+		target: {
+			app: target.appName,
+			bundleId: target.bundleId,
+			pid: target.pid,
+			windowTitle: target.windowTitle,
+			windowId: target.windowId,
+			windowRef: target.windowRef,
+			nativeWindowRef: target.nativeWindowRef,
+		},
+		execution,
+		error: { code, message },
+	};
+	const result = targetClosed
+		? `The action was delivered, and its source root ${target.appName} — ${target.windowTitle} closed before a successor observation could be captured.`
+		: `The action was delivered, but its source root ${target.appName} — ${target.windowTitle} could not be observed afterward: ${message}`;
+	return {
+		content: [{ type: "text", text: `${result}\nNo successor state was created. Call find_roots, then observe_ui to continue.` }],
+		details,
+	};
+}
+
+async function performDesktopTransaction(params: ActParams, actions: UiAction[], signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | TerminalDesktopActionDetails>> {
 	const state = operationState();
 	state.currentImageMode = "auto";
 	validateStateId(params.stateId);
@@ -1849,45 +1959,53 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 		const headless = getComputerUseConfig().headless;
 		const execution = await dispatchUiTransaction(actions, target, look, headless, signal);
 		const executedActions = actions.slice(0, execution.actionCount ?? actions.length);
-		if (condition) {
-			const { text: expectedText, role: expectedRole, value: expectedValue, scopeExact, gone, timeoutMs } = condition;
-			const beforePresent = outlineConditionPresent(look.parsedOutline!, condition);
-			const desiredWasPreexisting = beforePresent !== gone;
-			const verification = await currentPlatformBackend.waitFor({
-				...nativeWindowRequest(target),
-				lookId: look.parsedOutline!.lookId,
-				text: expectedText,
-				role: platformRole(look.parsedOutline!, expectedRole),
-				value: expectedValue,
-				scopeRef: scopeNode ? wireRefForNode(scopeNode) : undefined,
-				scopeExact,
-				gone,
-				timeoutMs,
-			}, { signal, timeoutMs: timeoutMs + 2_000 });
-			execution.verification = {
-				status: verification.found ? (desiredWasPreexisting ? "preexisting" : "verified") : "failed",
-				text: expectedText,
-				role: expectedRole,
-				value: expectedValue,
-				gone: gone || undefined,
-				timeoutMs,
-			};
-			execution.outcome = outcomeAfterCheck(execution.outcome ?? "unknown", execution.verification.status);
-			if (!verification.found) {
-				execution.error = {
-					code: "postcondition_failed",
-					message: `The action was delivered but its postcondition was not satisfied within ${timeoutMs}ms.`,
+		try {
+			if (condition) {
+				const { text: expectedText, role: expectedRole, value: expectedValue, scopeExact, gone, timeoutMs } = condition;
+				const beforePresent = outlineConditionPresent(look.parsedOutline!, condition);
+				const desiredWasPreexisting = beforePresent !== gone;
+				const verification = await currentPlatformBackend.waitFor({
+					...nativeWindowRequest(target),
+					lookId: look.parsedOutline!.lookId,
+					text: expectedText,
+					role: platformRole(look.parsedOutline!, expectedRole),
+					value: expectedValue,
+					scopeRef: scopeNode ? wireRefForNode(scopeNode) : undefined,
+					scopeExact,
+					gone,
+					timeoutMs,
+				}, { signal, timeoutMs: timeoutMs + 2_000 });
+				execution.verification = {
+					status: verification.found ? (desiredWasPreexisting ? "preexisting" : "verified") : "failed",
+					text: expectedText,
+					role: expectedRole,
+					value: expectedValue,
+					gone: gone || undefined,
+					timeoutMs,
 				};
+				execution.outcome = outcomeAfterCheck(execution.outcome ?? "unknown", execution.verification.status);
+				if (!verification.found) {
+					execution.error = {
+						code: "postcondition_failed",
+						message: `The action was delivered but its postcondition was not satisfied within ${timeoutMs}ms.`,
+					};
+				}
+			} else {
+				await sleep(settleMsForExecution(execution), signal);
 			}
-		} else {
-			await sleep(settleMsForExecution(execution), signal);
+			const capture = await captureCurrentTarget(signal, "auto", AUTO_IMAGE_MAX_DIMENSION, target);
+			execution.outcome = outcomeAfterObservedValues(execution.outcome ?? "unknown", executedActions, (ref) => nodeByRef(capture.outline, ref)?.value);
+			for (const action of executedActions) {
+				state.currentNote = noteAfterAct(state.currentNote ?? noteBefore, action.ref, capture.outline, { window: noteWindowForTarget(capture.target, capture.look), rootDelta: execution.rootDelta });
+			}
+			return await buildToolResult("act_ui", `Executed ${executedActions.length} checked UI action${executedActions.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned state ${capture.capture.stateId}.`, capture, execution, signal, state.currentImageMode, baseView);
+		} catch (error) {
+			if (signal?.aborted) {
+				clearDesktopOperationState(state);
+				throw error;
+			}
+			return await terminalDesktopActionResult(target, baseView.stateId, execution, error, condition);
 		}
-		const capture = await captureCurrentTarget(signal, "auto", AUTO_IMAGE_MAX_DIMENSION, target);
-		execution.outcome = outcomeAfterObservedValues(execution.outcome ?? "unknown", executedActions, (ref) => nodeByRef(capture.outline, ref)?.value);
-		for (const action of executedActions) {
-			state.currentNote = noteAfterAct(state.currentNote ?? noteBefore, action.ref, capture.outline, { window: noteWindowForTarget(capture.target, capture.look), rootDelta: execution.rootDelta });
-		}
-		return await buildToolResult("act_ui", `Executed ${executedActions.length} checked UI action${executedActions.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned state ${capture.capture.stateId}.`, capture, execution, signal, state.currentImageMode, baseView);
 	});
 }
 
@@ -1962,7 +2080,7 @@ function validateActionTarget(action: UiAction): void {
 	if (action.clickCount !== undefined && (!Number.isInteger(action.clickCount) || action.clickCount < 1 || action.clickCount > 3)) throw new Error("clickCount must be an integer from 1 to 3.");
 }
 
-async function performAct(params: ActParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | BrowserObservationDetails>> {
+async function performAct(params: ActParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | TerminalDesktopActionDetails | BrowserObservationDetails>> {
 	const actions = Array.isArray(params.actions) ? params.actions : [];
 	if (actions.length === 0) throw new Error("act_ui.actions must contain at least one action.");
 	if (actions.length > 20) throw new Error("act_ui supports at most 20 actions per transaction.");
@@ -1971,8 +2089,71 @@ async function performAct(params: ActParams, signal?: AbortSignal): Promise<Agen
 	return await performDesktopTransaction(params, actions, signal);
 }
 
-function managedBrowserExecutable(browser: "helium" | "chrome"): string {
-	return browser === "helium" ? HELIUM_EXECUTABLE : CHROME_EXECUTABLE;
+function managedBrowserExecutableCandidates(browser: "helium" | "chrome"): string[] {
+	const overrideName = browser === "helium" ? "PI_COMPUTER_USE_HELIUM_EXECUTABLE" : "PI_COMPUTER_USE_CHROME_EXECUTABLE";
+	const override = trimOrUndefined(process.env[overrideName]);
+	if (override) return [path.resolve(override)];
+
+	const platformCandidates = process.platform === "darwin"
+		? browser === "helium"
+			? [
+				"/Applications/Helium.app/Contents/MacOS/Helium",
+				path.join(os.homedir(), "Applications", "Helium.app", "Contents", "MacOS", "Helium"),
+			]
+			: [
+				"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+				path.join(os.homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
+			]
+		: process.platform === "win32"
+			? browser === "helium"
+				? [
+					process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Helium", "Application", "helium.exe"),
+					process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Helium", "Application", "helium.exe"),
+				]
+				: [
+					process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+					process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+					process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+				]
+			: browser === "helium"
+				? [
+					"/usr/bin/helium",
+					"/usr/bin/helium-browser",
+					"/opt/helium/chrome",
+					path.join(os.homedir(), ".local", "helium", "chrome"),
+				]
+				: [
+					"/usr/bin/google-chrome",
+					"/usr/bin/google-chrome-stable",
+					"/usr/bin/chromium",
+					"/usr/bin/chromium-browser",
+					"/snap/bin/chromium",
+				];
+	const pathNames = browser === "helium"
+		? process.platform === "win32" ? ["helium.exe"] : ["helium", "helium-browser"]
+		: process.platform === "win32" ? ["chrome.exe"] : ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+	const pathCandidates = (process.env.PATH ?? "")
+		.split(path.delimiter)
+		.filter(Boolean)
+		.flatMap((directory) => pathNames.map((name) => path.join(directory, name)));
+	return [...new Set([...platformCandidates.filter((candidate): candidate is string => Boolean(candidate)), ...pathCandidates])];
+}
+
+async function managedBrowserExecutable(browser: "helium" | "chrome"): Promise<string> {
+	const candidates = managedBrowserExecutableCandidates(browser);
+	for (const candidate of candidates) {
+		try {
+			await access(candidate, fsConstants.X_OK);
+			return candidate;
+		} catch {
+			// Try the next platform-appropriate installation location.
+		}
+	}
+	const overrideName = browser === "helium" ? "PI_COMPUTER_USE_HELIUM_EXECUTABLE" : "PI_COMPUTER_USE_CHROME_EXECUTABLE";
+	if (trimOrUndefined(process.env[overrideName])) {
+		throw new Error(`${browser} executable from ${overrideName} was not found or is not executable: ${candidates[0]}.`);
+	}
+	throw new Error(`${browser} executable was not found. Set ${overrideName} to its absolute path.`);
 }
 
 function freeTcpPort(): Promise<number> {
@@ -2006,10 +2187,7 @@ async function waitForCdpPort(port: number, signal?: AbortSignal): Promise<void>
 // and sets PI_COMPUTER_USE_CDP_PORT for subsequent CDP context discovery.
 async function performLaunchBrowser(params: LaunchBrowserParams, signal?: AbortSignal): Promise<AgentToolResult<BrowserObservationDetails>> {
 	const browser = getComputerUseConfig().managed_browser;
-	const executable = managedBrowserExecutable(browser);
-	await access(executable, fsConstants.X_OK).catch(() => {
-		throw new Error(`${browser} executable was not found at ${executable}.`);
-	});
+	const executable = await managedBrowserExecutable(browser);
 	const port = await freeTcpPort();
 	const requestedUrl = trimOrUndefined(params.url);
 	if (requestedUrl && !/^https?:\/\//i.test(requestedUrl)) throw new Error("launch_browser.url must be an absolute HTTP(S) URL.");
@@ -2131,7 +2309,7 @@ export const executeObserve = makeToolExecutor("observe_ui", performObserve);
 export const executeSearchUi = makeToolExecutor("search_ui", performSearchUi);
 export const executeExpandUi = makeToolExecutor("expand_ui", performExpandUi);
 export const executeInspectUi = makeToolExecutor("inspect_ui", performInspectUi);
-export const executeAct = makeToolExecutor<ActParams, ComputerUseDetails | BrowserObservationDetails>("act_ui", performAct);
+export const executeAct = makeToolExecutor<ActParams, ComputerUseDetails | TerminalDesktopActionDetails | BrowserObservationDetails>("act_ui", performAct);
 export const executeNavigateBrowser = makeToolExecutor("navigate_browser", performNavigateBrowser);
 export const executeEvaluateBrowser = makeToolExecutor("evaluate_browser", performEvaluateBrowser);
 export const executeLaunchBrowser = makeToolExecutor("launch_browser", performLaunchBrowser);

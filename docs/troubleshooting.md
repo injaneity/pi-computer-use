@@ -2,7 +2,19 @@
 
 ## Platform setup
 
-macOS uses an installed helper app and TCC permissions. Windows support uses the active desktop session and Windows accessibility/input APIs; it does not use the macOS helper app or TCC permission flow.
+macOS uses an installed helper app and TCC permissions. Windows uses the active desktop session. Linux uses a per-user helper and the graphical session's AT-SPI2 bus.
+
+## Linux accessibility is unavailable
+
+Run Pi as the same user and inside the same graphical session as the target apps. Check the bus with:
+
+```bash
+busctl --user get-property org.a11y.Bus /org/a11y/bus org.a11y.Bus Address
+```
+
+If it is missing, install or enable your distribution's AT-SPI2 services and restart the graphical login session. Reinstall the helper with `node scripts/setup-helper.mjs --platform linux --runtime`; for development use `npm run build:linux` followed by `node scripts/setup-helper.mjs --platform linux --force`.
+
+AT-SPI semantic presses/clicks and editable-text replacement are attempted first on Linux. X11 also supports window capture plus non-headless EWMH focus and XTEST pointer/keyboard/scroll/drag fallback. Strict headless, `ax_only`, and `background` policies block XTEST/focus. Native Wayland remains semantic-only. Diagnostics may read portal version and capability properties, but never creates or starts a portal session. Interactive portal capture and input dispatch are disabled, so installing a portal backend alone does not enable them.
 
 ## macOS helper app is missing
 
@@ -98,6 +110,8 @@ If `browser_use` is disabled, enable it in either config file:
   "browser_use": true
 }
 ```
+
+If `launch_browser` cannot find the selected browser, set `PI_COMPUTER_USE_CHROME_EXECUTABLE` or `PI_COMPUTER_USE_HELIUM_EXECUTABLE` to an executable absolute path. A manual Chromium CDP launch needs both `--remote-debugging-port` and a non-default `--user-data-dir`.
 
 ## Strict accessibility mode blocks an action
 

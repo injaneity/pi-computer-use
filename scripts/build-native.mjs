@@ -13,6 +13,8 @@ const macosSourcePaths = [
 	"bridge.swift",
 ].map((file) => path.join(rootDir, "native", "macos", file));
 const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
+const linuxCrateDir = path.join(rootDir, "native", "linux", "bridge-rs");
+const linuxTargets = { x64: "x86_64-unknown-linux-gnu", arm64: "aarch64-unknown-linux-gnu" };
 const archTriples = {
 	arm64: "arm64-apple-macosx",
 	x64: "x86_64-apple-macosx",
@@ -177,6 +179,47 @@ async function buildWindowsHelper(prebuiltOutput) {
 	console.log(`Built Windows helper at ${prebuiltDest}`);
 }
 
+function linuxBinaryPath(crateDir, target) {
+	const targetDir = target ? path.join("target", target) : "target";
+	return path.join(crateDir, targetDir, "release", "linux-bridge");
+}
+
+function defaultLinuxOutputPath(arch) {
+	return path.join(rootDir, "prebuilt", "linux", arch, "linux-bridge");
+}
+
+async function buildLinuxForArch(arch, outputPath) {
+	const explicitTarget = getArg("--target");
+	if (explicitTarget && !explicitTarget.includes("linux")) throw new Error(`Linux builds require a Linux --target triple, got ${explicitTarget}.`);
+	const target = explicitTarget ?? (process.platform === "linux" && process.arch === arch ? undefined : linuxTargets[arch]);
+	console.log(`Building Linux helper for ${arch} with cargo...`);
+	const cargoArgs = ["build", "--release", "--manifest-path", path.join(linuxCrateDir, "Cargo.toml")];
+	if (target) cargoArgs.push("--target", target);
+	await run("cargo", cargoArgs);
+	const cargoOutput = linuxBinaryPath(linuxCrateDir, target);
+	const header = await fs.readFile(cargoOutput).then((data) => data.subarray(0, 20));
+	if (header.length < 20 || !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) throw new Error(`Cargo output is not a Linux ELF executable: ${cargoOutput}`);
+	const machine = header.readUInt16LE(18);
+	const expectedMachine = arch === "x64" ? 0x3e : 0xb7;
+	if (machine !== expectedMachine) throw new Error(`Cargo output architecture does not match ${arch}: ${cargoOutput}`);
+	await fs.mkdir(path.dirname(outputPath), { recursive: true });
+	await fs.copyFile(cargoOutput, outputPath);
+	await fs.chmod(outputPath, 0o755);
+	console.log(`Built Linux helper at ${outputPath}`);
+}
+
+async function buildLinuxHelper() {
+	const arch = normalizeArch(getArg("--arch") ?? process.arch);
+	if (arch === "universal") throw new Error("Linux does not support --arch universal. Use x64, arm64, or all.");
+	const outputArg = getArg("--output");
+	if (arch === "all") {
+		if (outputArg) throw new Error("--output is not supported with --arch all. Use a single architecture for one output.");
+		for (const nextArch of ["x64", "arm64"]) await buildLinuxForArch(nextArch, defaultLinuxOutputPath(nextArch));
+		return;
+	}
+	await buildLinuxForArch(arch, outputArg ? path.resolve(process.cwd(), outputArg) : defaultLinuxOutputPath(arch));
+}
+
 async function main() {
 	const explicitPlatform = getArg("--platform");
 
@@ -185,15 +228,23 @@ async function main() {
 		return;
 	}
 
+	if (explicitPlatform === "linux") {
+		await buildLinuxHelper();
+		return;
+	}
+
 	if (explicitPlatform === "darwin") {
 		// Fall through to macOS build logic below.
 	} else if (process.platform === "win32") {
 		await buildWindowsHelper(getArg("--output"));
 		return;
+	} else if (process.platform === "linux") {
+		await buildLinuxHelper();
+		return;
 	} else if (process.platform !== "darwin") {
 		console.log(
 			`Skipping native build: unsupported platform "${process.platform}". ` +
-				"Use --platform windows to build the Windows helper, or run on macOS for the macOS helper.",
+				"Use --platform windows or --platform linux to build a helper, or run on macOS for the macOS helper.",
 		);
 		return;
 	}

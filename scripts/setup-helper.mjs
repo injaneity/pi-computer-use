@@ -2,10 +2,9 @@
 
 import { createHash } from "node:crypto";
 import { spawn, execFile as execFileCallback } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { constants as fsConstants, createWriteStream, realpathSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +19,8 @@ const helperSourceHashPath = path.join(helperAppPath, "Contents", "Resources", "
 const helperBundleId = "com.injaneity.pi-computer-use";
 const windowsCrateDir = path.join(rootDir, "native", "windows", "bridge-rs");
 const windowsHelperDestPath = process.env.PI_COMPUTER_USE_WINDOWS_HELPER_PATH || path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
+const linuxCrateDir = path.join(rootDir, "native", "linux", "bridge-rs");
+const linuxHelperDestPath = process.env.PI_COMPUTER_USE_LINUX_HELPER_PATH || path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "linux-bridge");
 const helperSourcePaths = ["agent_cursor.swift", "agent_cursor_motion.swift", "bridge.swift"]
 	.map((file) => path.join(rootDir, "native", "macos", file));
 const packageJsonPath = path.join(rootDir, "package.json");
@@ -30,6 +31,7 @@ const localSigningLockPath = path.join(os.tmpdir(), `pi-computer-use-local-signi
 const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
 const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
+const allowLinuxBuildFallback = args.has("--allow-build") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
 const allowAdhocUpdate = args.has("--allow-adhoc-update") || process.env.PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE === "1";
 
 function getArg(name) {
@@ -493,10 +495,34 @@ async function setupWindowsHelper() {
 	);
 }
 
+async function setupLinuxHelper() {
+	const arch = normalizeArch(process.arch);
+	const prebuiltPath = path.join(rootDir, "prebuilt", "linux", arch, "linux-bridge");
+	if (await exists(prebuiltPath)) {
+		const { changed } = await copyIfChanged(prebuiltPath, linuxHelperDestPath);
+		console.log(changed ? `[pi-computer-use] installed Linux helper (${arch}) from prebuilt to ${linuxHelperDestPath}` : `[pi-computer-use] Linux helper already up to date at ${linuxHelperDestPath}`);
+		return;
+	}
+	if (allowLinuxBuildFallback) {
+		if (process.platform !== "linux") throw new Error("The Linux helper source fallback must be built on Linux.");
+		console.log("[pi-computer-use] Linux prebuilt helper missing; attempting source build with cargo...");
+		await run("cargo", ["build", "--release", "--manifest-path", path.join(linuxCrateDir, "Cargo.toml")]);
+		const cargoOutput = path.join(linuxCrateDir, "target", "release", "linux-bridge");
+		const { changed } = await copyIfChanged(cargoOutput, linuxHelperDestPath);
+		console.log(changed ? `[pi-computer-use] built and installed Linux helper at ${linuxHelperDestPath}` : `[pi-computer-use] Linux helper already up to date at ${linuxHelperDestPath}`);
+		return;
+	}
+	throw new Error(`No Linux prebuilt helper found for ${arch} at ${prebuiltPath}. Run node scripts/build-native.mjs --platform linux to build, or set PI_COMPUTER_USE_ALLOW_BUILD=1 to build at install time.`);
+}
+
 async function setup() {
 	const explicitPlatform = getArg("--platform");
 	if (explicitPlatform === "windows" || (!explicitPlatform && process.platform === "win32")) {
 		await setupWindowsHelper();
+		return;
+	}
+	if (explicitPlatform === "linux" || (!explicitPlatform && process.platform === "linux")) {
+		await setupLinuxHelper();
 		return;
 	}
 
@@ -505,7 +531,7 @@ async function setup() {
 			console.warn("[pi-computer-use] skipping helper setup: platform is not macOS.");
 			return;
 		}
-		throw new Error("pi-computer-use helper is only supported on macOS. Use --platform windows on Windows.");
+		throw new Error("pi-computer-use helper is supported on macOS, Windows, and Linux. Use the matching --platform option.");
 	}
 
 	const arch = normalizeArch(process.arch);
@@ -579,7 +605,7 @@ async function setup() {
 	);
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] && realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) setup().catch((error) => {
 	if (isPostinstall) {
 		console.warn(`[pi-computer-use] postinstall helper setup skipped: ${error instanceof Error ? error.message : String(error)}`);

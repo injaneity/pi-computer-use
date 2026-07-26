@@ -13,6 +13,7 @@ src/outline.ts                   Outline parsing, folding, search, and ref mappi
 src/note.ts                      Disposable running-note generation
 native/macos/bridge.swift        macOS helper for AX, capture, permissions, and input
 native/windows/                 Windows backend/helper code when developing on Windows
+native/linux/bridge-rs/         Linux AT-SPI2 helper (Rust)
 scripts/build-native.mjs         macOS helper build script
 scripts/setup-helper.mjs         macOS helper install script
 scripts/check-invariants.mjs     Architecture invariant checks
@@ -86,6 +87,8 @@ Existing writable system-wide installs remain at `/Applications/pi-computer-use.
 
 On Windows, development uses the Windows platform backend/helper and the active desktop session rather than the macOS app bundle or TCC permission model.
 
+On Linux, install Rust/Cargo and run `npm run build:linux`, `npm run test:linux`, and `npm run test:linux-scripts`. Live checks must run inside the target user's graphical D-Bus session. The helper installs to `~/.pi/agent/helpers/pi-computer-use/linux-bridge`.
+
 ## Release signing
 
 This section applies to macOS releases. macOS TCC keys Accessibility and Screen Recording grants to an app's code-signing identity. Ad-hoc and locally self-signed development builds may require permission review whenever their native code changes. Only Developer ID-signed release bundles should be treated as having a stable update identity.
@@ -104,3 +107,17 @@ Release setup:
 4. Push a `v*` tag or run the `Release` workflow manually.
 
 For macOS, `.github/workflows/publish-npm.yml` builds the universal helper, signs it, optionally notarizes it, stages a draft GitHub Release, injects the same signed helper app into the npm package, publishes npm, and only then publishes the GitHub Release.
+
+For an isolated X11 acceptance run, install Xvfb, xfwm4, the AT-SPI2 runtime,
+xfce4-appfinder, and xfce4-terminal, then build and install the helper before
+running the explicitly gated live suite:
+
+```bash
+npm run build:linux
+node scripts/setup-helper.mjs --platform linux
+npm run test:linux-live
+```
+
+The harness creates its own D-Bus and Xvfb session. It fails rather than
+silently passing when the live flag, helper, accessibility bridge, or required
+X11 applications are unavailable.

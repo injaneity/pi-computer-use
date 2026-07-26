@@ -4,7 +4,7 @@
   <img src="./assets/logo/logo3.png" width="50%" alt="pi-computer-use">
 </p>
 
-`pi-computer-use` lets AI agents use desktop apps on macOS and Windows.
+`pi-computer-use` lets AI agents use desktop apps on macOS, Windows, and Linux.
 
 The macOS helper requires macOS 14 or newer.
 
@@ -56,6 +56,8 @@ The macOS setup flow registers the helper first, so it should already appear in 
 
 On Windows, use an interactive desktop session. Windows support uses the platform accessibility APIs and does not use the macOS helper app or TCC permission flow.
 
+On Linux, run Pi inside the target user's graphical session with a working AT-SPI2 accessibility bus. AT-SPI semantic operations remain background-first. X11 additionally supports EWMH window metadata/focus, window capture, and policy-gated XTEST physical input; strict headless/background policies never use focus or XTEST. Native Wayland remains semantic-only; diagnostics reads portal capability properties without creating a session, and interactive portal use is disabled. See [Linux support](./docs/linux.md) for the exact capability matrix and portal status.
+
 Use `/computer-use` inside Pi to show the active configuration and where it came from.
 
 ## Main tools
@@ -78,6 +80,7 @@ See [docs/usage.md](./docs/usage.md) for the full tool reference.
 - [Configuration](./docs/configuration.md)
 - [Development](./docs/development.md)
 - [Troubleshooting](./docs/troubleshooting.md)
+- [Linux support](./docs/linux.md)
 - [Contributing](./CONTRIBUTING.md)
 
 ## Development status

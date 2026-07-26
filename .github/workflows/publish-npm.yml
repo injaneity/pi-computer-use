@@ -1,7 +1,7 @@
 name: Release
 
 # Release order matters:
-# 1. Build helper artifacts from the tagged source (signed macOS app, Windows exe).
+# 1. Build helper artifacts from the tagged source (signed macOS app, Windows exe, Linux x64/arm64 binaries).
 # 2. Stage a draft GitHub Release with those exact helper assets.
 # 3. Publish the npm package with those same helper artifacts injected into prebuilt/.
 # 4. Publish the GitHub Release only after npm succeeds.
@@ -208,10 +208,64 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  build-linux-helper:
+    name: Build Linux helper (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run Linux checks
+        run: npm run typecheck && npm run test:linux && npm run test:linux-scripts
+
+      - name: Build Linux helper
+        run: node scripts/build-native.mjs --platform linux --arch "${{ matrix.arch }}"
+
+      - name: Validate and package Linux helper
+        run: |
+          set -euo pipefail
+          BINARY="prebuilt/linux/${{ matrix.arch }}/linux-bridge"
+          test -x "$BINARY"
+          file "$BINARY" | grep -q 'ELF 64-bit'
+          mkdir -p release-assets
+          cp "$BINARY" "release-assets/linux-bridge-${{ matrix.arch }}"
+          chmod 755 "release-assets/linux-bridge-${{ matrix.arch }}"
+
+      - name: Upload Linux helper payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-helper-${{ matrix.arch }}-${{ env.RELEASE_TAG }}
+          path: release-assets/linux-bridge-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+
   stage-github-release:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.assets_only }}
     runs-on: ubuntu-latest
     needs:
+      - build-linux-helper
       - build-signed-helper
       - build-windows-helper
     permissions:
@@ -236,6 +290,13 @@ jobs:
           name: windows-helper-${{ env.RELEASE_TAG }}
           path: release-assets
 
+      - name: Download Linux helper payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-helper-*-${{ env.RELEASE_TAG }}
+          path: release-assets
+          merge-multiple: true
+
       - name: Validate release notes
         run: |
           set -euo pipefail
@@ -252,10 +313,13 @@ jobs:
           cd release-assets
           test -f pi-computer-use.app.zip
           test -f windows-bridge.exe
+          test -f linux-bridge-x64
+          test -f linux-bridge-arm64
           test -f SHA256SUMS
           sha256sum -c SHA256SUMS
-          sha256sum windows-bridge.exe >> SHA256SUMS
+          sha256sum windows-bridge.exe linux-bridge-x64 linux-bridge-arm64 >> SHA256SUMS
           sha256sum -c SHA256SUMS
+          test "$(awk 'NF == 2 { print $2 }' SHA256SUMS | sort -u | wc -l)" -eq 4
 
       - name: Create draft GitHub Release
         env:
@@ -283,9 +347,11 @@ jobs:
             --notes-file "../$RELEASE_NOTES" \
             pi-computer-use.app.zip \
             windows-bridge.exe \
+            linux-bridge-x64 \
+            linux-bridge-arm64 \
             SHA256SUMS
 
-          expected_asset_names="$(printf '%s\n' SHA256SUMS pi-computer-use.app.zip windows-bridge.exe | sort)"
+          expected_asset_names="$(printf '%s\n' SHA256SUMS pi-computer-use.app.zip windows-bridge.exe linux-bridge-x64 linux-bridge-arm64 | sort)"
           actual_asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
           if [[ "$actual_asset_names" != "$expected_asset_names" ]]; then
             echo "::error::Draft GitHub Release asset set does not match expected files."
@@ -298,6 +364,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-signed-helper
+      - build-linux-helper
       - build-windows-helper
     permissions:
       actions: read
@@ -314,6 +381,13 @@ jobs:
         with:
           name: windows-helper-${{ env.RELEASE_TAG }}
           path: release-assets
+      - name: Download Linux helper payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-helper-*-${{ env.RELEASE_TAG }}
+          path: release-assets
+          merge-multiple: true
+
 
       - name: Replace assets on existing GitHub Release
         env:
@@ -324,17 +398,22 @@ jobs:
           cd release-assets
           test -f pi-computer-use.app.zip
           test -f windows-bridge.exe
+          test -f linux-bridge-x64
+          test -f linux-bridge-arm64
           test -f SHA256SUMS
           sha256sum -c SHA256SUMS
-          sha256sum windows-bridge.exe >> SHA256SUMS
+          sha256sum windows-bridge.exe linux-bridge-x64 linux-bridge-arm64 >> SHA256SUMS
           sha256sum -c SHA256SUMS
+          test "$(awk 'NF == 2 { print $2 }' SHA256SUMS | sort -u | wc -l)" -eq 4
           gh release upload "$RELEASE_TAG" \
             pi-computer-use.app.zip \
             windows-bridge.exe \
+            linux-bridge-x64 \
+            linux-bridge-arm64 \
             SHA256SUMS \
             --clobber
 
-          expected_asset_names="$(printf '%s\n' SHA256SUMS pi-computer-use.app.zip windows-bridge.exe | sort)"
+          expected_asset_names="$(printf '%s\n' SHA256SUMS pi-computer-use.app.zip windows-bridge.exe linux-bridge-x64 linux-bridge-arm64 | sort)"
           actual_asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
           if [[ "$actual_asset_names" != "$expected_asset_names" ]]; then
             echo "::error::GitHub Release asset set does not match expected files."
@@ -378,6 +457,13 @@ jobs:
           name: windows-helper-${{ env.RELEASE_TAG }}
           path: prebuilt/windows
 
+      - name: Download Linux helper payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-helper-*-${{ env.RELEASE_TAG }}
+          path: release-linux
+          merge-multiple: true
+
       - name: Inject helper artifacts into npm package tree
         run: |
           set -euo pipefail
@@ -386,6 +472,14 @@ jobs:
           /usr/bin/ditto -x -k release-assets/pi-computer-use.app.zip prebuilt/macos/universal
           codesign --verify --strict prebuilt/macos/universal/pi-computer-use.app
           test -f prebuilt/windows/windows-bridge.exe
+          mkdir -p prebuilt/linux/x64 prebuilt/linux/arm64
+          cp release-linux/linux-bridge-x64 prebuilt/linux/x64/linux-bridge
+          cp release-linux/linux-bridge-arm64 prebuilt/linux/arm64/linux-bridge
+          chmod 755 prebuilt/linux/x64/linux-bridge prebuilt/linux/arm64/linux-bridge
+          test -x prebuilt/linux/x64/linux-bridge
+          test -x prebuilt/linux/arm64/linux-bridge
+          test "$(shasum -a 256 prebuilt/linux/x64/linux-bridge | awk '{ print $1 }')" = "$(shasum -a 256 release-linux/linux-bridge-x64 | awk '{ print $1 }')"
+          test "$(shasum -a 256 prebuilt/linux/arm64/linux-bridge | awk '{ print $1 }')" = "$(shasum -a 256 release-linux/linux-bridge-arm64 | awk '{ print $1 }')"
 
       - name: Run checks
         run: npm test && npm run test:platform && npm run test:windows-scripts
@@ -425,6 +519,7 @@ jobs:
       - build-windows-helper
       - stage-github-release
       - publish-npm
+      - build-linux-helper
       - publish-github-release
     if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
     permissions:
