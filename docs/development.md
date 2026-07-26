@@ -107,3 +107,17 @@ Release setup:
 4. Push a `v*` tag or run the `Release` workflow manually.
 
 For macOS, `.github/workflows/publish-npm.yml` builds the universal helper, signs it, optionally notarizes it, stages a draft GitHub Release, injects the same signed helper app into the npm package, publishes npm, and only then publishes the GitHub Release.
+
+For an isolated X11 acceptance run, install Xvfb, xfwm4, the AT-SPI2 runtime,
+xfce4-appfinder, and xfce4-terminal, then build and install the helper before
+running the explicitly gated live suite:
+
+```bash
+npm run build:linux
+node scripts/setup-helper.mjs --platform linux
+npm run test:linux-live
+```
+
+The harness creates its own D-Bus and Xvfb session. It fails rather than
+silently passing when the live flag, helper, accessibility bridge, or required
+X11 applications are unavailable.

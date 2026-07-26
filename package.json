@@ -68,7 +68,8 @@
 		"build:windows": "node scripts/build-native.mjs --platform windows",
 		"build:linux": "node scripts/build-native.mjs --platform linux",
 		"test:linux": "tsx scripts/check-platform-linux.mjs",
-		"test:linux-scripts": "node scripts/check-linux-build-scripts.mjs"
+		"test:linux-scripts": "node scripts/check-linux-build-scripts.mjs",
+		"test:linux-live": "PI_CU_LIVE=1 tsx scripts/check-linux-live.mjs"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
