@@ -291,7 +291,7 @@ jobs:
           path: release-assets
 
       - name: Download Linux helper payloads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: linux-helper-*-${{ env.RELEASE_TAG }}
           path: release-assets
@@ -382,7 +382,7 @@ jobs:
           name: windows-helper-${{ env.RELEASE_TAG }}
           path: release-assets
       - name: Download Linux helper payloads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: linux-helper-*-${{ env.RELEASE_TAG }}
           path: release-assets
@@ -458,7 +458,7 @@ jobs:
           path: prebuilt/windows
 
       - name: Download Linux helper payloads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: linux-helper-*-${{ env.RELEASE_TAG }}
           path: release-linux
