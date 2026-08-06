@@ -254,7 +254,7 @@ jobs:
           chmod 755 "release-assets/linux-bridge-${{ matrix.arch }}"
 
       - name: Upload Linux helper payload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-helper-${{ matrix.arch }}-${{ env.RELEASE_TAG }}
           path: release-assets/linux-bridge-${{ matrix.arch }}
