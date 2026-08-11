@@ -137,8 +137,13 @@ async function commandOutput(command, commandArgs) {
 	return stdout;
 }
 
+// Hard cap so a stalled GitHub release download aborts instead of hanging the
+// postinstall forever. The helper app is ~0.5 MB, so 120 s is generous even on
+// a poor link — and it beats an indefinite hang that makes `pi update` time out.
+const DOWNLOAD_TIMEOUT_MS = 120_000;
+
 async function downloadFile(url, outputPath) {
-	const response = await fetch(url);
+	const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
 	if (!response.ok) {
 		throw new Error(`HTTP ${response.status} ${response.statusText}`);
 	}
@@ -149,7 +154,7 @@ async function downloadFile(url, outputPath) {
 }
 
 async function releaseChecksums(tag) {
-	const response = await fetch(githubReleaseUrl(tag, "SHA256SUMS"));
+	const response = await fetch(githubReleaseUrl(tag, "SHA256SUMS"), { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
 	if (!response.ok) return new Map();
 	const text = await response.text();
 	const checksums = new Map();
