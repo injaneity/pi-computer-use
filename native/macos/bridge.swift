@@ -779,17 +779,15 @@ final class Bridge {
 	/// two disagree, the preflight boolean is the one lying.
 	private func screenRecordingCapturable() -> Bool {
 		if #available(macOS 14.0, *) {
-			let semaphore = DispatchSemaphore(value: 0)
+			let sema = DispatchSemaphore(value: 0)
 			let capturable = Box<Bool>(false)
-			Task {
-				defer { semaphore.signal() }
-				if let shareable = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) {
+			SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { shareable, error in
+				if let shareable = shareable {
 					capturable.value = !shareable.displays.isEmpty
 				}
+				sema.signal()
 			}
-			if semaphore.wait(timeout: .now() + .seconds(3)) == .timedOut {
-				return false
-			}
+			_ = sema.wait(timeout: .now() + .seconds(5))
 			return capturable.value
 		}
 		if #available(macOS 10.15, *) {
@@ -1227,7 +1225,7 @@ final class Bridge {
 	private func listWindows(pid: Int32) throws -> [[String: Any]] {
 		ensureEnhancedAccessibility(pid: pid)
 		let appElement = AXUIElementCreateApplication(pid)
-		AXUIElementSetMessagingTimeout(appElement, 1.0)
+		AXUIElementSetMessagingTimeout(appElement, 0.1)
 		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
 		let candidates = cgWindowCandidates(pid: pid)
 		let pairings = windowPairings(windows: windows, candidates: candidates)
@@ -2911,7 +2909,7 @@ final class Bridge {
 	}
 
 	private func cgWindowCandidates(pid: Int32) -> [CGWindowCandidate] {
-		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+		guard let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
 			return []
 		}
 
@@ -2951,7 +2949,7 @@ final class Bridge {
 	}
 
 	private func cgBroadRootOwners() -> [CGWindowOwnerSummary] {
-		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+		guard let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
 			return []
 		}
 		let popupLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
@@ -2968,7 +2966,7 @@ final class Bridge {
 	}
 
 	private func cgPopupMenuCandidates(pid: Int32?) -> [CGWindowCandidate] {
-		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+		guard let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
 			return []
 		}
 		let popupLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
