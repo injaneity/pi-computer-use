@@ -18,6 +18,7 @@ import { currentPlatformBackend } from "./platform/index.ts";
 import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformActRequest, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformRoot as HelperWindow } from "./platform/types.ts";
 import type { PermissionStatus } from "./permissions.ts";
 import { ResourceScheduler } from "./runtime.ts";
+import { scoreWindow, shouldPreferForegroundModalWindow } from "./root-selection.ts";
 import { SavedStates, type CurrentCapture, type CurrentTarget, type OperationState } from "./state.ts";
 import { changesBetween, renderChanges, stabilizeRefs } from "./view.ts";
 export type { ActParams, EvaluateBrowserParams, ExpandUiParams, ImageMode, InspectUiParams, LaunchBrowserParams, FindParams, MouseButtonName, NavigateBrowserParams, ObserveParams, ObserveTargetParams, ReadTextParams, RootSelector, SearchUiParams, StateTargetParams, UiAction, WaitForParams } from "./contract.ts";
@@ -711,18 +712,6 @@ function choosePreferredWindow(windows: HelperWindow[], appName: string): Helper
 	return scored[0];
 }
 
-function scoreWindow(window: HelperWindow): number {
-	let score = 0;
-	if (window.isModal) score += 180;
-	if (window.isFocused) score += 100;
-	if (window.isMain) score += 80;
-	if (!window.isMinimized) score += 40;
-	if (window.isOnscreen) score += 20;
-	if (window.windowId && window.windowId > 0) score += 10;
-	if (window.title.trim().length > 0) score += 2;
-	return score;
-}
-
 function summarizeWindowCandidate(window: HelperWindow): string {
 	const flags = [
 		window.isFocused ? "focused" : undefined,
@@ -854,13 +843,6 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 	const resolved = toResolvedTarget(app, helperRoot);
 	setCurrentTarget(resolved);
 	return resolved;
-}
-
-function shouldPreferForegroundModalWindow(current: HelperWindow, candidate: HelperWindow): boolean {
-	if (candidate.windowId === current.windowId && candidate.windowRef === current.windowRef) return false;
-	if (!candidate.isOnscreen || candidate.isMinimized) return false;
-	if (candidate.isModal) return scoreWindow(candidate) >= scoreWindow(current);
-	return false;
 }
 
 async function resolveCurrentTarget(signal?: AbortSignal): Promise<ResolvedTarget> {
