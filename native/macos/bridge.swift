@@ -3136,10 +3136,7 @@ final class Bridge {
 
 					let filter = SCContentFilter(desktopIndependentWindow: window)
 					let config = SCStreamConfiguration()
-					// SCScreenshotManager always renders at the configured dimensions;
-					// SCStreamConfiguration's defaults are a display-sized 1920x1080.
-					// Size single-window captures to the source window so screenshot
-					// pixels and accessibility geometry share one coordinate space.
+					// Avoid ScreenCaptureKit's default 1920x1080 canvas for window captures.
 					let scale = displayScaleFactor(for: window.frame)
 					config.width = max(1, Int((window.frame.width * scale).rounded()))
 					config.height = max(1, Int((window.frame.height * scale).rounded()))

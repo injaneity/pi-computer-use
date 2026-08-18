@@ -19,9 +19,7 @@ export function scoreWindow(window: RankedRoot): number {
 export function shouldPreferForegroundModalWindow(current: RankedRoot, candidate: RankedRoot): boolean {
 	if (candidate.windowId === current.windowId && candidate.windowRef === current.windowRef) return false;
 	if (!candidate.isOnscreen || candidate.isMinimized || !candidate.isModal) return false;
-	// Preserve the explicitly observed root unless a modal is actually in front
-	// of it. Some apps expose their long-lived main window as AXDialog; modality
-	// alone must not redirect a state-owned action to that background window.
+	// AXDialog can describe a background main window, so modality alone is insufficient.
 	const candidateIsInFront = candidate.isFocused || candidate.zOrder < current.zOrder;
 	return candidateIsInFront && scoreWindow(candidate) >= scoreWindow(current);
 }
