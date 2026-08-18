@@ -137,8 +137,10 @@ async function commandOutput(command, commandArgs) {
 	return stdout;
 }
 
+const DOWNLOAD_TIMEOUT_MS = 120_000;
+
 async function downloadFile(url, outputPath) {
-	const response = await fetch(url);
+	const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
 	if (!response.ok) {
 		throw new Error(`HTTP ${response.status} ${response.statusText}`);
 	}
@@ -149,7 +151,7 @@ async function downloadFile(url, outputPath) {
 }
 
 async function releaseChecksums(tag) {
-	const response = await fetch(githubReleaseUrl(tag, "SHA256SUMS"));
+	const response = await fetch(githubReleaseUrl(tag, "SHA256SUMS"), { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
 	if (!response.ok) return new Map();
 	const text = await response.text();
 	const checksums = new Map();
