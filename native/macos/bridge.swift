@@ -787,7 +787,7 @@ final class Bridge {
 				}
 				sema.signal()
 			}
-			_ = sema.wait(timeout: .now() + .seconds(5))
+			guard sema.wait(timeout: .now() + .seconds(5)) == .success else { return false }
 			return capturable.value
 		}
 		if #available(macOS 10.15, *) {
@@ -911,7 +911,7 @@ final class Bridge {
 		pid > 0 && kill(pid, 0) == 0
 	}
 
-	private func listApps() -> [[String: Any]] {
+	private func listApps(cgEntries: [[String: Any]]? = nil) -> [[String: Any]] {
 		let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
 		let apps = NSWorkspace.shared.runningApplications.filter { app in
 			// Computer-use targets are windows, not Dock-visible applications. Some
@@ -939,7 +939,7 @@ final class Bridge {
 		// even when their windows are visible and AX-controllable. Add CGWindow
 		// owners as acquisition candidates so callers can still resolve by pid/title
 		// and then build the normal AX scene through listWindows(pid:).
-		for owner in cgWindowOwners() where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
+		for owner in cgWindowOwners(entries: cgEntries) where owner.pid != getpid() && !seen.contains(owner.pid) && pidIsAlive(owner.pid) {
 			seen.insert(owner.pid)
 			output.append([
 				"appName": owner.name,
@@ -1147,8 +1147,8 @@ final class Bridge {
 		["pairing": ["confidence": pairing.confidence, "score": pairing.score], "sheetCount": sheetCount]
 	}
 
-	private func broadRootCandidateApps() -> [[String: Any]] {
-		cgBroadRootOwners().compactMap { owner in
+	private func broadRootCandidateApps(entries: [[String: Any]]) -> [[String: Any]] {
+		cgBroadRootOwners(entries: entries).compactMap { owner in
 			guard owner.pid != getpid(), pidIsAlive(owner.pid) else { return nil }
 			var app: [String: Any] = ["appName": owner.name, "pid": Int(owner.pid)]
 			if let bundleId = NSRunningApplication(processIdentifier: owner.pid)?.bundleIdentifier {
@@ -1160,22 +1160,23 @@ final class Bridge {
 
 	private func listRoots(pid: Int32?, title: String? = nil) throws -> [String: Any] {
 		let requestedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+		let entries = allCGWindowEntries()
+		let isBroadDiscovery = pid == nil && requestedTitle.isEmpty
 		let apps: [[String: Any]]
 		if let pid {
 			apps = [["pid": Int(pid)]]
-		} else if !requestedTitle.isEmpty,
-			let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] {
+		} else if !requestedTitle.isEmpty {
 			let matchingPids = Set(entries.compactMap { entry -> Int32? in
 				let candidate = ((entry[kCGWindowName as String] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 				guard candidate == requestedTitle || candidate.contains(requestedTitle) else { return nil }
 				return (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
 			})
-			apps = listApps().filter { app in
+			apps = listApps(cgEntries: entries).filter { app in
 				guard let rawPid = app["pid"] as? Int else { return false }
 				return matchingPids.contains(Int32(rawPid))
 			}
 		} else {
-			apps = broadRootCandidateApps()
+			apps = broadRootCandidateApps(entries: entries)
 		}
 		var roots: [[String: Any]] = []
 		for app in apps {
@@ -1183,14 +1184,14 @@ final class Bridge {
 			let appPid = Int32(rawPid)
 			let appName = app["appName"] as? String ?? processName(pid: appPid) ?? "Unknown App"
 			let bundleId = app["bundleId"] as? String
-			for var root in (try? listWindows(pid: appPid)) ?? [] {
+			for var root in (try? listWindows(pid: appPid, cgEntries: entries, messagingTimeout: isBroadDiscovery ? 0.25 : 1.0)) ?? [] {
 				root["pid"] = rawPid
 				root["appName"] = appName
 				if let bundleId { root["bundleId"] = bundleId }
 				roots.append(root)
 			}
-			let popupCandidates = cgPopupMenuCandidates(pid: appPid)
-			let menuElements = popupCandidates.isEmpty ? [] : openMenuElements(pid: appPid)
+			let popupCandidates = cgPopupMenuCandidates(pid: appPid, entries: entries)
+			let menuElements = popupCandidates.isEmpty ? [] : openMenuElements(pid: appPid, messagingTimeout: isBroadDiscovery ? 0.25 : 1.0)
 			for (index, candidate) in popupCandidates.enumerated() {
 				let menuElement = index < menuElements.count ? menuElements[index] : nil
 				let menuRef = menuElement.map { refStore.storeWindow($0) } ?? "cgmenu:\(candidate.windowId)"
@@ -1222,12 +1223,12 @@ final class Bridge {
 		return ["roots": roots]
 	}
 
-	private func listWindows(pid: Int32) throws -> [[String: Any]] {
+	private func listWindows(pid: Int32, cgEntries: [[String: Any]]? = nil, messagingTimeout: Float = 1.0) throws -> [[String: Any]] {
 		ensureEnhancedAccessibility(pid: pid)
 		let appElement = AXUIElementCreateApplication(pid)
-		AXUIElementSetMessagingTimeout(appElement, 0.1)
-		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
-		let candidates = cgWindowCandidates(pid: pid)
+		AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
+		let windows = Array(axElementArray(appElement, attribute: kAXWindowsAttribute as CFString).prefix(128))
+		let candidates = cgWindowCandidates(pid: pid, entries: cgEntries)
 		let pairings = windowPairings(windows: windows, candidates: candidates)
 
 		var output: [[String: Any]] = []
@@ -2470,7 +2471,7 @@ final class Bridge {
 
 		let appElement = AXUIElementCreateApplication(pid)
 		AXUIElementSetMessagingTimeout(appElement, 1.0)
-		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
+		let windows = Array(axElementArray(appElement, attribute: kAXWindowsAttribute as CFString).prefix(128))
 		guard !windows.isEmpty else { return nil }
 		guard let windowId else {
 			return windows.first
@@ -2880,10 +2881,12 @@ final class Bridge {
 		return CGRect(origin: origin, size: size)
 	}
 
-	private func cgWindowOwners() -> [CGWindowOwnerSummary] {
-		guard let entries = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
-			return []
-		}
+	private func allCGWindowEntries() -> [[String: Any]] {
+		(CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+	}
+
+	private func cgWindowOwners(entries suppliedEntries: [[String: Any]]? = nil) -> [CGWindowOwnerSummary] {
+		let entries = suppliedEntries ?? allCGWindowEntries()
 		var seen = Set<Int32>()
 		var owners: [CGWindowOwnerSummary] = []
 		for entry in entries {
@@ -2908,11 +2911,8 @@ final class Bridge {
 		windowInfo(windowId: windowId)?.pid
 	}
 
-	private func cgWindowCandidates(pid: Int32) -> [CGWindowCandidate] {
-		guard let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-			return []
-		}
-
+	private func cgWindowCandidates(pid: Int32, entries suppliedEntries: [[String: Any]]? = nil) -> [CGWindowCandidate] {
+		let entries = suppliedEntries ?? allCGWindowEntries()
 		var candidates: [CGWindowCandidate] = []
 		for (zOrder, entry) in entries.enumerated() {
 			guard let ownerPid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
@@ -2944,31 +2944,35 @@ final class Bridge {
 					zOrder: zOrder
 				)
 			)
+			if candidates.count == 128 { break }
 		}
 		return candidates
 	}
 
-	private func cgBroadRootOwners() -> [CGWindowOwnerSummary] {
-		guard let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-			return []
-		}
+	private func cgBroadRootOwners(entries: [[String: Any]]) -> [CGWindowOwnerSummary] {
 		let popupLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
 		var seen = Set<Int32>()
 		return entries.compactMap { entry -> CGWindowOwnerSummary? in
 			let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
 			guard layer == 0 || layer == popupLevel,
-				let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-				seen.insert(pid).inserted
+				let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
 			else { return nil }
+			if layer == popupLevel {
+				guard (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true else { return nil }
+			} else {
+				guard let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
+					let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+					bounds.width >= 100,
+					bounds.height >= 80
+				else { return nil }
+			}
+			guard seen.insert(pid).inserted else { return nil }
 			let name = (entry[kCGWindowOwnerName as String] as? String) ?? processName(pid: pid) ?? "Unknown App"
 			return CGWindowOwnerSummary(pid: pid, name: name)
 		}
 	}
 
-	private func cgPopupMenuCandidates(pid: Int32?) -> [CGWindowCandidate] {
-		guard let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-			return []
-		}
+	private func cgPopupMenuCandidates(pid: Int32?, entries: [[String: Any]]) -> [CGWindowCandidate] {
 		let popupLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
 		var candidates: [CGWindowCandidate] = []
 		for (zOrder, entry) in entries.enumerated() {
@@ -2981,14 +2985,17 @@ final class Bridge {
 				let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
 			else { continue }
 			let title = (entry[kCGWindowName as String] as? String) ?? ""
-			let isOnscreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? true
+			let isOnscreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false
+			guard isOnscreen else { continue }
 			candidates.append(CGWindowCandidate(windowId: windowNumber, title: title, bounds: bounds, isOnscreen: isOnscreen, layer: layer, zOrder: zOrder))
+			if candidates.count == 128 { break }
 		}
 		return candidates
 	}
 
-	private func openMenuElements(pid: Int32) -> [AXUIElement] {
+	private func openMenuElements(pid: Int32, messagingTimeout: Float = 1.0) -> [AXUIElement] {
 		let app = AXUIElementCreateApplication(pid)
+		AXUIElementSetMessagingTimeout(app, messagingTimeout)
 		let descendants = collectDescendants(startingAt: app, maxDepth: 6)
 		var menus = descendants.filter { (stringAttribute($0, attribute: kAXRoleAttribute as CFString) ?? "") == "AXMenu" }
 		if menus.isEmpty,
