@@ -369,8 +369,9 @@ final class InputSuppressionGuard {
 }
 
 final class Bridge {
-	private let protocolVersion = 6
+	private let protocolVersion = 7
 	private let refStore = AXRefStore()
+	private let activityGlow = ActivityGlowController()
 	private let inputSuppressionGuard = InputSuppressionGuard()
 	private let physicalInputLock = NSRecursiveLock()
 	private let supportsAgentCursor = CommandLine.arguments.contains("serve")
@@ -460,6 +461,8 @@ final class Bridge {
 	}
 
 	private func processClient(_ client: Int32) {
+		let clientID = UUID()
+		defer { activityGlow.disconnect(clientID) }
 		let clientInput = FileHandle(fileDescriptor: client, closeOnDealloc: true)
 		var buffer = Data()
 		let newline = Data([0x0A])
@@ -470,7 +473,7 @@ final class Bridge {
 			while let range = buffer.range(of: newline) {
 				let lineData = buffer.subdata(in: 0..<range.lowerBound)
 				buffer.removeSubrange(0..<range.upperBound)
-				if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { handleLine(line, to: client) }
+				if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { handleLine(line, to: client, clientID: clientID) }
 			}
 		}
 		clientInput.closeFile()
@@ -488,7 +491,7 @@ final class Bridge {
 		}
 	}
 
-	private func handleLine(_ line: String, to responseSocket: Int32? = nil) {
+	private func handleLine(_ line: String, to responseSocket: Int32? = nil, clientID: UUID? = nil) {
 		let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard !trimmed.isEmpty else { return }
 
@@ -508,7 +511,7 @@ final class Bridge {
 			completionId = id
 
 			do {
-				let result = try handleRequest(object)
+				let result = try handleRequest(object, clientID: clientID)
 				send([
 					"id": id,
 					"ok": true,
@@ -594,7 +597,7 @@ final class Bridge {
 		return recentCompletedRequestIds
 	}
 
-	private func handleRequest(_ request: [String: Any]) throws -> Any {
+	private func handleRequest(_ request: [String: Any], clientID: UUID?) throws -> Any {
 		let cmd = try stringArg(request, "cmd")
 
 		switch cmd {
@@ -606,6 +609,12 @@ final class Bridge {
 			return try registerPermissions()
 		case "openPermissionPane":
 			return try openPermissionPane(request)
+		case "setActivityGlow":
+			guard let clientID, let active = boolArg(request, "active") else {
+				throw BridgeFailure(message: "Activity glow requires a connected client and boolean 'active' value", code: "invalid_args")
+			}
+			activityGlow.setActive(active, for: clientID)
+			return ["active": active]
 		case "shutdown":
 			// Reply first, then exit: the caller relaunches the helper to get a
 			// process with a fresh TCC client (grant answers are cached per
@@ -758,6 +767,7 @@ final class Bridge {
 			"arch": arch,
 			"accessibility": permissions["accessibility"] ?? false,
 			"screenRecording": permissions["screenRecording"] ?? false,
+			"activityGlowActive": activityGlow.isActive,
 			"recentCompletedRequestIds": completedRequestIds(),
 		]
 		if let parentPath {

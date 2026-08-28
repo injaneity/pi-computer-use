@@ -25,7 +25,8 @@ Example:
   "browser_use": true,
   "managed_browser": "chrome",
   "headless": false,
-  "cursor_overlay": true
+  "cursor_overlay": true,
+  "activity_glow": true
 }
 ```
 
@@ -59,6 +60,14 @@ Default: `true`
 
 When `true`, macOS pointer actions enqueue a click-through agent cursor animation to the native grounded point during non-headless background delivery. Foreground actions that control the physical cursor don't display the overlay. The overlay doesn't move the system pointer, accept input, or delay the action. Set it to `false` for invisible automation. `headless: true` always suppresses it regardless of this setting.
 
+### `activity_glow`
+
+Default: `true`
+
+When `true`, macOS displays a click-through pulsing border on every screen while a Pi agent is using one of the extension's tools. The border stays visible until the agent run ends. Each Pi session owns its indicator state, so one session cannot hide another session's active indicator. The helper removes a session's state if its connection closes unexpectedly.
+
+The activity glow appears in user screen recordings, but never in the agent's own observations: helper captures always target a single window, so screen-edge overlays are not included. The glow is excluded from accessibility discovery. `headless: true` always suppresses it.
+
 ## Environment variables
 
 ```bash
@@ -72,6 +81,8 @@ PI_COMPUTER_USE_HEADLESS=0
 PI_COMPUTER_USE_HEADLESS=1
 PI_COMPUTER_USE_CURSOR_OVERLAY=0
 PI_COMPUTER_USE_CURSOR_OVERLAY=1
+PI_COMPUTER_USE_ACTIVITY_GLOW=0
+PI_COMPUTER_USE_ACTIVITY_GLOW=1
 PI_COMPUTER_USE_DELIVERY_POLICY=default
 PI_COMPUTER_USE_DELIVERY_POLICY=foreground
 PI_COMPUTER_USE_CDP_PORT=9222
