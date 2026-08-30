@@ -10,6 +10,7 @@ export interface FindParams {
 	text?: string;
 	app?: string;
 	bundleId?: string;
+	/** Exact positive process id. */
 	pid?: number;
 	/** Filters on the platform's best-effort presentation hint; only window vs transient is guaranteed. */
 	kind?: "window" | "menu" | "sheet" | "popover" | "dialog" | "browser_page";
