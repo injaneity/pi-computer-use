@@ -2,7 +2,7 @@ import { getComputerUseConfig } from "../../config.ts";
 import { parseLookResponse, type LookResponse } from "../../outline.ts";
 import { toBoolean, toFiniteNumber, toOptionalString } from "../coerce.ts";
 import type { ComputerUsePlatformBackend, FramePoints, HelperActResult, PlatformActRequest, PlatformApp, PlatformFocusWindowResult, PlatformFrontmostResult, PlatformObserveRequest, PlatformReadTextRequest, PlatformReadTextResponse, PlatformRoot, PlatformRootKind, PlatformRootQuery, PlatformTarget, PlatformWaitForRequest, PlatformWaitForResponse } from "../types.ts";
-import { macosHelper } from "./helper.ts";
+import { macosActivityGlow, macosHelper } from "./helper.ts";
 
 function parseApps(result: unknown): PlatformApp[] {
 	const array = Array.isArray(result) ? result : (result as any)?.apps;
@@ -69,7 +69,14 @@ function helperAction(request: PlatformActRequest): Record<string, unknown> {
 	return { ...request, target: request.target.focus, params: { ...request.params, preserveFocus: true } };
 }
 
-export const macosBackend: Pick<ComputerUsePlatformBackend, "listApps" | "listRoots" | "getFrontmost" | "focusWindow" | "observe" | "act" | "actBatch" | "readText" | "waitFor"> = {
+export const macosBackend: Pick<ComputerUsePlatformBackend, "shutdown" | "setActivity" | "listApps" | "listRoots" | "getFrontmost" | "focusWindow" | "observe" | "act" | "actBatch" | "readText" | "waitFor"> = {
+	async shutdown(): Promise<void> {
+		await macosActivityGlow.close();
+	},
+
+	async setActivity(active: boolean): Promise<void> {
+		await macosActivityGlow.setActive(active);
+	},
 	async listApps(signal?: AbortSignal): Promise<PlatformApp[]> {
 		return parseApps(await macosHelper.command<unknown>("listApps", {}, { signal }));
 	},

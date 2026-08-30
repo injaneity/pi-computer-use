@@ -324,6 +324,10 @@ function persistOperation(state: OperationState): void {
 	savedStates.saveDesktop(state, resourceKey, epoch);
 }
 
+export async function setComputerUseActivity(active: boolean): Promise<void> {
+	await currentPlatformBackend.setActivity?.(active);
+}
+
 /** Release handles and state owned by the current Pi session. */
 export async function shutdownComputerUseSession(): Promise<void> {
 	await resourceScheduler.close();

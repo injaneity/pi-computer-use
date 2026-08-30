@@ -7,6 +7,8 @@ import { windowsBackend } from "./windows/backend.ts";
 
 const macosPlatformBackend: ComputerUsePlatformBackend = {
 	name: "macos",
+	shutdown: macosBackend.shutdown,
+	setActivity: macosBackend.setActivity,
 	ensureReady: ensureMacosReady,
 	listApps: macosBackend.listApps,
 	listRoots: macosBackend.listRoots,

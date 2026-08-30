@@ -12,6 +12,7 @@ src/view.ts                      Stable refs and resulting-state change views
 src/outline.ts                   Outline parsing, folding, search, and ref mapping
 src/note.ts                      Disposable running-note generation
 native/macos/bridge.swift        macOS helper for AX, capture, permissions, and input
+native/macos/activity_glow.swift macOS activity indicator windows and client ownership
 native/windows/                 Windows backend/helper code when developing on Windows
 native/linux/bridge-rs/         Linux AT-SPI2 helper (Rust)
 scripts/build-native.mjs         macOS helper build script

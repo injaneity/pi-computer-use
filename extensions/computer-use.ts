@@ -14,9 +14,10 @@ import {
 	executeSearchUi,
 	executeWaitFor,
 	reconstructStateFromBranch,
+	setComputerUseActivity,
 	shutdownComputerUseSession,
 } from "../src/bridge.ts";
-import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
+import { getComputerUseConfig, getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
 
 const stateId = Type.String({ description: "Required state id owning every @e ref used by this operation" });
 const point = { x: Type.Number(), y: Type.Number() };
@@ -164,6 +165,9 @@ const evaluateBrowserTool = defineTool({
 	execute: executeEvaluateBrowser,
 });
 
+const COMPUTER_USE_TOOLS = [findTool, observeTool, searchUiTool, expandUiTool, inspectUiTool, actTool, readTextTool, waitForTool, launchBrowserTool, navigateBrowserTool, evaluateBrowserTool];
+const COMPUTER_USE_TOOL_NAMES = new Set(COMPUTER_USE_TOOLS.map((tool) => tool.name));
+
 function formatConfigStatus(): string {
 	const loaded = getLoadedComputerUseConfig();
 	return [
@@ -172,6 +176,7 @@ function formatConfigStatus(): string {
 		`managed_browser: ${loaded.config.managed_browser}`,
 		`headless: ${loaded.config.headless ? "enabled" : "disabled"}`,
 		`cursor_overlay: ${loaded.config.cursor_overlay ? "enabled" : "disabled"}`,
+		`activity_glow: ${loaded.config.activity_glow ? "enabled" : "disabled"}`,
 		"",
 		"Sources:",
 		...loaded.sources.map((source) => `- ${source.path}: ${source.error ? `error: ${source.error}` : source.exists ? "loaded" : "not found"}`),
@@ -180,7 +185,9 @@ function formatConfigStatus(): string {
 }
 
 export default function computerUseExtension(pi: ExtensionAPI): void {
-	for (const tool of [findTool, observeTool, searchUiTool, expandUiTool, inspectUiTool, actTool, readTextTool, waitForTool, launchBrowserTool, navigateBrowserTool, evaluateBrowserTool]) pi.registerTool(tool);
+	let activityGlowActive = false;
+
+	for (const tool of COMPUTER_USE_TOOLS) pi.registerTool(tool);
 
 	pi.registerCommand("computer-use", {
 		description: "Show pi-computer-use configuration",
@@ -197,7 +204,22 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		try { await ensureComputerUseSetup(ctx); } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning"); }
 	});
 
+	pi.on("tool_execution_start", async (event) => {
+		const config = getComputerUseConfig();
+		if (process.platform !== "darwin" || config.headless || !config.activity_glow || !COMPUTER_USE_TOOL_NAMES.has(event.toolName)) return;
+		activityGlowActive = true;
+		try { await setComputerUseActivity(true); } catch {}
+	});
+
+	pi.on("agent_end", async () => {
+		if (!activityGlowActive) return;
+		activityGlowActive = false;
+		try { await setComputerUseActivity(false); } catch {}
+	});
+
 	pi.on("session_shutdown", async () => {
+		activityGlowActive = false;
+		try { await setComputerUseActivity(false); } catch {}
 		await shutdownComputerUseSession();
 	});
 }

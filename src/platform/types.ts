@@ -205,6 +205,8 @@ export interface ComputerUsePlatformBackend {
 	name: PlatformName;
 	/** Release process-local resources when the Pi session is torn down. */
 	shutdown?(): void | Promise<void>;
+	/** Show or hide the platform activity indicator for this Pi session. */
+	setActivity?(active: boolean): void | Promise<void>;
 	ensureReady(ctx: ExtensionContext, state: PlatformReadyState, signal?: AbortSignal): Promise<PlatformReadyState>;
 	listApps(signal?: AbortSignal): Promise<PlatformApp[]>;
 	listRoots(query: PlatformRootQuery, signal?: AbortSignal): Promise<PlatformRoot[]>;

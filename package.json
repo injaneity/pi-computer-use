@@ -30,6 +30,7 @@
 		"src",
 		"scripts/build-native.mjs",
 		"scripts/setup-helper.mjs",
+		"native/macos/activity_glow.swift",
 		"native/macos/bridge.swift",
 		"native/windows/bridge-rs/Cargo.lock",
 		"native/windows/bridge-rs/Cargo.toml",

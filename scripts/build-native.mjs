@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const macosSourcePaths = [
+	"activity_glow.swift",
 	"agent_cursor.swift",
 	"agent_cursor_motion.swift",
 	"bridge.swift",
