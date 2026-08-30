@@ -1,6 +1,6 @@
 {
 	"name": "@injaneity/pi-computer-use",
-	"version": "0.5.0",
+	"version": "0.5.1",
 	"description": "Pi extension that lets AI agents observe and control macOS, Windows, and Linux apps.",
 	"type": "module",
 	"keywords": [
