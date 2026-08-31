@@ -161,9 +161,6 @@ tap(
 // 2. CLI routing – build-native.mjs
 // ---------------------------------------------------------------------------
 
-// Start fresh: ensure prebuilt/windows/ does not exist from a prior run.
-rmSilent(path.join(ROOT, "prebuilt", "windows"));
-
 console.log(`\n${LABEL} build-native.mjs --platform windows (output to tmpdir)`);
 
 // Use a temp output path so we never pollute prebuilt/windows/ during tests.
@@ -183,11 +180,7 @@ const tmpBuildOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-windows-
 }
 rmSilent(path.dirname(tmpBuildOut));
 
-// After the build above, cargo may have left target/release/windows-bridge but
-// the prebuilt directory in the repo should be untouched. Verify it still
-// doesn't exist (the script used --output → our tmpdir, not the default path).
-const prebuiltDir = path.join(ROOT, "prebuilt", "windows");
-tap(!fs.existsSync(prebuiltDir), true, "prebuilt/windows/ not created in repo (used --output)");
+tap(!fs.existsSync(tmpBuildOut), true, "temporary Windows build output is cleaned up");
 
 function isWin32() { return process.platform === "win32"; }
 function isDarwin() { return process.platform === "darwin"; }

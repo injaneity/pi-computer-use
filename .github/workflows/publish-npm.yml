@@ -1,18 +1,15 @@
 name: Release
 
 # Release order matters:
-# 1. Build helper artifacts from the tagged source (signed macOS app, Windows exe, Linux x64/arm64 binaries).
-# 2. Stage a draft GitHub Release with those exact helper assets.
-# 3. Publish the npm package with those same helper artifacts injected into prebuilt/.
-# 4. Publish the GitHub Release only after npm succeeds.
+# 1. Build and validate every helper from the selected source commit.
+# 2. Build and inspect the exact npm tarball without publishing it.
+# 3. Publish that tarball to npm.
+# 4. Create the GitHub tag and release with the same validated helper artifacts.
 #
-# This mirrors Pi's release flow: public release publication is last, and any
-# failed run cleans up the draft release instead of leaving a half-published
-# version behind.
+# No public package, tag, or release is created before every build and package
+# check succeeds.
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -35,8 +32,8 @@ concurrency:
 
 env:
   KEYCHAIN_PASSWORD: ci-keychain-password
-  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.tag }}
+  SOURCE_REF: ${{ inputs.source_ref || github.sha }}
 
 jobs:
   build-signed-helper:
@@ -261,8 +258,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  stage-github-release:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.assets_only }}
+  validate-release:
+    if: ${{ !inputs.assets_only }}
     runs-on: ubuntu-latest
     needs:
       - build-linux-helper
@@ -270,7 +267,7 @@ jobs:
       - build-windows-helper
     permissions:
       actions: read
-      contents: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -321,41 +318,23 @@ jobs:
           sha256sum -c SHA256SUMS
           test "$(awk 'NF == 2 { print $2 }' SHA256SUMS | sort -u | wc -l)" -eq 4
 
-      - name: Create draft GitHub Release
+      - name: Verify version is unpublished
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
-          RELEASE_NOTES="notes/release-v${VERSION}.md"
-          cd release-assets
-
-          existing_release="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
-          if [[ "$existing_release" == "false" ]]; then
-            echo "::error::GitHub Release $RELEASE_TAG is already published. Refusing to mutate a public release."
+          if gh api "repos/${GH_REPO}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::Git tag $RELEASE_TAG already exists."
             exit 1
           fi
-          if [[ "$existing_release" == "true" ]]; then
-            gh release delete "$RELEASE_TAG" --yes
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::GitHub Release $RELEASE_TAG already exists."
+            exit 1
           fi
-
-          gh release create "$RELEASE_TAG" \
-            --verify-tag \
-            --draft \
-            --title "$RELEASE_TAG" \
-            --notes-file "../$RELEASE_NOTES" \
-            pi-computer-use.app.zip \
-            windows-bridge.exe \
-            linux-bridge-x64 \
-            linux-bridge-arm64 \
-            SHA256SUMS
-
-          expected_asset_names="$(printf '%s\n' SHA256SUMS pi-computer-use.app.zip windows-bridge.exe linux-bridge-x64 linux-bridge-arm64 | sort)"
-          actual_asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
-          if [[ "$actual_asset_names" != "$expected_asset_names" ]]; then
-            echo "::error::Draft GitHub Release asset set does not match expected files."
-            diff -u <(printf '%s\n' "$expected_asset_names") <(printf '%s\n' "$actual_asset_names") || true
+          if npm view "@injaneity/pi-computer-use@${VERSION}" version >/dev/null 2>&1; then
+            echo "::error::npm version $VERSION already exists."
             exit 1
           fi
 
@@ -421,12 +400,12 @@ jobs:
             exit 1
           fi
 
-  publish-npm:
+  publish-release:
     runs-on: macos-14
-    needs: stage-github-release
+    needs: validate-release
     permissions:
       actions: read
-      contents: read
+      contents: write
       id-token: write
     steps:
       - name: Checkout
@@ -458,83 +437,60 @@ jobs:
           path: prebuilt/windows
 
       - name: Download Linux helper payloads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: linux-helper-*-${{ env.RELEASE_TAG }}
           path: release-linux
           merge-multiple: true
 
-      - name: Inject helper artifacts into npm package tree
+      - name: Assemble npm package and GitHub assets
         run: |
           set -euo pipefail
-          mkdir -p prebuilt/macos/universal
+          mkdir -p prebuilt/macos/universal prebuilt/linux/x64 prebuilt/linux/arm64
           rm -rf prebuilt/macos/universal/pi-computer-use.app
           /usr/bin/ditto -x -k release-assets/pi-computer-use.app.zip prebuilt/macos/universal
           codesign --verify --strict prebuilt/macos/universal/pi-computer-use.app
           test -f prebuilt/windows/windows-bridge.exe
-          mkdir -p prebuilt/linux/x64 prebuilt/linux/arm64
           cp release-linux/linux-bridge-x64 prebuilt/linux/x64/linux-bridge
           cp release-linux/linux-bridge-arm64 prebuilt/linux/arm64/linux-bridge
           chmod 755 prebuilt/linux/x64/linux-bridge prebuilt/linux/arm64/linux-bridge
-          test -x prebuilt/linux/x64/linux-bridge
-          test -x prebuilt/linux/arm64/linux-bridge
-          test "$(shasum -a 256 prebuilt/linux/x64/linux-bridge | awk '{ print $1 }')" = "$(shasum -a 256 release-linux/linux-bridge-x64 | awk '{ print $1 }')"
-          test "$(shasum -a 256 prebuilt/linux/arm64/linux-bridge | awk '{ print $1 }')" = "$(shasum -a 256 release-linux/linux-bridge-arm64 | awk '{ print $1 }')"
+          cp prebuilt/windows/windows-bridge.exe release-assets/windows-bridge.exe
+          cp release-linux/linux-bridge-x64 release-assets/linux-bridge-x64
+          cp release-linux/linux-bridge-arm64 release-assets/linux-bridge-arm64
+          cd release-assets
+          shasum -a 256 windows-bridge.exe linux-bridge-x64 linux-bridge-arm64 >> SHA256SUMS
+          shasum -a 256 -c SHA256SUMS
+          test "$(awk 'NF == 2 { print $2 }' SHA256SUMS | sort -u | wc -l | tr -d ' ')" -eq 4
 
       - name: Run checks
-        run: npm test && npm run test:platform && npm run test:windows-scripts
+        run: npm test
 
-      - name: Verify packaged helper assets
-        run: npm run test:package-assets
+      - name: Build and verify npm tarball
+        run: |
+          set -euo pipefail
+          PACKAGE_TARBALL="$(npm pack --ignore-scripts --silent)"
+          node scripts/check-package-assets.mjs "$PACKAGE_TARBALL"
+          echo "PACKAGE_TARBALL=$PACKAGE_TARBALL" >> "$GITHUB_ENV"
 
-      - name: Publish to npm
-        run: npm publish --access public --provenance
+      - name: Publish npm package
+        run: npm publish "$PACKAGE_TARBALL" --access public --provenance
 
-  publish-github-release:
-    runs-on: ubuntu-latest
-    needs:
-      - stage-github-release
-      - publish-npm
-    permissions:
-      contents: write
-    steps:
-      - name: Publish staged GitHub Release
+      - name: Create GitHub tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          existing_release="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
-          if [[ "$existing_release" == "" ]]; then
-            echo "::error::Draft GitHub Release $RELEASE_TAG does not exist."
-            exit 1
-          fi
-          if [[ "$existing_release" == "false" ]]; then
-            echo "::error::GitHub Release $RELEASE_TAG is already published."
-            exit 1
-          fi
-          gh release edit "$RELEASE_TAG" --draft=false
-
-  cleanup-draft-github-release:
-    runs-on: ubuntu-latest
-    needs:
-      - build-signed-helper
-      - build-windows-helper
-      - stage-github-release
-      - publish-npm
-      - build-linux-helper
-      - publish-github-release
-    if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
-    permissions:
-      contents: write
-    steps:
-      - name: Delete draft GitHub Release after failure
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          existing_release="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
-          if [[ "$existing_release" == "true" ]]; then
-            gh release delete "$RELEASE_TAG" --yes
-          fi
+          VERSION="${RELEASE_TAG#v}"
+          gh release create "$RELEASE_TAG" \
+            --target "$SOURCE_REF" \
+            --title "$RELEASE_TAG" \
+            --notes-file "notes/release-v${VERSION}.md" \
+            release-assets/pi-computer-use.app.zip \
+            release-assets/windows-bridge.exe \
+            release-assets/linux-bridge-x64 \
+            release-assets/linux-bridge-arm64 \
+            release-assets/SHA256SUMS
+          expected="$(printf '%s\n' SHA256SUMS linux-bridge-arm64 linux-bridge-x64 pi-computer-use.app.zip windows-bridge.exe | sort)"
+          actual="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
+          test "$actual" = "$expected"

@@ -42,7 +42,7 @@
 		"LICENSE",
 		"native/linux/bridge-rs",
 		"prebuilt/linux",
-		"docs"
+		"docs/*.md"
 	],
 	"pi": {
 		"extensions": [
