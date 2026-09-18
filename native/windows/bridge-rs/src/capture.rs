@@ -8,6 +8,8 @@
 //! Windows Graphics Capture are not used.
 
 use serde_json::Value;
+#[cfg(any(windows, test))]
+use std::collections::HashMap;
 
 use crate::error::{ErrorCode, ProtocolError};
 use crate::refs::{RefStore, WindowRef};
@@ -93,6 +95,25 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsIconic};
+
+#[cfg(any(windows, test))]
+fn is_effectively_blank_bgra(bits: &[u8]) -> bool {
+    let mut sampled = 0usize;
+    let mut buckets: HashMap<(u8, u8, u8), usize> = HashMap::new();
+
+    for pixel in bits.chunks_exact(4).step_by(97) {
+        sampled += 1;
+        let bucket = (pixel[0] >> 3, pixel[1] >> 3, pixel[2] >> 3);
+        *buckets.entry(bucket).or_default() += 1;
+    }
+
+    sampled > 0
+        && buckets
+            .values()
+            .copied()
+            .max()
+            .is_some_and(|count| count * 100 >= sampled * 97)
+}
 
 #[cfg(windows)]
 fn screenshot_impl(
@@ -272,13 +293,10 @@ unsafe fn gdi_capture_to_base64(
         DIB_RGB_COLORS,
     );
 
-    // PrintWindow frequently returns a successful but black bitmap for GPU
-    // surfaces (Chromium/Electron). Fall back to the compositor-visible screen
-    // pixels only when the semantic capture failed or is effectively blank.
-    let print_window_blank = bits
-        .chunks_exact(4)
-        .step_by(97)
-        .all(|pixel| pixel[0] < 8 && pixel[1] < 8 && pixel[2] < 8);
+    // PrintWindow can report success while returning a nearly uniform black,
+    // white, or gray bitmap for GPU surfaces (Chromium/Electron). Fall back to
+    // compositor-visible pixels when the result carries no useful detail.
+    let print_window_blank = is_effectively_blank_bgra(&bits);
     if !pw_ok.as_bool() || dib_ok == 0 || print_window_blank {
         let screen_dc = GetDC(HWND(std::ptr::null_mut()));
         if !screen_dc.is_invalid()
@@ -379,6 +397,31 @@ mod unit_tests {
     #[cfg(windows)]
     use crate::refs::NativeHandle;
     use crate::state::StateId;
+
+    #[test]
+    fn detects_uniform_failed_compositor_captures() {
+        let black = vec![0, 0, 0, 255].repeat(10_000);
+        let white = vec![231, 231, 231, 255].repeat(10_000);
+        let mut almost_uniform = white.clone();
+        for offset in (0..almost_uniform.len()).step_by(4).take(200) {
+            almost_uniform[offset..offset + 3].copy_from_slice(&[40, 120, 200]);
+        }
+
+        assert!(is_effectively_blank_bgra(&black));
+        assert!(is_effectively_blank_bgra(&white));
+        assert!(is_effectively_blank_bgra(&almost_uniform));
+    }
+
+    #[test]
+    fn preserves_light_windows_with_real_visual_detail() {
+        let mut detailed = Vec::new();
+        for index in 0..10_000 {
+            let value = if index % 20 == 0 { 20 } else { 245 };
+            detailed.extend_from_slice(&[value, value, value, 255]);
+        }
+
+        assert!(!is_effectively_blank_bgra(&detailed));
+    }
 
     // -- Platform support check (non-Windows) -------------------------------
 
