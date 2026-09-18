@@ -7,12 +7,12 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { canRetryInForeground, outcomeAfterCheck, outcomeAfterObservedValues, prepareAction, type ActionState, type PreparedAction } from "./actions.ts";
-import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypressForContext, cdpMouseForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeFocusedForContext, cdpTypeForContext, disconnectCdp, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
+import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypressForContext, cdpMouseForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeFocusedForContext, cdpTypeForContext, disconnectCdp, listCdpPageContexts, openCdpTabForContext, type CdpConsoleEntry, type CdpPageSnapshot, type CdpTab } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
 import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
 import { applyOutputEnvelope, boundToolError, clearStoredOutputs, readStoredOutput, UI_TEXT_PAGE_CHARS } from "./output.ts";
-import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams } from "./contract.ts";
+import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams, type JevObserveParams, type JevRunParams, type JevStepParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
 import { currentPlatformBackend } from "./platform/index.ts";
 import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformActRequest, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformRoot as HelperWindow } from "./platform/types.ts";
@@ -21,7 +21,13 @@ import { ResourceScheduler } from "./runtime.ts";
 import { scoreWindow, shouldPreferForegroundModalWindow } from "./root-selection.ts";
 import { SavedStates, type CurrentCapture, type CurrentTarget, type OperationState } from "./state.ts";
 import { changesBetween, renderChanges, stabilizeRefs } from "./view.ts";
-export type { ActParams, EvaluateBrowserParams, ExpandUiParams, ImageMode, InspectUiParams, LaunchBrowserParams, FindParams, MouseButtonName, NavigateBrowserParams, ObserveParams, ObserveTargetParams, ReadTextParams, RootSelector, SearchUiParams, StateTargetParams, UiAction, WaitForParams } from "./contract.ts";
+import { JevStalePage, executeJevAction, jevFreshForAction, jevFreshMarker, observeJevPage, settleAfterJevInput, type JevObservation } from "./jev/driver.ts";
+import { jevGateError } from "./jev/gate.ts";
+import { actionById, formatJevControls, formatJevElements, jevFingerprint, resolveDecisionTarget } from "./jev/space.ts";
+import { chooseJevAction, jevFieldContext, jevFieldText, loadJevDecisionProvider, loadJevTextConfig } from "./jev/policy.ts";
+import { runJevLoop, type JevLoopHost } from "./jev/loop.ts";
+import type { JevDecision, JevDecisionProvider, JevExecutionRecord, JevPageSnapshot, JevRawAction, JevRawPage, JevRunOutcome } from "./jev/types.ts";
+export type { ActParams, EvaluateBrowserParams, ExpandUiParams, ImageMode, InspectUiParams, LaunchBrowserParams, FindParams, MouseButtonName, NavigateBrowserParams, ObserveParams, ObserveTargetParams, ReadTextParams, RootSelector, SearchUiParams, StateTargetParams, UiAction, WaitForParams, JevObserveParams, JevRunParams, JevStepParams } from "./contract.ts";
 
 interface ActivationFlags {
 	activated: boolean;
@@ -2067,7 +2073,9 @@ async function performAct(params: ActParams, signal?: AbortSignal): Promise<Agen
 	if (actions.length === 0) throw new Error("act_ui.actions must contain at least one action.");
 	if (actions.length > 20) throw new Error("act_ui supports at most 20 actions per transaction.");
 	for (const action of actions) validateActionTarget(action);
-	if (operationState().contextId) return await performBrowserTransaction(params, actions, signal);
+	const state = operationState();
+	if (state.jevSnapshot) throw new Error("This state belongs to a jev observation. Use jev_step or jev_run for jev actions.");
+	if (state.browserSnapshot) return await performBrowserTransaction(params, actions, signal);
 	return await performDesktopTransaction(params, actions, signal);
 }
 
@@ -2251,6 +2259,475 @@ async function performEvaluateBrowser(params: EvaluateBrowserParams): Promise<Ag
 	});
 }
 
+/* ------------------------------ jev browser layer ------------------------------ */
+
+const JEV_TEXT_EXCERPT_CHARS = 2_000;
+const JEV_TABLE_LIMIT = 60;
+
+type JevPolicy = JevDecisionProvider;
+type JevText = NonNullable<ReturnType<typeof loadJevTextConfig>>;
+type JevStateRecord = ReturnType<SavedStates["saveJev"]>;
+
+interface JevRootSummary {
+	ref: string;
+	kind: "browser_page";
+	title: string;
+	url: string;
+}
+
+interface JevObservationDetails {
+	tool: string;
+	kind: "browser_page";
+	mode: "observe" | "step" | "run";
+	stateId: string;
+	baseStateId?: string;
+	root: JevRootSummary;
+	url: string;
+	title: string;
+	policyAvailable: boolean;
+	textHelperAvailable: boolean;
+	actionCount: number;
+	elementCount: number;
+	omittedActions: number;
+	text?: string;
+	executed?: JevExecutionRecord;
+	decision?: Omit<JevDecision, "request">;
+	run?: JevRunOutcome;
+	/** Set when the policy chose DONE or BLOCKED instead of an action. */
+	terminal?: "done" | "blocked";
+}
+
+function requireJevEnabled(): void {
+	const error = jevGateError(getComputerUseConfig());
+	if (error) throw new Error(error);
+}
+
+function jevPolicyAvailable(): boolean {
+	const config = getComputerUseConfig();
+	if (!config.jev_enabled || !config.jev_decide) return false;
+	const provider = loadJevDecisionProvider();
+	return Boolean(provider && !("missingModule" in provider && provider.missingModule));
+}
+
+function jevTextHelperAvailable(): boolean {
+	return getComputerUseConfig().jev_enabled && Boolean(loadJevTextConfig());
+}
+
+function requireJevPolicy(): JevPolicy {
+	requireJevEnabled();
+	if (!getComputerUseConfig().jev_decide) {
+		throw new Error("jev decision-making is disabled (jev_decide). Set PI_COMPUTER_USE_JEV_DECIDE=1 or enable jev_decide in configuration.");
+	}
+	const provider = loadJevDecisionProvider();
+	if (!provider) {
+		throw new Error("jev decision-making needs a credential: AI_GATEWAY_API_KEY (Vercel AI Gateway), VERCEL_OIDC_TOKEN, or TYPESAFE_API_KEY (direct TypeSafe). No browser action was executed.");
+	}
+	if ("missingModule" in provider && provider.missingModule) {
+		throw new Error(`The resolved jev backend '${provider.backend}' needs '${provider.missingModule}' installed. Run: npm install ${provider.missingModule}`);
+	}
+	return provider;
+}
+
+function jevContext(observation: JevObservation, contextId: string): JevPageSnapshot {
+	return {
+		contextId,
+		targetId: contextId.slice(BROWSER_CONTEXT_PREFIX.length),
+		title: observation.page.title,
+		url: observation.page.url,
+		capturedAt: Date.now(),
+		text: observation.page.text,
+		scroll: observation.page.scroll,
+		actions: observation.page.actions,
+		elements: observation.elements,
+		space: observation.space,
+		freshness: { pageKey: observation.page.page_key, marker: observation.page.marker, guards: observation.page.guards },
+		omittedActions: observation.page.omitted_actions,
+	};
+}
+
+function jevRawPage(snapshot: JevPageSnapshot): JevRawPage {
+	return {
+		url: snapshot.url,
+		title: snapshot.title,
+		w: 0,
+		h: 0,
+		text: snapshot.text,
+		scroll: snapshot.scroll,
+		actions: snapshot.actions,
+		marker: snapshot.freshness.marker,
+		page_key: snapshot.freshness.pageKey,
+		guards: snapshot.freshness.guards,
+		omitted_actions: snapshot.omittedActions,
+	};
+}
+
+function jevOperationForAction(action: JevRawAction): JevDecision["operation"] {
+	switch (action.kind) {
+		case "click": return "CLICK";
+		case "fill": return "TYPE_TEXT";
+		case "select": return "SELECT";
+		case "scroll": return (action.delta ?? 0) < 0 ? "SCROLL_UP" : "SCROLL_DOWN";
+		default: return "WAIT";
+	}
+}
+
+async function resolveJevContext(root: RootSelector | undefined): Promise<{ contextId: string; rootRef: string }> {
+	const requested = trimOrUndefined(typeof root === "string" ? root : undefined);
+	if (requested) {
+		if (!/^@r\d+$/.test(requested)) throw new Error("A jev browser root must be an exact @r ref issued by find_roots.");
+		const contextId = runtimeState.browserContextByRoot.get(requested);
+		if (!contextId) throw new Error(`Root '${requested}' is not a CDP browser page. Call find_roots and choose a kind=browser_page root.`);
+		return { contextId, rootRef: requested };
+	}
+	const pages = await listCdpPageContexts();
+	if (pages.length === 0) throw new Error("No CDP browser page is available. Run launch_browser or observe_ui on a browser root first.");
+	if (pages.length > 1) throw new Error(`Multiple CDP browser pages are open. Pass an exact @r ref from find_roots (jev_observe.root).`);
+	const page = pages[0]!;
+	return { contextId: page.contextId, rootRef: storeBrowserRootRef(page.contextId) };
+}
+
+function renderJevView(snapshot: JevPageSnapshot, limit = JEV_TABLE_LIMIT, textChars = JEV_TEXT_EXCERPT_CHARS): string {
+	const table = formatJevElements(snapshot.space, limit);
+	const lines = [
+		`Elements (${snapshot.space.elements.length}${table.omitted > 0 ? `, ${table.omitted} more not shown` : ""}):`,
+		table.text || "(none)",
+		`Document operations: ${formatJevControls(snapshot.space)}`,
+	];
+	if (snapshot.omittedActions > 0) lines.push(`Truncated action candidates: ${snapshot.omittedActions} (not selectable).`);
+	if (snapshot.text) lines.push("", "Visible text:", snapshot.text.slice(0, textChars));
+	return lines.join("\n");
+}
+
+function jevDetails(tool: string, mode: JevObservationDetails["mode"], stateId: string, rootRef: string, snapshot: JevPageSnapshot, extra: Partial<JevObservationDetails> = {}): JevObservationDetails {
+	return {
+		tool,
+		kind: "browser_page",
+		mode,
+		stateId,
+		root: { ref: rootRef, kind: "browser_page", title: snapshot.title, url: snapshot.url },
+		url: snapshot.url,
+		title: snapshot.title,
+		policyAvailable: jevPolicyAvailable(),
+		textHelperAvailable: jevTextHelperAvailable(),
+		actionCount: snapshot.actions.length,
+		elementCount: snapshot.space.elements.length,
+		omittedActions: snapshot.omittedActions,
+		text: snapshot.text.slice(0, JEV_TEXT_EXCERPT_CHARS),
+		...extra,
+	};
+}
+
+function jevContinuation(stateId: string, actionCount: number): string {
+	const parts = [
+		`State ${stateId} owns ${actionCount} code-owned action(s).`,
+		`Call jev_step({ stateId: "${stateId}", action: "<id>" }) to execute one observed action.`,
+	];
+	if (jevPolicyAvailable()) parts.push(`Omit action with a goal, or call jev_run({ stateId: "${stateId}", goal }) for the bounded autonomous loop.`);
+	else if (!getComputerUseConfig().jev_decide) parts.push("jev decision-making is disabled, so jev_step needs an explicit action.");
+	else parts.push("TypeSafe credentials are not configured, so jev_step needs an explicit action.");
+	if (!jevTextHelperAvailable()) parts.push("The text helper is not configured, so TYPE_TEXT needs an explicit text value.");
+	return parts.join(" ");
+}
+
+/** One immutable jev observation stored behind a new state id. */
+async function observeJevAt(contextId: string, rootRef: string, resourceKey: string, epoch: number): Promise<{ record: JevStateRecord; snapshot: JevPageSnapshot }> {
+	const tab = await openCdpTabForContext(contextId);
+	if (!tab) throw new Error(`Browser context '${contextId}' is no longer available. Call find_roots again.`);
+	try {
+		const observation = await observeJevPage(tab, { contextId, targetId: contextId.slice(BROWSER_CONTEXT_PREFIX.length) });
+		const snapshot = jevContext(observation, contextId);
+		const record = savedStates.saveJev(snapshot, resourceKey, epoch, rootRef);
+		return { record, snapshot };
+	} finally {
+		tab.close();
+	}
+}
+
+/** Resolve a TYPE_TEXT value: an explicit value, or the configured text helper. */
+async function jevTextForAction(action: JevRawAction, explicit: string | undefined, goal: string | undefined, page: JevRawPage, history: JevExecutionRecord[]): Promise<{ text: string | null; model: string | null; latencyMs: number }> {
+	if (action.kind !== "fill") return { text: null, model: null, latencyMs: 0 };
+	if (typeof explicit === "string") return { text: explicit, model: null, latencyMs: 0 };
+	if (!goal) throw new Error("TYPE_TEXT needs an explicit text value, or a goal with a configured text helper.");
+	const config = loadJevTextConfig();
+	if (!config) throw new Error("TYPE_TEXT needs TEXT_MODEL_API_KEY (or DEEPSEEK_API_KEY/OPENROUTER_API_KEY); nothing typed.");
+	const generated = await jevFieldText(jevFieldContext(goal, action, page, history), config);
+	return { text: generated.text, model: generated.model, latencyMs: generated.latencyMs };
+}
+
+type JevTextResolution = Awaited<ReturnType<typeof jevTextForAction>>;
+
+function jevExecutionRecord(action: JevRawAction, decision: JevDecision | undefined, text: JevTextResolution, url: string): JevExecutionRecord {
+	return {
+		step: 1,
+		actionId: action.id,
+		action: action.label,
+		kind: action.kind,
+		operation: decision?.operation ?? jevOperationForAction(action),
+		target: decision?.target ?? null,
+		probability: decision ? decision.probabilities[action.id] ?? null : null,
+		confidence: decision?.confidence ?? null,
+		decisionLatencyMs: decision?.latencyMs ?? null,
+		text: text.text,
+		textModel: text.model,
+		textLatencyMs: text.latencyMs,
+		pageChanged: null,
+		url,
+		usage: decision?.usage,
+	};
+}
+
+/** Full observation into the jev indexed action space. */
+async function performJevObserve(params: JevObserveParams, signal?: AbortSignal): Promise<AgentToolResult<JevObservationDetails>> {
+	throwIfAborted(signal);
+	requireJevEnabled();
+	const { contextId, rootRef } = await resolveJevContext(params?.root);
+	const resourceKey = `cdp:${contextId.slice(BROWSER_CONTEXT_PREFIX.length)}`;
+	const scheduled = await resourceScheduler.read(resourceKey, async (epoch) => await observeJevAt(contextId, rootRef, resourceKey, epoch));
+	const { record, snapshot } = scheduled.value;
+	const details = jevDetails("jev_observe", "observe", record.stateId, rootRef, snapshot);
+	const text = [
+		`jev_observe completed for ${rootRef} ${JSON.stringify(snapshot.title)}. State ${record.stateId}.`,
+		renderJevView(snapshot),
+		"",
+		jevContinuation(record.stateId, snapshot.actions.length),
+	].join("\n");
+	return { content: [{ type: "text", text }], details };
+}
+
+/** One observed mutation: agent-selected action, or one policy decision when action is omitted. */
+async function performJevStep(params: JevStepParams, signal?: AbortSignal): Promise<AgentToolResult<JevObservationDetails>> {
+	throwIfAborted(signal);
+	requireJevEnabled();
+	validateStateId(params.stateId);
+	const state = operationState();
+	const snapshot = state.jevSnapshot;
+	if (!snapshot) throw new Error("jev_step requires a stateId from jev_observe.");
+	const contextId = snapshot.contextId;
+	const resourceKey = state.resourceKey ?? `cdp:${snapshot.targetId}`;
+	const rootRef = state.jevRootRef ?? storeBrowserRootRef(contextId);
+	const page = jevRawPage(snapshot);
+	const pageContext = { contextId, targetId: snapshot.targetId };
+	const goal = trimOrUndefined(params.goal);
+
+	let decision: JevDecision | undefined;
+	const requestedAction = trimOrUndefined(params.action);
+	let resolution: { terminal: "done" | "blocked" } | { action: JevRawAction };
+	if (requestedAction) {
+		const found = actionById(page, requestedAction);
+		if (!found) throw new Error(`Unknown jev action '${requestedAction}'. Use an action id from the current jev_observe table.`);
+		resolution = { action: found };
+	} else {
+		if (!goal) throw new Error("jev_step needs either action (from jev_observe) or goal for jev decision-making.");
+		const policy = requireJevPolicy();
+		decision = await chooseJevAction(page, snapshot.space, goal, [], policy);
+		const target = resolveDecisionTarget(page, decision);
+		if (target.kind === "terminal") resolution = { terminal: target.status };
+		else if (target.kind === "action") resolution = { action: target.action };
+		else throw new Error(`The policy selected unknown action '${target.actionId}'.`);
+	}
+	const decisionSummary = decision ? (() => { const { request: _request, ...rest } = decision!; return rest; })() : undefined;
+
+	// DONE and BLOCKED are terminal decisions, not actions. Nothing is executed and
+	// the observed state stays current, so the caller can verify and stop.
+	if ("terminal" in resolution) {
+		const terminal = resolution.terminal;
+		const terminalDetails: JevObservationDetails = {
+			tool: "jev_step",
+			kind: "browser_page",
+			mode: "step",
+			stateId: params.stateId!,
+			baseStateId: params.stateId,
+			root: { ref: rootRef, kind: "browser_page", title: snapshot.title, url: snapshot.url },
+			url: snapshot.url,
+			title: snapshot.title,
+			policyAvailable: jevPolicyAvailable(),
+			textHelperAvailable: jevTextHelperAvailable(),
+			actionCount: snapshot.actions.length,
+			elementCount: snapshot.space.elements.length,
+			omittedActions: snapshot.omittedActions,
+			terminal,
+			decision: decisionSummary,
+		};
+		const guidance = terminal === "done"
+			? "A DONE choice is not proof of success; verify the outcome independently before continuing."
+			: "The policy reports that no supported operation can make progress.";
+		return {
+			content: [{ type: "text", text: `jev_step did not execute an action: the policy reports ${terminal.toUpperCase()}. No browser input was sent. ${guidance}` }],
+			details: terminalDetails,
+		};
+	}
+	const action = resolution.action;
+	const resolvedText = await jevTextForAction(action, params.text, goal, page, []);
+
+	const tab = await openCdpTabForContext(contextId);
+	if (!tab) throw new Error(`Browser context '${contextId}' is no longer available. Call jev_observe again.`);
+	let executed: JevExecutionRecord;
+	let successor: JevPageSnapshot | undefined;
+	let successorError: string | undefined;
+	try {
+		await withBrowserWrite(contextId, async () => {
+			if (!(await jevFreshForAction(tab, page, action!))) throw new JevStalePage("Page changed since this observation. Observe again.");
+			await executeJevAction(tab, action!, resolvedText.text ?? undefined);
+		});
+		// Execution is recorded before the resulting observation, so a stale or
+		// failed successor cannot erase the mutation.
+		executed = jevExecutionRecord(action, decision, resolvedText, page.url);
+		await settleAfterJevInput(tab, action);
+		try {
+			const observation = await observeJevPage(tab, pageContext);
+			successor = jevContext(observation, contextId);
+			executed.pageChanged = jevFingerprint(jevRawPage(successor)) !== jevFingerprint(page);
+			executed.url = successor.url;
+		} catch (error) {
+			if (!(error instanceof JevStalePage)) successorError = error instanceof Error ? error.message : String(error);
+		}
+	} finally {
+		tab.close();
+	}
+
+	if (!successor) {
+		const reason = successorError ? `the successor observation failed: ${successorError}` : "the page did not settle for a successor observation";
+		const staleDetails: JevObservationDetails = {
+			tool: "jev_step",
+			kind: "browser_page",
+			mode: "step",
+			stateId: params.stateId!,
+			baseStateId: params.stateId,
+			root: { ref: rootRef, kind: "browser_page", title: snapshot.title, url: page.url },
+			url: page.url,
+			title: snapshot.title,
+			policyAvailable: jevPolicyAvailable(),
+			textHelperAvailable: jevTextHelperAvailable(),
+			actionCount: snapshot.actions.length,
+			elementCount: snapshot.space.elements.length,
+			omittedActions: snapshot.omittedActions,
+			executed,
+			decision: decisionSummary,
+		};
+		return {
+			content: [{ type: "text", text: `Executed ${JSON.stringify(action.label)} as ${action.id}, but ${reason}. The previous state is stale; call jev_observe again before continuing.` }],
+			details: staleDetails,
+		};
+	}
+
+	const epoch = operationState().epoch ?? resourceScheduler.epoch(resourceKey);
+	const record = savedStates.saveJev(successor, resourceKey, epoch, rootRef);
+	const details = jevDetails("jev_step", "step", record.stateId, rootRef, successor, { baseStateId: params.stateId, executed, decision: decisionSummary });
+	const executedLine = `${executed.kind.toUpperCase()} ${JSON.stringify(executed.action)} as ${executed.actionId}${executed.text ? ` text=${JSON.stringify(executed.text)}` : ""}${executed.pageChanged === false ? " [no page change]" : ""}`;
+	const decisionLine = decisionSummary ? `Policy chose ${decisionSummary.operation}${decisionSummary.target ? ` target ${decisionSummary.target}` : ""} (confidence ${decisionSummary.confidence.toFixed(2)}, ${decisionSummary.latencyMs} ms).` : undefined;
+	const text = [
+		`jev_step executed. State ${params.stateId} → ${record.stateId}.`,
+		executedLine,
+		decisionLine,
+		"",
+		renderJevView(successor, 40, 800),
+		"",
+		jevContinuation(record.stateId, successor.actions.length),
+	].filter((line): line is string => line !== undefined).join("\n");
+	return { content: [{ type: "text", text }], details };
+}
+
+/** Bounded autonomous predict -> act -> observe loop driven by the TypeSafe policy. */
+async function performJevRun(params: JevRunParams, signal?: AbortSignal): Promise<AgentToolResult<JevObservationDetails>> {
+	throwIfAborted(signal);
+	requireJevEnabled();
+	const goal = trimOrUndefined(params.goal);
+	if (!goal) throw new Error("jev_run.goal must be a non-empty natural-language goal.");
+	const policy = requireJevPolicy();
+	const textConfig = loadJevTextConfig();
+	const config = getComputerUseConfig();
+	const maxSteps = Math.max(1, Math.min(60, Math.trunc(toFiniteNumber(params.maxSteps, config.jev_max_steps))));
+
+	let contextId: string;
+	let rootRef: string;
+	if (params.stateId) {
+		validateStateId(params.stateId);
+		const state = operationState();
+		const starting = state.jevSnapshot;
+		if (!starting) throw new Error("jev_run.stateId must be a jev_observe state.");
+		contextId = starting.contextId;
+		rootRef = state.jevRootRef ?? storeBrowserRootRef(contextId);
+	} else {
+		const resolved = await resolveJevContext(params.root);
+		contextId = resolved.contextId;
+		rootRef = resolved.rootRef;
+	}
+	const resourceKey = `cdp:${contextId.slice(BROWSER_CONTEXT_PREFIX.length)}`;
+	const pageContext = { contextId, targetId: contextId.slice(BROWSER_CONTEXT_PREFIX.length) };
+	const tab = await openCdpTabForContext(contextId);
+	if (!tab) throw new Error(`Browser context '${contextId}' is no longer available. Call find_roots again.`);
+
+	let run: JevRunOutcome;
+	let finalSnapshot: JevPageSnapshot | undefined;
+	let finalError: string | undefined;
+	try {
+		const host: JevLoopHost = {
+			observe: async () => {
+				const scheduled = await resourceScheduler.read(resourceKey, async () => await observeJevPage(tab, pageContext));
+				return { page: scheduled.value.page, space: scheduled.value.space };
+			},
+			fresh: async (page) => await jevFreshMarker(tab, page),
+			decide: async (page, space, history) => await chooseJevAction(page, space, goal, history, policy),
+			textContext: (page, action, history) => jevFieldContext(goal, action, page, history),
+			text: async (context) => {
+				if (!textConfig) throw new Error("TYPE_TEXT needs a configured text helper; nothing typed.");
+				return await jevFieldText(context, textConfig);
+			},
+			execute: async (page, action, text) => {
+				await withBrowserWrite(contextId, async () => {
+					if (!(await jevFreshForAction(tab, page, action))) throw new JevStalePage("Page changed since this decision. Observe again.");
+					await executeJevAction(tab, action, text ?? undefined);
+				});
+			},
+			settle: async (action) => await settleAfterJevInput(tab, action),
+		};
+		run = await runJevLoop(host, { maxSteps });
+		try {
+			const observation = await observeJevPage(tab, pageContext);
+			finalSnapshot = jevContext(observation, contextId);
+		} catch (error) {
+			finalError = error instanceof Error ? error.message : String(error);
+		}
+	} finally {
+		tab.close();
+	}
+
+	if (!finalSnapshot) {
+		const staleDetails: JevObservationDetails = {
+			tool: "jev_run",
+			kind: "browser_page",
+			mode: "run",
+			stateId: params.stateId ?? "(stale)",
+			baseStateId: params.stateId,
+			root: { ref: rootRef, kind: "browser_page", title: "", url: "" },
+			url: "",
+			title: "",
+			policyAvailable: jevPolicyAvailable(),
+			textHelperAvailable: jevTextHelperAvailable(),
+			actionCount: 0,
+			elementCount: 0,
+			omittedActions: 0,
+			run,
+		};
+		return {
+			content: [{ type: "text", text: `jev_run ${run.status}${run.message ? ` (${run.message})` : ""}: ${run.steps} action(s), ${run.decisions} decision(s), ${run.elapsedMs} ms. The final page did not settle for observation${finalError ? `: ${finalError}` : ""}; call jev_observe again before continuing.` }],
+			details: staleDetails,
+		};
+	}
+	const epoch = resourceScheduler.epoch(resourceKey);
+	const record = savedStates.saveJev(finalSnapshot, resourceKey, epoch, rootRef);
+	const details = jevDetails("jev_run", "run", record.stateId, rootRef, finalSnapshot, { baseStateId: params.stateId, run });
+	const historyLines = run.history.slice(-40).map((entry) => `  ${entry.step}. ${entry.kind.toUpperCase()} ${JSON.stringify(entry.action)}${entry.text ? ` text=${JSON.stringify(entry.text)}` : ""}${entry.pageChanged === false ? " [no page change]" : ""}`);
+	const text = [
+		`jev_run ${run.status}${run.message ? ` (${run.message})` : ""}: ${run.steps} action(s), ${run.decisions} decision(s), ${run.elapsedMs} ms. State ${record.stateId}.`,
+		"A DONE choice is not proof of success; verify the final outcome independently.",
+		...historyLines,
+		"",
+		renderJevView(finalSnapshot, 40, 800),
+	].join("\n");
+	return { content: [{ type: "text", text }], details };
+}
+
 async function executeTool<P, T>(ctx: ExtensionContext, params: P, signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
 	const outputRef = trimOrUndefined((params as { ref?: string } | undefined)?.ref)?.startsWith("@o") === true;
 	const requestedStateId = outputRef ? undefined : trimOrUndefined((params as { stateId?: string } | undefined)?.stateId);
@@ -2295,6 +2772,9 @@ export const executeAct = makeToolExecutor<ActParams, ComputerUseDetails | Termi
 export const executeNavigateBrowser = makeToolExecutor("navigate_browser", performNavigateBrowser);
 export const executeEvaluateBrowser = makeToolExecutor("evaluate_browser", performEvaluateBrowser);
 export const executeLaunchBrowser = makeToolExecutor("launch_browser", performLaunchBrowser);
+export const executeJevObserve = makeToolExecutor<JevObserveParams, JevObservationDetails>("jev_observe", performJevObserve);
+export const executeJevStep = makeToolExecutor<JevStepParams, JevObservationDetails>("jev_step", performJevStep);
+export const executeJevRun = makeToolExecutor<JevRunParams, JevObservationDetails>("jev_run", performJevRun);
 
 export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	savedStates.clear();

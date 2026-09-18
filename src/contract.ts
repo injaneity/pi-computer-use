@@ -77,6 +77,25 @@ export interface UiAction {
 	clickCount?: number;
 }
 
+export interface JevObserveParams {
+	root?: RootSelector;
+}
+
+export interface JevStepParams extends StateTargetParams {
+	/** Code-owned action id from jev_observe, e.g. "e3". Omit to use the configured policy. */
+	action?: string;
+	/** Required by the policy when action is omitted, and used by the text helper. */
+	goal?: string;
+	/** Explicit TYPE_TEXT value; omitted values use the configured text helper. */
+	text?: string;
+}
+
+export interface JevRunParams extends StateTargetParams {
+	root?: RootSelector;
+	goal: string;
+	maxSteps?: number;
+}
+
 export interface ActParams extends StateTargetParams {
 	actions: UiAction[];
 	expect?: UiCondition;
@@ -101,4 +120,7 @@ export const AGENT_TOOL_NAMES = new Set([
 	"navigate_browser",
 	"evaluate_browser",
 	"launch_browser",
+	"jev_observe",
+	"jev_step",
+	"jev_run",
 ]);

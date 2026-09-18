@@ -22,6 +22,9 @@ The normal loop is:
 | `launch_browser` | Start a managed CDP browser and return its observed page state. |
 | `navigate_browser` | Navigate the browser page owned by a state. |
 | `evaluate_browser` | Evaluate JavaScript in the browser page owned by a state. |
+| `jev_observe` | Observe a CDP browser page as jev's indexed action space. |
+| `jev_step` | Execute one observed jev action with code-owned guards. |
+| `jev_run` | Run jev's bounded autonomous policy loop for one goal. |
 
 ## Refs and state
 
@@ -134,6 +137,33 @@ evaluate_browser({ stateId: returnedStateId, expression: "document.title" })
 ```
 
 Browser states use the same outline, action, text, and condition contracts as desktop states. Native browser windows remain ordinary desktop UI; use `observe_ui` and `act_ui` rather than `navigate_browser` or `evaluate_browser` on them.
+
+## Jev browser layer
+
+`jev_observe`, `jev_step`, and `jev_run` add a browser layer ported from
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). It
+builds a flat, indexed action space instead of a nested outline and executes
+only observed, code-owned action ids with semantic freshness and occlusion
+guards:
+
+```ts
+jev_observe({ root: "@r3" })                        // numbered element table + stateId
+jev_step({ stateId, action: "e3" })                 // execute one observed action
+jev_step({ stateId, action: "e1", text: "Zürich" })
+jev_step({ stateId, goal: "Book a one-way flight to London" })
+jev_run({ stateId, goal: "Book a one-way flight to London", maxSteps: 20 })
+```
+
+Jev is controlled by `jev_enabled`, `jev_decide`, `jev_backend`, `jev_model`,
+`jev_gateway_zdr`, and `jev_max_steps` in the configuration files, or by
+`PI_COMPUTER_USE_JEV_ENABLED`, `PI_COMPUTER_USE_JEV_DECIDE`,
+`PI_COMPUTER_USE_JEV_BACKEND`, `PI_COMPUTER_USE_JEV_MODEL`,
+`PI_COMPUTER_USE_JEV_GATEWAY_ZDR`, and `PI_COMPUTER_USE_JEV_MAX_STEPS`. Use
+`/computer-use jev on|off` and `/computer-use jev-decide on|off` for a
+session-scoped override. A jev state is separate from `observe_ui` states:
+`act_ui` refuses it, and `jev_step`/`jev_run` accept only jev states. See
+[Jev browser layer](./jev.md) for the action-space format, credentials, guard
+semantics, and limits.
 
 ## Parallel calls
 

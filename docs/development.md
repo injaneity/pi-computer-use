@@ -10,6 +10,13 @@ src/runtime.ts                   Immutable state store and resource scheduler
 src/state.ts                     Saved UI state ownership and restoration
 src/view.ts                      Stable refs and resulting-state change views
 src/outline.ts                   Outline parsing, folding, search, and ref mapping
+src/jev/snapshot.ts               Atomic DOM snapshot (typed, serialized into the controlled page)
+src/jev/driver.ts                CDP observe, freshness, guarded execution, settle
+src/jev/space.ts                 Indexed action space, fingerprint, table rendering
+src/jev/questions.ts             Shared decision questions and evaluated state
+src/jev/policy.ts                Decision dispatch, direct TypeSafe transport, text helper
+src/jev/vercel.ts                Vercel AI SDK experimental_evaluate backend
+src/jev/loop.ts                  Bounded predict -> act -> observe loop
 src/note.ts                      Disposable running-note generation
 native/macos/bridge.swift        macOS helper for AX, capture, permissions, and input
 native/windows/                 Windows backend/helper code when developing on Windows
@@ -18,6 +25,9 @@ scripts/build-native.mjs         macOS helper build script
 scripts/setup-helper.mjs         macOS helper install script
 scripts/check-invariants.mjs     Architecture invariant checks
 scripts/check-runtime-concurrency.mjs Scheduler/state concurrency checks
+scripts/check-jev.mjs            Offline jev contracts (action space, validation, loop, config)
+scripts/check-jev-live.mjs       Live jev browser checks against a local headless Chrome
+scripts/check-jev-gateway.mjs    One live Vercel AI Gateway evaluation (opt-in, spends credits)
 scripts/pi-cubench-agent.mjs     Cubench gateway adapter using registered Pi tools
 ```
 
@@ -31,7 +41,19 @@ Run all static checks:
 npm test
 ```
 
-This runs TypeScript, tool-schema compatibility checks, architecture invariants, and native helper checks available on the current platform.
+This runs TypeScript, tool-schema compatibility checks, architecture invariants, offline jev contracts, and native helper checks available on the current platform.
+
+The jev browser layer also has an opt-in live check that starts a local headless Chrome, serves a fixture page, and exercises the ported guards without model calls:
+
+```bash
+npm run test:jev-live
+```
+
+One more check exercises the Vercel AI SDK decision backend against the real AI Gateway. It is explicit opt-in because it spends Gateway credits, and it requires a Gateway credential (`AI_GATEWAY_API_KEY`, `VERCEL_OIDC_TOKEN`, or `VERCEL_API_KEY`). The optional `ai` package is a devDependency for this check and is not installed for consumers:
+
+```bash
+npm run test:jev-gateway
+```
 
 On macOS, rebuild the native helper after Swift changes:
 

@@ -22,6 +22,8 @@ This is a Pi extension. After installation, Pi agents get tools for:
 - inspecting parts of the interface in more detail
 - clicking, typing, scrolling, and pressing UI controls
 - waiting for UI changes
+- observing a CDP browser page as an indexed action space and executing one observed action at a time (`jev_observe`, `jev_step`)
+- optionally letting a TypeSafe policy choose the next operation and target, or run a bounded autonomous loop for a goal (`jev_run`)
 
 In short: it gives an agent a controlled way to operate desktop software.
 
@@ -70,12 +72,35 @@ Use `/computer-use` inside Pi to show the active configuration and where it came
 - `act_ui`
 - `read_text`
 - `wait_for`
+- `jev_observe`
+- `jev_step`
+- `jev_run`
 
 See [docs/usage.md](./docs/usage.md) for the full tool reference.
+
+## Jev browser layer
+
+For CDP browser pages, an optional layer ported from
+[jev-ultrafast](https://github.com/browser-use/jev-ultrafast) adds a dynamic,
+indexed action space: one code-owned id per actionable element, per-element
+operations, and an executor that only runs observed actions with semantic
+freshness and click-occlusion guards. `jev_step` can either execute an action
+the agent picked or let a decision model choose, and `jev_run` drives a bounded
+autonomous loop for one goal. Decision-making supports the Vercel AI SDK's
+experimental evaluation API (`model: "typesafe-ai/jev"`) through AI Gateway and
+the direct TypeSafe transport. It is **disabled by default** because
+decision-making needs an additional credential, and it is controlled by
+`jev_enabled`, `jev_decide`, `jev_backend`, `jev_model`, `jev_gateway_zdr`, and
+`jev_max_steps`, or by `/computer-use jev on|off` and
+`/computer-use jev-decide on|off`.
+
+See [docs/jev.md](./docs/jev.md) for the action-space format, credentials, and
+guard semantics.
 
 ## Documentation
 
 - [Usage](./docs/usage.md)
+- [Jev browser layer](./docs/jev.md)
 - [Architecture](./docs/architecture.md)
 - [Configuration](./docs/configuration.md)
 - [Development](./docs/development.md)

@@ -6,6 +6,9 @@ import {
 	executeEvaluateBrowser,
 	executeExpandUi,
 	executeInspectUi,
+	executeJevObserve,
+	executeJevRun,
+	executeJevStep,
 	executeLaunchBrowser,
 	executeFind,
 	executeNavigateBrowser,
@@ -16,7 +19,8 @@ import {
 	reconstructStateFromBranch,
 	shutdownComputerUseSession,
 } from "../src/bridge.ts";
-import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
+import { getComputerUseConfig, getLoadedComputerUseConfig, loadComputerUseConfig, resetComputerUseConfig, updateComputerUseConfig } from "../src/config.ts";
+import { describeJevDecisionProvider, loadJevTextConfig } from "../src/jev/policy.ts";
 
 const stateId = Type.String({ description: "Required state id owning every @e ref used by this operation" });
 const point = { x: Type.Number(), y: Type.Number() };
@@ -164,6 +168,54 @@ const evaluateBrowserTool = defineTool({
 	execute: executeEvaluateBrowser,
 });
 
+const jevObserveTool = defineTool({
+	name: "jev_observe",
+	label: "Jev Observe",
+	description: "Observe a CDP browser page as jev's indexed action space: one code-owned id per actionable element with its supported operations and dropdown option targets.",
+	promptSnippet: "Use before jev_step; the returned table lists executable action ids.",
+	promptGuidelines: [
+		"A jev state is separate from observe_ui states; jev_step and jev_run only accept jev states.",
+		"Prefer curated browser tools when a stable API exists; jev is for operating the page's own UI.",
+	],
+	parameters: Type.Object({
+		root: Type.Optional(Type.String({ description: "Exact @r ref issued by find_roots for a browser_page root", maxLength: 64 })),
+	}),
+	execute: executeJevObserve,
+});
+
+const jevStepTool = defineTool({
+	name: "jev_step",
+	label: "Jev Step",
+	description: "Execute one observed jev action through code-owned guards (freshness, geometry, click occlusion) and return the successor state.",
+	promptSnippet: "Pass an action id from jev_observe; omit it with a goal to let the TypeSafe policy choose one.",
+	promptGuidelines: [
+		"The executor never accepts selectors, coordinates, or scripts; only an observed action id.",
+		"A stale page consumes the decision without mutating; observe again before retrying.",
+	],
+	parameters: Type.Object({
+		stateId,
+		action: Type.Optional(Type.String({ description: "Code-owned action id from jev_observe, e.g. e3", maxLength: 64 })),
+		goal: Type.Optional(Type.String({ description: "Natural-language goal; required when action is omitted so the TypeSafe policy can decide", maxLength: 4000 })),
+		text: Type.Optional(Type.String({ description: "Explicit TYPE_TEXT value; otherwise the configured text helper generates it", maxLength: 2000 })),
+	}),
+	execute: executeJevStep,
+});
+
+const jevRunTool = defineTool({
+	name: "jev_run",
+	label: "Jev Run",
+	description: "Run jev's bounded autonomous policy loop for one goal and return the execution trace; a DONE choice is never treated as verified success.",
+	promptSnippet: "Use when the whole goal should be driven by the TypeSafe policy instead of step-by-step agent choices.",
+	promptGuidelines: ["Verify the final outcome independently; jev_run reports an unverified run status."],
+	parameters: Type.Object({
+		goal: Type.String({ description: "Natural-language goal for the whole run", maxLength: 4000 }),
+		stateId: Type.Optional(stateId),
+		root: Type.Optional(Type.String({ description: "Exact @r ref issued by find_roots for a browser_page root", maxLength: 64 })),
+		maxSteps: Type.Optional(Type.Number({ description: "Action budget; capped by configuration and the engine limit", minimum: 1, maximum: 60 })),
+	}),
+	execute: executeJevRun,
+});
+
 function formatConfigStatus(): string {
 	const loaded = getLoadedComputerUseConfig();
 	return [
@@ -172,6 +224,13 @@ function formatConfigStatus(): string {
 		`managed_browser: ${loaded.config.managed_browser}`,
 		`headless: ${loaded.config.headless ? "enabled" : "disabled"}`,
 		`cursor_overlay: ${loaded.config.cursor_overlay ? "enabled" : "disabled"}`,
+		`jev_enabled: ${loaded.config.jev_enabled ? "enabled" : "disabled"}`,
+		`jev_decide: ${loaded.config.jev_decide ? "enabled" : "disabled"}`,
+		`jev_backend: ${loaded.config.jev_backend}${loaded.config.jev_model ? ` (${loaded.config.jev_model})` : ""}`,
+		`jev_decision: ${describeJevDecisionProvider()}`,
+		`jev_gateway_zdr: ${loaded.config.jev_gateway_zdr ? "on" : "off"}`,
+		`jev_max_steps: ${loaded.config.jev_max_steps}`,
+		`jev_text_helper: ${loadJevTextConfig() ? "credentialed" : "no credential"}`,
 		"",
 		"Sources:",
 		...loaded.sources.map((source) => `- ${source.path}: ${source.error ? `error: ${source.error}` : source.exists ? "loaded" : "not found"}`),
@@ -179,19 +238,64 @@ function formatConfigStatus(): string {
 	].join("\n");
 }
 
+/** Apply `/computer-use <setting> on|off` as a session-scoped override. */
+function applyConfigCommand(args: string): string | undefined {
+	const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+	if (tokens.length === 0) return undefined;
+	const [subject, value] = tokens;
+	const enabled = ["on", "enable", "enabled", "true", "1"].includes(value ?? "");
+	const disabled = ["off", "disable", "disabled", "false", "0"].includes(value ?? "");
+	if (!enabled && !disabled) return `Unknown value '${value ?? ""}'. Use on or off.`;
+	if (subject === "jev" || subject === "jev-enabled") {
+		updateComputerUseConfig({ jev_enabled: enabled });
+		return `jev tools ${enabled ? "enabled" : "disabled"} for this session.`;
+	}
+	if (subject === "jev-decide" || subject === "jev-decision" || subject === "decide") {
+		updateComputerUseConfig({ jev_decide: enabled });
+		return `jev decision-making ${enabled ? "enabled" : "disabled"} for this session.`;
+	}
+	return `Unknown setting '${subject}'. Use: jev on|off, jev-decide on|off.`;
+}
+
+const BASE_TOOLS = [findTool, observeTool, searchUiTool, expandUiTool, inspectUiTool, actTool, readTextTool, waitForTool, launchBrowserTool, navigateBrowserTool, evaluateBrowserTool];
+const JEV_TOOLS = [jevObserveTool, jevStepTool, jevRunTool];
+const JEV_TOOL_NAMES = ["jev_observe", "jev_step", "jev_run"];
+let jevToolsRegistered = false;
+
+/**
+ * Keep the model-facing surface aligned with `jev_enabled`. The jev tools are
+ * registered lazily and only active while the layer is enabled, so a disabled
+ * layer contributes no prompt snippet and no callable tool. `setActiveTools`
+ * makes the switch reversible in-session, including via `/computer-use jev on`.
+ */
+function syncJevTools(pi: ExtensionAPI): void {
+	const enabled = getComputerUseConfig().jev_enabled;
+	if (enabled && !jevToolsRegistered) {
+		for (const tool of JEV_TOOLS) pi.registerTool(tool);
+		jevToolsRegistered = true;
+	}
+	if (typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function") return;
+	const base = pi.getActiveTools().filter((name) => !JEV_TOOL_NAMES.includes(name));
+	pi.setActiveTools(enabled ? [...base, ...JEV_TOOL_NAMES] : base);
+}
+
 export default function computerUseExtension(pi: ExtensionAPI): void {
-	for (const tool of [findTool, observeTool, searchUiTool, expandUiTool, inspectUiTool, actTool, readTextTool, waitForTool, launchBrowserTool, navigateBrowserTool, evaluateBrowserTool]) pi.registerTool(tool);
+	for (const tool of BASE_TOOLS) pi.registerTool(tool);
 
 	pi.registerCommand("computer-use", {
-		description: "Show pi-computer-use configuration",
-		handler: async (_args, ctx) => {
+		description: "Show pi-computer-use configuration, or set jev on|off and jev-decide on|off",
+		handler: async (args, ctx) => {
 			loadComputerUseConfig(ctx.cwd);
-			ctx.ui.notify(formatConfigStatus(), "info");
+			const change = applyConfigCommand(String(args ?? ""));
+			syncJevTools(pi);
+			ctx.ui.notify([change, formatConfigStatus()].filter(Boolean).join("\n\n"), "info");
 		},
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		loadComputerUseConfig(ctx.cwd);
+		// A new session drops session-scoped toggles before reloading files and env.
+		resetComputerUseConfig(ctx.cwd);
+		syncJevTools(pi);
 		reconstructStateFromBranch(ctx);
 		if (!ctx.hasUI) return;
 		try { await ensureComputerUseSetup(ctx); } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning"); }

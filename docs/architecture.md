@@ -122,6 +122,31 @@ Diff rendering falls back to a full folded view when the root identity changes, 
 
 Browser pages are roots, not a second agent-facing context hierarchy. `launch_browser` returns browser-page `@r` refs; `observe_ui` returns their normal outline and `stateId`. `read_text`, `wait_for`, `act_ui`, `navigate_browser`, and `evaluate_browser` derive the CDP target from that state. Internal CDP target identifiers never need to be copied between public tools.
 
+## Jev browser layer
+
+`jev_observe`, `jev_step`, and `jev_run` add an optional browser layer ported from
+[jev-ultrafast](https://github.com/browser-use/jev-ultrafast). It is a second,
+page-scoped observation kind (`kind: "jev"`) in the same bounded state store,
+sharing the `cdp:<targetId>` resource lane with ordinary browser states so a write
+through either surface invalidates the other.
+
+Instead of a nested outline, the layer builds a flat indexed action space: one
+code-owned id per actionable DOM node, per-element operations, and observed
+dropdown option targets. A page-side `WeakMap` owns node identity; semantic
+freshness compares a page key, a per-target guard, or the document marker;
+geometry and click occlusion are re-checked immediately before input. The
+executor accepts only an observed action id, never a selector, coordinate, or
+script, and never retries a mutation. Execution is recorded before the resulting
+observation, so an interrupted successor read cannot erase the action.
+
+The optional TypeSafe decision is one speculative request that returns the
+operation plus a target head for every available operation; only the selected
+operation's head is consumed and validated. The optional text helper writes
+`TYPE_TEXT` values through a separate small model. `jev_run` composes them into a
+bounded predict -> act -> observe loop and reports its terminal `DONE` as
+unverified. `jev_enabled`, `jev_decide`, and `jev_max_steps` gate the layer; see
+[Jev browser layer](./jev.md).
+
 ## Native transports
 
 The macOS socket server and Windows line protocol accept multiple in-flight requests and correlate responses by request id. macOS protects shared AX ref/look stores and the root-event sequence; Windows uses a fixed worker pool and initializes UIA per worker thread. Both platforms keep eight immutable native look records and serialize global physical input. Target focus, bounded occlusion preflight, and HID delivery share that same critical section; another worker cannot change the foreground between validation and delivery. UIA-only Windows batches do not acquire the global physical-input lock, while any batch that may fall back to pointer or keyboard delivery holds it for the complete transaction.
