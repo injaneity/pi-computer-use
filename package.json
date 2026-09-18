@@ -60,6 +60,7 @@
 		"test:output": "tsx scripts/check-bounded-output.mjs",
 		"test:commits": "node scripts/check-commit-messages.mjs",
 		"test:platform": "tsx scripts/check-platform-windows.mjs",
+		"test:windows-managed-helper": "tsx scripts/check-windows-managed-helper.mjs",
 		"test:windows-scripts": "node scripts/check-windows-build-scripts.mjs",
 		"test:package-assets": "node scripts/check-package-assets.mjs",
 		"test:signing": "node scripts/check-local-signing.mjs",

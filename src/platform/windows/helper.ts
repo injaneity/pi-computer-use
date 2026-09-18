@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rename, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,9 @@ const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const COMMAND_TIMEOUT_MS = 15_000;
 
 export const WINDOWS_HELPER_PROTOCOL_VERSION = 4;
-export const WINDOWS_HELPER_PATH = process.env.PI_COMPUTER_USE_WINDOWS_HELPER_PATH || path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
+const WINDOWS_HELPER_OVERRIDE = process.env.PI_COMPUTER_USE_WINDOWS_HELPER_PATH;
+export const WINDOWS_HELPER_PATH = WINDOWS_HELPER_OVERRIDE || path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
+const WINDOWS_PREBUILT_PATH = path.join(PACKAGE_ROOT, "prebuilt", "windows", "windows-bridge.exe");
 
 interface Pending<T> {
 	resolve(value: T): void;
@@ -22,6 +24,27 @@ interface Pending<T> {
 
 async function isExecutable(filePath: string): Promise<boolean> {
 	try { await access(filePath, fsConstants.X_OK); return true; } catch { return false; }
+}
+
+async function sha256(filePath: string): Promise<string | undefined> {
+	try { return createHash("sha256").update(await readFile(filePath)).digest("hex"); } catch { return undefined; }
+}
+
+export async function installConfiguredWindowsPrebuilt(options: { overridePath?: string; prebuiltPath?: string } = {}): Promise<boolean> {
+	const overridePath = options.overridePath ?? WINDOWS_HELPER_OVERRIDE;
+	const prebuiltPath = options.prebuiltPath ?? WINDOWS_PREBUILT_PATH;
+	if (!overridePath || !(await isExecutable(prebuiltPath))) return false;
+	const [prebuiltHash, installedHash] = await Promise.all([sha256(prebuiltPath), sha256(overridePath)]);
+	if (prebuiltHash && prebuiltHash === installedHash) return true;
+	await mkdir(path.dirname(overridePath), { recursive: true });
+	const temporary = `${overridePath}.tmp-${process.pid}-${Date.now()}`;
+	try {
+		await copyFile(prebuiltPath, temporary);
+		await rename(temporary, overridePath);
+	} finally {
+		await rm(temporary, { force: true });
+	}
+	return true;
 }
 
 async function runProcess(command: string, args: string[], timeoutMs: number, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<void> {
@@ -73,6 +96,10 @@ export class WindowsHelperClient {
 
 	async ensureInstalled(signal?: AbortSignal): Promise<void> {
 		if ((await isExecutable(WINDOWS_HELPER_PATH)) && this.installChecked) return;
+		if (await installConfiguredWindowsPrebuilt()) {
+			this.installChecked = true;
+			return;
+		}
 		// Re-enter Electron and Bun standalone hosts as their JavaScript runtimes.
 		await runProcess(process.execPath, [SETUP_HELPER_SCRIPT, "--platform", "windows", "--runtime"], HELPER_SETUP_TIMEOUT_MS, signal, { ...process.env, ELECTRON_RUN_AS_NODE: "1", BUN_BE_BUN: "1" });
 		this.installChecked = true;
