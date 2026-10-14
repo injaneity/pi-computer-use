@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { platformBackendForRuntime } from "../src/platform/index.ts";
 import { assertPlatformArchitecture, PLATFORM_ARCHITECTURE_VERSION, REQUIRED_PLATFORM_INVARIANTS } from "../src/platform/architecture.ts";
+
+const helperOverride = "/tmp/custom-windows-bridge.exe";
+process.env.PI_COMPUTER_USE_WINDOWS_HELPER_PATH = helperOverride;
+const [{ platformBackendForRuntime }, { WINDOWS_HELPER_PATH }] = await Promise.all([
+	import("../src/platform/index.ts"),
+	import("../src/platform/windows/helper.ts"),
+]);
+
+assert.equal(WINDOWS_HELPER_PATH, helperOverride);
 
 const win = platformBackendForRuntime("win32");
 assert.equal(win.name, "windows");

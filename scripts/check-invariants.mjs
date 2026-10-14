@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { noteAfterAct, noteFromLook } from "../src/note.ts";
 import { countOutlineNodes, foldToBudget, graftScopedOutline, nodeByRef, parseLookResponse } from "../src/outline.ts";
+import { shouldPreferForegroundModalWindow } from "../src/root-selection.ts";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const swift = fs.readFileSync(path.join(root, "native/macos/bridge.swift"), "utf8");
@@ -105,6 +106,32 @@ check("INV-5 listRoots seam stays platform-neutral", () => {
 	assert(srcFiles.some(([, text]) => /interface PlatformRoot[\s\S]*metadata\?: Record<string, unknown>/.test(text)), "PlatformRoot lacks metadata escape hatch");
 	assert(!srcFiles.some(([, text]) => /interface PlatformRoot[\s\S]*\bpairing:/.test(text)), "PlatformRoot must not require pairing");
 	assert(!srcFiles.some(([, text]) => /interface PlatformRoot[\s\S]*\bsheetCount:/.test(text)), "PlatformRoot must not require sheetCount");
+});
+
+check("explicit root is not replaced by a modal window behind it", () => {
+	const root = (overrides) => ({
+		windowId: 1,
+		windowRef: "w1",
+		title: "Input",
+		zOrder: 5,
+		isModal: false,
+		isFocused: false,
+		isMain: true,
+		isMinimized: false,
+		isOnscreen: true,
+		...overrides,
+	});
+	const current = root({});
+	const behindModal = root({ windowId: 2, windowRef: "w2", title: "Main", zOrder: 20, isModal: true });
+	const foregroundModal = root({ windowId: 3, windowRef: "w3", title: "Prompt", zOrder: 2, isModal: true });
+	assert(!shouldPreferForegroundModalWindow(current, behindModal), "modal root behind the explicit target was promoted");
+	assert(shouldPreferForegroundModalWindow(current, foregroundModal), "foreground modal root was not promoted");
+});
+
+check("macOS ScreenCaptureKit config sizes window screenshots", () => {
+	const captureFunction = swift.slice(swift.indexOf("private func captureWindow"), swift.indexOf("private func jpegData"));
+	assert(/config\.width\s*=/.test(captureFunction), "captureWindow does not set SCStreamConfiguration.width");
+	assert(/config\.height\s*=/.test(captureFunction), "captureWindow does not set SCStreamConfiguration.height");
 });
 
 function enclosingFunctionName(text, index) {

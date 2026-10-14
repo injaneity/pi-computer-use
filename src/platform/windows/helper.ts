@@ -12,7 +12,7 @@ const HELPER_SETUP_TIMEOUT_MS = 60_000;
 const COMMAND_TIMEOUT_MS = 15_000;
 
 export const WINDOWS_HELPER_PROTOCOL_VERSION = 4;
-export const WINDOWS_HELPER_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
+export const WINDOWS_HELPER_PATH = process.env.PI_COMPUTER_USE_WINDOWS_HELPER_PATH || path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "windows-bridge.exe");
 
 interface Pending<T> {
 	resolve(value: T): void;
