@@ -364,7 +364,7 @@ fn decode(
         ));
     }
     let mut out = Vec::with_capacity(expected);
-    for p in data[..expected].chunks_exact(4) {
+    for p in data[..expected].as_chunks::<4>().0 {
         let (r, g, b) = if order == ImageOrder::LSB_FIRST {
             (p[2], p[1], p[0])
         } else {
