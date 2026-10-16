@@ -312,7 +312,7 @@ const runtimeState: RuntimeState = {
 };
 
 const savedStates = new SavedStates();
-export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi };
+export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi, managedBrowserNeedsHeadless, managedBrowserArgs };
 let resourceScheduler = new ResourceScheduler();
 
 function operationState(): OperationState {
@@ -2198,6 +2198,32 @@ async function waitForCdpPort(port: number, signal?: AbortSignal): Promise<void>
 	throw new Error(`Managed browser did not expose CDP on port ${port} within ${MANAGED_BROWSER_READY_TIMEOUT_MS}ms.`);
 }
 
+// No graphical session is available to attach a windowed browser to, so the
+// managed browser must run headless. PI_COMPUTER_USE_MANAGED_BROWSER_HEADLESS
+// overrides the auto-detection in either direction ("1"/"true" forces
+// headless, "0"/"false" forces windowed) for cases where the heuristic below
+// guesses wrong.
+function managedBrowserNeedsHeadless(): boolean {
+	const override = trimOrUndefined(process.env.PI_COMPUTER_USE_MANAGED_BROWSER_HEADLESS)?.toLowerCase();
+	if (override === "1" || override === "true") return true;
+	if (override === "0" || override === "false") return false;
+	if (process.platform === "darwin" || process.platform === "win32") return false;
+	return !trimOrUndefined(process.env.DISPLAY) && !trimOrUndefined(process.env.WAYLAND_DISPLAY);
+}
+
+// Pure so it can be unit tested without spawning a real browser process.
+// Parameter names mirror the flags they fill in below.
+function managedBrowserArgs({ remoteDebuggingPort, userDataDir, url }: { remoteDebuggingPort: number; userDataDir: string; url: string }): string[] {
+	return [
+		`--remote-debugging-port=${remoteDebuggingPort}`,
+		`--user-data-dir=${userDataDir}`,
+		"--no-first-run",
+		"--no-default-browser-check",
+		...(managedBrowserNeedsHeadless() ? ["--headless=new", "--no-sandbox", "--disable-gpu"] : []),
+		url,
+	];
+}
+
 // Side effects: starts a Pi-managed browser process, replaces any previous managed browser,
 // and sets PI_COMPUTER_USE_CDP_PORT for subsequent CDP context discovery.
 async function performLaunchBrowser(params: LaunchBrowserParams, signal?: AbortSignal): Promise<AgentToolResult<BrowserObservationDetails>> {
@@ -2210,13 +2236,7 @@ async function performLaunchBrowser(params: LaunchBrowserParams, signal?: AbortS
 	const profileDir = path.join(os.tmpdir(), `pi-${browser}-cdp-${port}`);
 	disconnectCdp();
 	runtimeState.managedBrowser?.kill("SIGTERM");
-	const args = [
-		`--remote-debugging-port=${port}`,
-		`--user-data-dir=${profileDir}`,
-		"--no-first-run",
-		"--no-default-browser-check",
-		url,
-	];
+	const args = managedBrowserArgs({ remoteDebuggingPort: port, userDataDir: profileDir, url });
 	if (runtimeState.previousCdpPort === undefined && runtimeState.managedBrowserCdpPort === undefined) {
 		runtimeState.previousCdpPort = process.env.PI_COMPUTER_USE_CDP_PORT;
 	}

@@ -207,11 +207,15 @@ PI_COMPUTER_USE_ACTIVITY_GLOW=1
 PI_COMPUTER_USE_DELIVERY_POLICY=default
 PI_COMPUTER_USE_DELIVERY_POLICY=foreground
 PI_COMPUTER_USE_CDP_PORT=9222
+PI_COMPUTER_USE_MANAGED_BROWSER_HEADLESS=0
+PI_COMPUTER_USE_MANAGED_BROWSER_HEADLESS=1
 ```
 
 `PI_COMPUTER_USE_HEADLESS=1` prohibits foreground fallback. `PI_COMPUTER_USE_DELIVERY_POLICY` is a debugging input; normal policy belongs in configuration rather than individual model calls.
 
 `launch_browser` searches common platform install locations and `PATH`. Use `PI_COMPUTER_USE_CHROME_EXECUTABLE` or `PI_COMPUTER_USE_HELIUM_EXECUTABLE` for an AppImage, portable install, or any non-standard location. An explicit override is authoritative and must name an executable file.
+
+On Linux, `launch_browser` launches the managed browser headless (`--headless=new --no-sandbox --disable-gpu`) when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set, since there is no graphical session for a visible window. Set `PI_COMPUTER_USE_MANAGED_BROWSER_HEADLESS` to `0` or `1` to force the decision explicitly; the variable is ignored on macOS and Windows, which always have a desktop session.
 
 ## CDP browser support
 

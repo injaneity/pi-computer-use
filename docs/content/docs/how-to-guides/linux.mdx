@@ -37,7 +37,7 @@ Linux always attempts AT-SPI semantics first. Semantic delivery does not request
 
 With `headless: true` or the `ax_only`/`background` delivery policy, the helper never invokes XTEST or EWMH focus. Unsupported semantic input fails closed. With non-headless `default` or `foreground` policy on X11, actions may fall back to global XTEST input and focus may use EWMH. Those operations can move the real pointer, type into the focused application, and interfere with the user's session. Native Wayland has no such physical fallback.
 
-Managed CDP actions also avoid desktop focus, but `launch_browser` starts a normal visible browser; this project's `headless` option is an input-delivery policy, not Chromium's `--headless` switch.
+Managed CDP actions also avoid desktop focus, but `launch_browser` normally starts a visible browser; this project's `headless` option is an input-delivery policy, not Chromium's `--headless` switch. When no `DISPLAY` or `WAYLAND_DISPLAY` is present (headless servers, containers, CI), `launch_browser` instead starts Chromium with `--headless=new --no-sandbox --disable-gpu`, since there is no graphical session to attach a visible window to. Set `PI_COMPUTER_USE_MANAGED_BROWSER_HEADLESS=0` or `=1` to override this auto-detection in either direction.
 
 ## Wayland portal boundary
 
