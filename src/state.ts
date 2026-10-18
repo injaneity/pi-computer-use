@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import type { CdpPageSnapshot } from "./cdp.ts";
 import type { ImageMode } from "./contract.ts";
+import type { JevPageSnapshot } from "./jev/types.ts";
 import type { WindowNote } from "./note.ts";
 import { restoreOutline, serializeOutline, type LookResponse, type Outline, type SerializedOutline } from "./outline.ts";
 import { StateStore, type StoredState } from "./runtime.ts";
@@ -42,6 +44,8 @@ export interface OperationState {
 	lastSearchOcrEscalatedLookId?: string;
 	browserSnapshot?: CdpPageSnapshot;
 	contextId?: string;
+	jevSnapshot?: JevPageSnapshot;
+	jevRootRef?: string;
 }
 
 interface DesktopObservation {
@@ -60,7 +64,13 @@ interface BrowserObservation {
 	outline: SerializedOutline;
 }
 
-export type UiObservation = DesktopObservation | BrowserObservation;
+interface JevObservation {
+	kind: "jev";
+	snapshot: JevPageSnapshot;
+	rootRef?: string;
+}
+
+export type UiObservation = DesktopObservation | BrowserObservation | JevObservation;
 
 export class SavedStates {
 	readonly store = new StateStore<UiObservation>(128);
@@ -80,12 +90,35 @@ export class SavedStates {
 		this.store.set(record);
 	}
 
+	/** Store one immutable jev observation and return its agent-facing state id. */
+	saveJev(snapshot: JevPageSnapshot, resourceKey: string, epoch: number, rootRef?: string): StoredState<UiObservation> {
+		const record: StoredState<UiObservation> = {
+			stateId: randomUUID(),
+			resourceKey,
+			epoch,
+			value: { kind: "jev", snapshot, rootRef },
+		};
+		this.store.set(record);
+		return record;
+	}
+
 	clear(): void {
 		this.store.clear();
 	}
 
 	hydrate(record: StoredState<UiObservation> | undefined): OperationState {
 		if (!record) return {};
+		if (record.value.kind === "jev") {
+			const { snapshot } = record.value;
+			return {
+				currentCapture: { stateId: record.stateId, width: 0, height: 0, scaleFactor: 1, timestamp: snapshot.capturedAt },
+				resourceKey: record.resourceKey,
+				epoch: record.epoch,
+				contextId: snapshot.contextId,
+				jevSnapshot: snapshot,
+				jevRootRef: record.value.rootRef,
+			};
+		}
 		if (record.value.kind === "browser") {
 			const outline = restoreOutline(record.value.outline);
 			return {

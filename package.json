@@ -64,6 +64,9 @@
 		"test:invariants": "node scripts/check-invariants.mjs",
 		"test:lifecycle": "tsx scripts/check-session-lifecycle.mjs",
 		"test:runtime": "tsx scripts/check-runtime-concurrency.mjs",
+		"test:jev": "tsx scripts/check-jev.mjs",
+		"test:jev-live": "PI_CU_LIVE=1 tsx scripts/check-jev-live.mjs",
+		"test:jev-gateway": "PI_CU_LIVE_GATEWAY=1 tsx scripts/check-jev-gateway.mjs",
 		"test:output": "tsx scripts/check-bounded-output.mjs",
 		"test:commits": "node scripts/check-commit-messages.mjs",
 		"test:platform": "tsx scripts/check-platform-windows.mjs",
@@ -74,7 +77,7 @@
 		"test:macos-target": "tsx scripts/check-macos-observe-target.mjs",
 		"test:macos-native": "node scripts/check-macos-native-pure.mjs",
 		"test:act-outcomes": "tsx scripts/check-act-outcomes.mjs",
-		"test": "npm run typecheck && npm run docs:check && npm run test:schema && npm run test:find-params && npm run test:output && npm run test:lifecycle && npm run test:runtime && npm run test:invariants && npm run test:platform && npm run test:linux && npm run test:linux-scripts && npm run test:signing && npm run test:macos-path && npm run test:macos-target && npm run test:macos-native && npm run test:act-outcomes",
+		"test": "npm run typecheck && npm run docs:check && npm run test:schema && npm run test:find-params && npm run test:output && npm run test:lifecycle && npm run test:runtime && npm run test:jev && npm run test:invariants && npm run test:platform && npm run test:linux && npm run test:linux-scripts && npm run test:signing && npm run test:macos-path && npm run test:macos-target && npm run test:macos-native && npm run test:act-outcomes",
 		"build:native": "node scripts/build-native.mjs",
 		"build:windows": "node scripts/build-native.mjs --platform windows",
 		"build:linux": "node scripts/build-native.mjs --platform linux",
@@ -85,10 +88,21 @@
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
-		"typebox": "*"
+		"typebox": "*",
+		"ai": "^7.0.105",
+		"@ai-sdk/typesafe-ai": "*"
+	},
+	"peerDependenciesMeta": {
+		"ai": {
+			"optional": true
+		},
+		"@ai-sdk/typesafe-ai": {
+			"optional": true
+		}
 	},
 	"devDependencies": {
 		"@types/node": "^26.1.1",
+		"ai": "^7.0.105",
 		"tsx": "^4.23.1",
 		"typescript": "^7.0.2"
 	}

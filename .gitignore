@@ -1,5 +1,6 @@
 .DS_Store
 .pi/
+.rpi/
 node_modules/
 index-*.js
 main.js

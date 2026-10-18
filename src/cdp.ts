@@ -126,9 +126,43 @@ export class CdpTab {
 	}
 
 	/** Evaluates a JS expression in the page and returns its primitive value. */
-	async evaluate(expression: string): Promise<unknown> {
-		const result = await this.send("Runtime.evaluate", { expression, returnByValue: true, timeout: COMMAND_TIMEOUT_MS, awaitPromise: true });
+	async evaluate(expression: string, timeoutMs = COMMAND_TIMEOUT_MS): Promise<unknown> {
+		const result = await this.send("Runtime.evaluate", { expression, returnByValue: true, timeout: timeoutMs, awaitPromise: true }, timeoutMs);
 		return result?.result?.value;
+	}
+
+	/**
+	 * Evaluates and reports an in-page exception instead of swallowing it. The
+	 * jev executor needs to distinguish "the target is gone" from "the mutation
+	 * may already have run but the document was destroyed while reporting it".
+	 */
+	async evaluateStrict(expression: string, options: { awaitPromise?: boolean; timeoutMs?: number } = {}): Promise<{ value: unknown; exception: boolean; description?: string }> {
+		const timeoutMs = options.timeoutMs ?? COMMAND_TIMEOUT_MS;
+		const result = await this.send("Runtime.evaluate", {
+			expression,
+			returnByValue: true,
+			awaitPromise: options.awaitPromise ?? false,
+			timeout: timeoutMs,
+		}, timeoutMs);
+		const details = result?.exceptionDetails;
+		return {
+			value: result?.result?.value,
+			exception: Boolean(details),
+			description: details?.exception?.description ?? details?.text,
+		};
+	}
+
+	/** Replace an editable control's contents with select-all followed by text insertion. */
+	async fillFocused(text: string): Promise<void> {
+		const modifiers = process.platform === "darwin" ? 4 : 2;
+		await this.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", modifiers, commands: ["selectAll"] });
+		await this.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers });
+		await this.send("Input.insertText", { text });
+	}
+
+	/** Scroll the page by a wheel event, defaulting to the current viewport center. */
+	async wheel(deltaX: number, deltaY: number, point?: { x: number; y: number }): Promise<void> {
+		await this.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: point?.x ?? 550, y: point?.y ?? 650, deltaX, deltaY });
 	}
 
 	async accessibilityTree(): Promise<unknown[]> {
@@ -216,13 +250,13 @@ export class CdpTab {
 		return entries;
 	}
 
-	private send(method: string, params: Record<string, unknown> = {}): Promise<any> {
+	private send(method: string, params: Record<string, unknown> = {}, timeoutMs = COMMAND_TIMEOUT_MS): Promise<any> {
 		const id = this.nextId++;
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
-				reject(new Error(`CDP command '${method}' timed out after ${COMMAND_TIMEOUT_MS}ms.`));
-			}, COMMAND_TIMEOUT_MS);
+				reject(new Error(`CDP command '${method}' timed out after ${timeoutMs}ms.`));
+			}, timeoutMs);
 			this.pending.set(id, {
 				resolve: (result) => {
 					clearTimeout(timer);
@@ -475,6 +509,16 @@ async function withCdpContextTab<T>(contextId: string, run: (tab: CdpTab) => Pro
 	} finally {
 		tab.close();
 	}
+}
+
+/**
+ * Open a reusable connection to one CDP page. The jev layer holds one tab for
+ * a whole observe/step/run so the page-side node identity cache stays warm.
+ */
+export async function openCdpTabForContext(contextId: string): Promise<CdpTab | undefined> {
+	const page = await cdpPageForContext(contextId);
+	if (!page?.webSocketDebuggerUrl) return undefined;
+	return await CdpTab.connect(page.webSocketDebuggerUrl, page.id, page.title);
 }
 
 async function cdpPageForContext(contextId: string): Promise<CdpPageTarget | undefined> {
