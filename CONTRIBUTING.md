@@ -37,8 +37,8 @@ Existing writable system-wide installs remain at `/Applications/pi-computer-use.
 
 Use the smallest check that proves the change:
 
-- Documentation changes: proofread changed files and check touched links or commands.
-- TypeScript or schema changes: run `npm test`.
+- Documentation changes: run `npm run docs:check`, proofread changed files, and check touched links or commands.
+- TypeScript or schema changes: run `npm test`; if the public tool definition changed, run `npm run docs:generate` first.
 - Native helper changes: run `npm run build:native` and `npm test`.
 - Behavior changes: run `cubench` against the registered extension tools.
 
@@ -75,7 +75,7 @@ A PR should include:
 - permission, browser, or strict AX impact if relevant
 - validation results
 
-Keep unrelated formatting and generated output out of the PR.
+Keep unrelated formatting out of the PR. Commit generated reference changes when their source definition changed so CI can verify that the two remain synchronized.
 
 ## AI-assisted work
 

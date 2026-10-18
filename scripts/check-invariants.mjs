@@ -4,12 +4,15 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { noteAfterAct, noteFromLook } from "../src/note.ts";
-import { countOutlineNodes, foldToBudget, graftScopedOutline, nodeByRef, parseLookResponse } from "../src/outline.ts";
+import { countOutlineNodes, foldToBudget, graftScopedOutline, nodeByRef, parseLookResponse, renderInteractiveControls } from "../src/outline.ts";
 import { shouldPreferForegroundModalWindow } from "../src/root-selection.ts";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const swift = fs.readFileSync(path.join(root, "native/macos/bridge.swift"), "utf8");
 const agentCursorSwift = fs.readFileSync(path.join(root, "native/macos/agent_cursor.swift"), "utf8");
+const activityGlowSwift = fs.readFileSync(path.join(root, "native/macos/activity_glow.swift"), "utf8");
+const extensionTs = fs.readFileSync(path.join(root, "extensions/computer-use.ts"), "utf8");
+const macosHelperTs = fs.readFileSync(path.join(root, "src/platform/macos/helper.ts"), "utf8");
 const ts = fs.readFileSync(path.join(root, "src/bridge.ts"), "utf8");
 const noteTs = fs.readFileSync(path.join(root, "src/note.ts"), "utf8");
 const configTs = fs.readFileSync(path.join(root, "src/config.ts"), "utf8");
@@ -186,6 +189,13 @@ check("INV-11 unified agent contract", () => {
 	assert(extension.includes("Required state id owning every @e ref"), "state-scoped ref contract is missing");
 });
 
+check("INV-11a compact observe view", () => {
+	const extension = fs.readFileSync(path.join(root, "extensions/computer-use.ts"), "utf8");
+	assert(extension.includes('detail: Type.Optional(Type.Union([Type.Literal("compact"), Type.Literal("outline")]'), "observe_ui does not declare detail compact|outline");
+	assert(ts.includes("function renderStateView") && (ts.match(/renderStateView\(/g) ?? []).length >= 4 && (ts.match(/waitForViewText\(/g) ?? []).length >= 3, "full views do not route through renderStateView");
+	assert(/`Controls \([^`]*stateId \$\{stateId\}, root \$\{outline\.root\.ref\}/.test(ts), "controls header does not show stateId and root ref");
+});
+
 check("INV-12 parallel native transports", () => {
 	const swift = fs.readFileSync(path.join(root, "native/macos/bridge.swift"), "utf8");
 	const windows = fs.readFileSync(path.join(root, "native/windows/bridge-rs/src/main.rs"), "utf8");
@@ -219,6 +229,9 @@ check("INV-16 clean headless contract and non-destructive helper install", () =>
 	assert(setupHelper.includes("pi-computer-use Local Signing (com.injaneity.pi-computer-use)"), "stable bundle-specific local signing identity is missing");
 	assert(macosHelperPath.includes("PI_COMPUTER_USE_HELPER_APP_PATH"), "helper installer lacks an isolated test destination");
 	assert(setupHelper.includes("resolveMacosHelperAppPath"), "helper installer bypasses shared macOS path resolution");
+	assert(swift.includes("Action requires synthesized pointer input, which strict headless mode prohibits"), "macOS strict headless can fall back to synthesized pointer input");
+	assert(swift.includes("Typing requires synthesized keyboard input, which strict headless mode prohibits") && swift.includes("Keypress requires synthesized keyboard input, which strict headless mode prohibits"), "macOS strict headless can post synthesized keyboard input");
+	assert(swift.includes("Web text replacement requires synthesized keyboard input, which strict headless mode prohibits"), "macOS strict headless can synthesize web text replacement");
 });
 
 check("INV-17 macOS agent cursor stays native, configurable, and background-only", () => {
@@ -230,6 +243,19 @@ check("INV-17 macOS agent cursor stays native, configurable, and background-only
 	assert(swift.includes("AgentCursor.shared.animate(to:"), "native grounded actions do not drive the agent cursor");
 	assert(!swift.includes("completed.wait()") && !swift.includes("agentCursorLock"), "agent cursor can delay action delivery");
 	assert(agentCursorSwift.includes("paused: !renderer.isAnimating"), "agent cursor timeline continues rendering while idle");
+});
+
+check("INV-17b macOS activity glow is configurable, headless-safe, and connection-owned", () => {
+	assert(configTs.includes("activity_glow: boolean") && configTs.includes("activity_glow: false") && configTs.includes("PI_COMPUTER_USE_ACTIVITY_GLOW"), "activity glow config or default is incomplete");
+	assert(extensionTs.includes('pi.on("tool_execution_start"') && extensionTs.includes('pi.on("agent_end"'), "extension does not track computer-use activity lifecycle");
+	assert(extensionTs.includes("config.headless") && extensionTs.includes("config.activity_glow"), "activity glow is not configurable or headless-safe");
+	assert(macosHelperTs.includes("class MacosActivityGlowConnection") && macosHelperTs.includes('cmd: "setActivityGlow"'), "activity glow does not use a persistent helper connection");
+	assert(swift.includes('case "setActivityGlow"') && swift.includes("activityGlow.disconnect(clientID)"), "native helper does not clear activity state on disconnect");
+	assert(swift.includes('"activityGlowActive": activityGlow.isActive'), "helper diagnostics cannot verify activity ownership");
+	assert(activityGlowSwift.includes("activeClients = Set<UUID>()"), "native activity state is not client-owned");
+	assert(activityGlowSwift.includes("window.ignoresMouseEvents = true") && activityGlowSwift.includes("window.sharingType = .readOnly"), "activity glow can accept input or is hidden from user screen recordings");
+	assert(swift.includes("SCContentFilter(desktopIndependentWindow"), "agent captures must stay per-window so the capturable activity glow cannot leak into observations");
+	assert(activityGlowSwift.includes("window.setAccessibilityElement(false)"), "activity glow can appear in accessibility discovery");
 });
 
 check("INV-18 consolidated actions and diff-first resulting views", () => {
@@ -265,6 +291,7 @@ check("INV-20 bounded broad root discovery", () => {
 	assert(swift.includes("if let pid {\n\t\t\tapps = [[\"pid\": Int(pid)]]"), "explicit-pid root discovery no longer stays immediate");
 	assert(swift.includes("popupCandidates.isEmpty ? [] : openMenuElements"), "root discovery traverses menus when no popup exists");
 	assert(!swift.includes("let menuPairings = windowPairings(windows: menuElements, candidates: popupCandidates)"), "root discovery includes unrelated menu-pairing changes");
+	assert(/if windows\.isEmpty \{\s*for attribute in \[kAXMainWindowAttribute, kAXFocusedWindowAttribute\]/.test(swift), "root discovery drops windows that AXWindows omits");
 	assert(ts.includes("async function windowDetailsForFind"), "find_roots lacks an explicit root-acquisition boundary");
 	assert(/if \(!query\.app && !query\.bundleId && !Number\.isFinite\(query\.pid\)\)[\s\S]{0,160}listRoots\(\{\}, signal\)/.test(ts), "broad find_roots does not use one platform listRoots call");
 	assert(ts.includes("return await collectWindowDetails(apps, config, signal)"), "filtered find_roots does not retain per-app discovery");
@@ -285,6 +312,7 @@ check("INV-8 swift typecheck", () => {
 		"-framework", "Foundation",
 		"-framework", "SwiftUI",
 		"-typecheck",
+		"native/macos/activity_glow.swift",
 		"native/macos/agent_cursor.swift",
 		"native/macos/agent_cursor_motion.swift",
 		"native/macos/bridge.swift",
@@ -414,7 +442,7 @@ async function liveChecks() {
 	try {
 		const socketPath = process.env.PI_CU_SOCKET_PATH ?? path.join(os.homedir(), "Library/Caches/pi-computer-use/bridge.sock");
 		const diagnostics = await call(socketPath, { id: "inv-diagnostics", cmd: "diagnostics" });
-		check("LIVE diagnostics current protocol", () => assert(diagnostics.protocolVersion === 6, `protocolVersion=${diagnostics.protocolVersion}`));
+		check("LIVE diagnostics current protocol", () => assert(diagnostics.protocolVersion === 7, `protocolVersion=${diagnostics.protocolVersion}`));
 		const broadDiscoveryStarted = Date.now();
 		const broadRoots = await call(socketPath, { id: "inv-broad-roots", cmd: "listRoots" }, 10000);
 		const broadDiscoveryMs = Date.now() - broadDiscoveryStarted;
@@ -422,13 +450,13 @@ async function liveChecks() {
 		check("LIVE broad root discovery is bounded and keeps helper alive", () => {
 			assert(Array.isArray(broadRoots?.roots), "broad listRoots did not return roots");
 			assert(broadDiscoveryMs < 10000, `broad listRoots took ${broadDiscoveryMs}ms`);
-			assert(diagnosticsAfterBroadDiscovery.protocolVersion === 6, "helper did not survive broad listRoots");
+			assert(diagnosticsAfterBroadDiscovery.protocolVersion === 7, "helper did not survive broad listRoots");
 		});
 		const abandonedRequestId = `inv-abandoned-roots-${process.pid}-${Date.now()}`;
 		await abandon(socketPath, { id: abandonedRequestId, cmd: "listRoots" });
 		const diagnosticsAfterAbandon = await waitForCompletedRequest(socketPath, abandonedRequestId);
 		check("LIVE abandoned root discovery keeps helper alive", () => {
-			assert(diagnosticsAfterAbandon.protocolVersion === 6, "helper died after writing to an abandoned root-discovery socket");
+			assert(diagnosticsAfterAbandon.protocolVersion === 7, "helper died after writing to an abandoned root-discovery socket");
 		});
 		const explicitWindowId = process.env.PI_CU_LIVE_WINDOW_ID ? Number(process.env.PI_CU_LIVE_WINDOW_ID) : undefined;
 		let windows = [];
@@ -542,6 +570,15 @@ async function liveChecks() {
 			for (const line of foldedLines) assert(/▸ \(\d+/.test(line), `folded line lacks count: ${line}`);
 			assert(folded.nodeCount === countOutlineNodes(parsed.root), `node count mismatch ${folded.nodeCount}`);
 			assert(folded.fullUnfoldLineCount === folded.nodeCount, "full unfold count differs from total nodes");
+		});
+		check("LIVE compact controls resolve against full outline", () => {
+			const parsed = parseLookResponse(look).parsedOutline;
+			const controls = renderInteractiveControls(parsed);
+			for (const ref of controls.renderedRefs) assert(nodeByRef(parsed, ref), `compact ref ${ref} does not resolve`);
+			for (const focused of parsed.nodes.filter((node) => node.focused)) {
+				assert(controls.renderedRefs.includes(focused.ref), `focused ref ${focused.ref} was not rendered by compact view`);
+			}
+			assert(controls.nodeCount === countOutlineNodes(parsed.root), `compact node count mismatch ${controls.nodeCount}`);
 		});
 		const fullOutline = parseLookResponse(look).parsedOutline;
 		const truncated = fullOutline?.nodes.find((node) => node.truncated && node.wireRef);

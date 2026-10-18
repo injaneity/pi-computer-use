@@ -1,4 +1,7 @@
-# Architecture
+---
+title: 'Architecture'
+description: 'How immutable UI state, resource scheduling, observations, and checked actions fit together.'
+---
 
 `pi-computer-use` exposes one state-scoped interface for desktop and browser UI:
 
@@ -6,7 +9,7 @@
 find roots → observe one root → search/expand/inspect its state → act from that state
 ```
 
-The agent still sees a multi-root forest. `find_roots` returns stable root refs (`@rN`) for desktop windows, transient surfaces, and CDP pages. Observing one root produces an immutable element tree whose refs (`@eN`) belong only to that returned `stateId`. Progressive disclosure is unchanged: the first outline is folded, while `search_ui`, `expand_ui`, and `inspect_ui` query the full stored tree.
+The agent still sees a multi-root forest. `find_roots` returns stable root refs (`@rN`) for desktop windows, transient surfaces, and CDP pages. Observing one root produces an immutable element tree whose refs (`@eN`) belong only to that returned `stateId`. Progressive disclosure is unchanged: the first view lists actionable controls, while `search_ui`, `expand_ui`, and `inspect_ui` query the full stored tree.
 
 ## Runtime model
 
@@ -58,7 +61,7 @@ Desktop scheduling is conservatively keyed by process rather than window because
 
 `observe_ui` asks the selected backend for one look. A desktop look combines root identity, accessibility structure, optional image evidence, OCR boxes when required, and capture metadata. A browser look converts the CDP accessibility tree into the same serialized outline shape.
 
-The bridge stores the complete observation and returns a folded rendering. The state owns its refs:
+The bridge stores the complete observation and returns a compact control list; `detail: "outline"` and `expand_ui` render the folded tree. The state owns its refs:
 
 ```text
 @r3 browser page
@@ -106,17 +109,17 @@ delivery alone is never treated as semantic success.
 
 One action is represented by an array of length one. A multi-action transaction is appropriate only when no intermediate observation is needed. The runtime validates one base state, acquires one resource lane, and sends the steps as one native helper transaction. The helper captures one pre-transaction root baseline, executes and verifies steps in order, and stops on the first failed or invalidated step. Partial results include `stoppedAt`, so callers know the exact checked boundary and must re-observe before continuing. The helper performs one final root-delta settle and the bridge produces one final observation. There is no alternate sequential protocol. This is not a mechanism for parallel actions within one UI resource.
 
-The bridge resolves model intent; the backend/helper owns grounding, preflight, delivery, and evidence. Accessibility capabilities choose an initial strategy but are not treated as proof that the intended result occurred. Editable-region clicks establish foreground focus for following unscoped keyboard steps in the same transaction. Raw coordinates are tied to the image-bearing state that produced them. Web-backed editable controls use atomic keyboard events and web-backed buttons use pointer events so application state receives normal input events rather than only a changed AX value. A helper result reports `worked`, `didnt`, or `unknown`, including evidence and shallow root changes where available.
+The bridge resolves model intent; the backend/helper owns grounding, preflight, delivery, and evidence. Accessibility capabilities choose an initial strategy but are not treated as proof that the intended result occurred. Editable-region clicks establish foreground focus for following unscoped keyboard steps in the same transaction. Raw coordinates are tied to the image-bearing state that produced them. Web-backed editable controls use atomic keyboard events and web-backed buttons use pointer events so application state receives normal input events rather than only a changed AX value. A helper result reports `worked`, `didnt`, or `unknown`, including evidence and shallow root changes where available. The [macOS implementation reference](../reference/platforms/macos/actions.mdx) documents that backend's exact Accessibility, web-control, and synthesized-event paths.
 
-With `headless: true`, the background boundary is strict: Pi must never activate or raise an application, change the user's focused window, move the global cursor, post raw input, or display the agent cursor. With `headless: false` (the default), credible semantic activation may begin in the background, editable clicks preserve the focus they establish for following unscoped keyboard input, and keyboard input with a checked `didnt` result may retry in the foreground because the first attempt proved side-effect-free. Focus-preserving native keyboard requests must not raise or re-focus the window between semantic activation and HID delivery; canvas editors such as PowerPoint otherwise collapse an inner text editor back to placeholder selection. Ambiguous pointer outcomes are never replayed. With `cursor_overlay: true`, non-headless macOS background pointer actions enqueue a click-through agent cursor animation to the native grounded point without delaying delivery; foreground HID actions use only the physical cursor.
+With `headless: true`, the background boundary is strict: Pi must never activate or raise an application, change the user's focused window, move the global cursor, post synthesized input, or display the agent cursor or activity glow. On macOS, the helper rejects any action that would need synthesized pointer or keyboard input with `foreground_required`, and the bridge returns that error instead of retrying in the foreground ([macOS actions reference](../reference/platforms/macos/actions.mdx#headless-policy)). With `headless: false` (the default), credible semantic activation may begin in the background, editable clicks preserve the focus they establish for following unscoped keyboard input, and keyboard input with a checked `didnt` result may retry in the foreground because the first attempt proved side-effect-free. Focus-preserving native keyboard requests do not raise or re-focus the outer window between semantic activation and event delivery; canvas editors such as PowerPoint otherwise collapse an inner text editor back to placeholder selection. Ambiguous pointer outcomes are never replayed. On macOS, `cursor_overlay` schedules a visual, noninteractive overlay separately from action delivery for non-headless background pointer actions; foreground HID actions use only the physical cursor, and the overlay is currently main-display-only ([macOS implementation reference](../reference/platforms/macos/actions.mdx#agent-cursor-overlay)). With `activity_glow: true` (default `false`), non-headless macOS sessions hold a persistent helper connection that owns a click-through border on each screen until the agent run ends. The helper combines active connections and removes their state on disconnect.
 
-The agent-facing `act_ui.headless` flag determines whether foreground execution is prohibited. Fallback-capable multi-action calls execute one checked action at a time, retain click-established focus, and stop on a checked `didnt`; strict-headless calls retain native transactional batching.
+The `headless` configuration option determines whether foreground execution is prohibited. Fallback-capable multi-action calls execute one checked action at a time, retain click-established focus, and stop on a checked `didnt`; strict-headless calls retain native transactional batching.
 
 ## Successor diffs
 
-Complete observations remain immutable and bounded internally. The initial observation renders a folded full view. After a mutation, `view.ts` stabilizes public refs using confident native identities, saves the complete resulting state, and compares it with the base state. Small trustworthy results render `added`, `updated`, and `removed` nodes plus the next `stateId`. Root appearance, closure, and focus changes remain part of the run result.
+Complete observations remain immutable and bounded internally. The initial observation renders the compact control list. After a mutation, `view.ts` stabilizes public refs using confident native identities, saves the complete resulting state, and compares it with the base state. Small trustworthy results render `added`, `updated`, and `removed` nodes plus the next `stateId`. Root appearance, closure, and focus changes remain part of the run result.
 
-Diff rendering falls back to a full folded view when the root identity changes, too few successor nodes can be matched confidently, or the change budget would make a patch less useful than the full view. Cached queries always operate on the complete stored state, never on a partially applied model-side tree.
+Diff rendering falls back to the compact control list when the root identity changes, too few successor nodes can be matched confidently, or the change budget would make a patch less useful than the full view. Cached queries always operate on the complete stored state, never on a partially applied model-side tree.
 
 ## Browser support
 
@@ -145,13 +148,13 @@ operation's head is consumed and validated. The optional text helper writes
 `TYPE_TEXT` values through a separate small model. `jev_run` composes them into a
 bounded predict -> act -> observe loop and reports its terminal `DONE` as
 unverified. `jev_enabled`, `jev_decide`, and `jev_max_steps` gate the layer; see
-[Jev browser layer](./jev.md).
+[Jev browser layer](./jev.mdx).
 
 ## Native transports
 
-The macOS socket server and Windows line protocol accept multiple in-flight requests and correlate responses by request id. macOS protects shared AX ref/look stores and the root-event sequence; Windows uses a fixed worker pool and initializes UIA per worker thread. Both platforms keep eight immutable native look records and serialize global physical input. Target focus, bounded occlusion preflight, and HID delivery share that same critical section; another worker cannot change the foreground between validation and delivery. UIA-only Windows batches do not acquire the global physical-input lock, while any batch that may fall back to pointer or keyboard delivery holds it for the complete transaction.
+The macOS socket server and Windows line protocol accept multiple in-flight requests and correlate responses by request id. macOS protects shared AX ref/look stores and the root-event sequence; Windows uses a fixed worker pool and initializes UIA per worker thread. Both platforms keep eight immutable native look records and serialize global synthesized input. Target focus, bounded occlusion preflight, and event delivery share that same critical section; another worker cannot change the foreground between validation and delivery. UIA-only Windows batches do not acquire the global input lock, while any batch that may fall back to pointer or keyboard delivery holds it for the complete transaction. Further event-delivery and occlusion details live in the [macOS implementation reference](../reference/platforms/macos/implementation.mdx) and [Windows bridge reference](../reference/platforms/windows.mdx).
 
-The Linux helper is a local JSON-lines child process with correlated concurrent requests. It snapshots roots over AT-SPI2 and attempts semantic `Action`/`EditableText` delivery first. On X11, EWMH enriches root identity/focus, XComposite (with `GetImage` fallback) supplies PNG capture, and non-headless policies may use serialized XTEST physical input. Strict headless/background policy blocks XTEST and focus. Wayland diagnostics only reads portal version and capability properties; no portal session, capture, or input path is implemented.
+The Linux helper is a local JSON-lines child process with correlated concurrent requests. It snapshots roots over AT-SPI2 and attempts semantic `Action`/`EditableText` delivery first. On X11, EWMH enriches root identity/focus, XComposite (with `GetImage` fallback) supplies PNG capture, and non-headless policies may use serialized XTEST physical input. Strict headless/background policy blocks XTEST and focus. Wayland diagnostics only reads portal version and capability properties; no portal session, capture, or input path is implemented. The [Linux support guide](../how-to-guides/linux.mdx) lists the exact capability matrix.
 
 Windows UIA extraction is bounded. When the native limit omits descendants, the nearest retained ancestors are marked `truncated`; `expand_ui` performs a scoped look and the helper carries forward the untouched refs into the new immutable look record. Windows root deltas combine an event journal with authoritative before/after snapshots. `SetWinEventHook` accelerates settling and retains short-lived root transitions, while snapshots remain the source of truth for persistent state.
 
@@ -165,7 +168,7 @@ Changes to a native backend should therefore include three layers of evidence:
 2. target-native compilation and deterministic native unit tests;
 3. the same black-box Cubench properties on an interactive host for that platform.
 
-OS-specific mechanisms can differ—AX, ScreenCaptureKit, and the AppKit agent-cursor overlay on macOS; UIA and Windows capture/input APIs on Windows; AT-SPI2 plus optional X11 EWMH/XComposite/XTEST on Linux—but state ownership, bounds, progressive disclosure, transaction boundaries, and honest outcomes may not. The overlay lives inside the existing helper because native action grounding owns the final screen point; keeping it there avoids a second coordinate transform or public cursor tool surface. The helper's socket server runs off the main thread while AppKit owns the main run loop, and the helper excludes its click-through overlay from root discovery. Cursor animation is observational: newer actions may supersede an in-flight path, but rendering never blocks action delivery or verification.
+OS-specific mechanisms can differ—Accessibility, Core Graphics, ScreenCaptureKit, Vision, and AppKit on macOS; UIA and Windows capture/input APIs on Windows; AT-SPI2 plus optional X11 EWMH/XComposite/XTEST on Linux—but state ownership, bounds, progressive disclosure, transaction boundaries, and honest outcomes may not. The [macOS implementation reference](../reference/platforms/macos/implementation.mdx) records the current API choices, delivery policies, evidence boundaries, and known limits so this explanation does not duplicate platform claims. The agent-cursor overlay lives inside the existing helper because native action grounding owns the final screen point; keeping it there avoids a second coordinate transform or public cursor tool surface. The helper's socket server runs off the main thread while AppKit owns the main run loop, and the helper excludes its click-through overlay from root discovery. Cursor animation is observational: newer actions may supersede an in-flight path, but rendering never blocks action delivery or verification.
 
 ## Design constraints
 

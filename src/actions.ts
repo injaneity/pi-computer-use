@@ -1,5 +1,5 @@
 import type { MouseButtonName, UiAction } from "./contract.ts";
-import type { OutlineNode } from "./outline.ts";
+import { INCIDENTAL_ACTIONS, type OutlineNode } from "./outline.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
 
 export type ActionTarget = { ref: string } | { x: number; y: number } | { focus: { x: number; y: number } };
@@ -62,7 +62,7 @@ function nativeTarget(action: UiAction, operation: PreparedAction["action"], env
 			env.validatePoint(point.x, point.y);
 			return point;
 		}
-		const onlyIncidentalActions = node.actions.every((candidate) => candidate === "AXShowMenu" || candidate === "AXScrollToVisible");
+		const onlyIncidentalActions = node.actions.every((candidate) => INCIDENTAL_ACTIONS.has(candidate));
 		if (node.wireRef && !node.pictureOnly && (!semanticClick || node.canPress || node.canFocus || node.canSetValue || !onlyIncidentalActions)) {
 			return { ref: node.wireRef };
 		}

@@ -1,0 +1,37 @@
+---
+title: 'Observation and progressive disclosure'
+description: 'How platform observations become complete immutable trees, compact outlines, local queries, and image evidence.'
+---
+
+Observation separates what the runtime stores from what it initially shows the agent. The backend collects a complete bounded state, while the first response folds that state into a compact outline.
+
+## Pipeline
+
+```text
+platform root → semantic tree + optional image → normalized outline → immutable state → folded response
+```
+
+The main ownership boundaries are:
+
+- [`src/platform/`](https://github.com/injaneity/pi-computer-use/tree/main/src/platform) retrieves platform-specific roots, semantic structure, text, images, and native metadata;
+- [`src/outline.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/outline.ts) parses and queries complete outline trees;
+- [`src/state.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/state.ts) stores the immutable result;
+- [`src/view.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/view.ts) produces stable public refs and compact renderings.
+
+## Progressive disclosure
+
+`observe_ui` returns enough ancestry and local detail to orient the agent without dumping every descendant. `search_ui`, `expand_ui`, and `inspect_ui` query the complete saved tree, so folding affects presentation rather than data ownership.
+
+Most of those queries are pure and cached. A request that needs fresh OCR or recovery of a truncated region becomes a live, epoch-checked observation and produces a new state instead of mutating the old one.
+
+## Semantic and visual evidence
+
+Desktop observations can combine an accessibility tree with an optional image. Visual OCR boxes supplement sparse semantic trees but do not acquire native action capabilities. Browser observations normalize the CDP accessibility tree into the same agent-facing outline model.
+
+On macOS, AX extraction and image capture are separate subsystems; use [Accessibility and AX](../reference/platforms/macos/accessibility.mdx) or [Capture and OCR](../reference/platforms/macos/capture.mdx) for exact behavior. Windows uses UI Automation extraction and its native capture path.
+
+## Bounded completeness
+
+A platform walk can stop at implementation limits. Rather than implying completeness, the nearest retained ancestor is marked `truncated`. Scoped expansion can then retrieve the missing region into a successor state while preserving unaffected identities where confidence allows.
+
+Continue to [State ownership and scheduling](./state-and-scheduling.mdx) for concurrency rules or [Action execution and evidence](./action-pipeline.mdx) for mutation.

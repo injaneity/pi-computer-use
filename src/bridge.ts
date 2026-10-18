@@ -9,10 +9,11 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import { canRetryInForeground, outcomeAfterCheck, outcomeAfterObservedValues, prepareAction, type ActionState, type PreparedAction } from "./actions.ts";
 import { cdpClickForContext, cdpDragForContext, cdpEvaluateForContext, cdpKeypressForContext, cdpMouseForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeFocusedForContext, cdpTypeForContext, disconnectCdp, listCdpPageContexts, openCdpTabForContext, type CdpConsoleEntry, type CdpPageSnapshot, type CdpTab } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isHeadlessMode, loadComputerUseConfig } from "./config.ts";
+import { normalizeFindParams } from "./find-params.ts";
 import { noteAfterAct, noteFromLook, noteRegionKeyForRef, renderNote, type WindowNote } from "./note.ts";
-import { foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
+import { controlLine, foldToBudget, graftScopedOutline, nodeByRef, outlineNodeLabel, outlineNodePath, rankedTextMatch, renderInteractiveControls, restoreOutline, searchOutline, searchOutlineRanked, serializeOutline, serializeOutlineNodeShallow, serializeOutlineSearchMatch, type LookResponse, type Outline, type OutlineChange, type OutlineDiff, type OutlineNode, type OutlineSearchMatch, type SerializedOutline, type SerializedOutlineNode, type SerializedOutlineSearchMatch } from "./outline.ts";
 import { applyOutputEnvelope, boundToolError, clearStoredOutputs, readStoredOutput, UI_TEXT_PAGE_CHARS } from "./output.ts";
-import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams, type JevObserveParams, type JevRunParams, type JevStepParams } from "./contract.ts";
+import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveDetail, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams, type JevObserveParams, type JevRunParams, type JevStepParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
 import { currentPlatformBackend } from "./platform/index.ts";
 import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformActRequest, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformRoot as HelperWindow } from "./platform/types.ts";
@@ -99,6 +100,7 @@ interface ComputerUseDetails {
 	changes?: OutlineChange[];
 	viewReason?: "root_replaced" | "change_budget_exceeded" | "identity_confidence_low";
 	renderedOutline?: string;
+	detail?: ObserveDetail;
 	outline?: SerializedOutline;
 	note?: WindowNote;
 	activation: ActivationFlags;
@@ -129,6 +131,8 @@ interface ComputerUseDetails {
 interface TerminalDesktopActionDetails {
 	tool: "act_ui";
 	status: "target_closed" | "post_action_observation_failed";
+	cause?: "replaced" | "closed";
+	successors?: Array<{ ref?: string; kind: string; title?: string; isModal?: boolean }>;
 	baseStateId: string;
 	target: {
 		app: string;
@@ -191,6 +195,7 @@ interface BrowserObservationDetails {
 	root: { ref: string; kind: "browser_page"; title: string; url: string };
 	outline: SerializedOutline;
 	renderedOutline: string;
+	detail?: ObserveDetail;
 }
 
 interface EvaluateBrowserDetails {
@@ -313,6 +318,7 @@ const runtimeState: RuntimeState = {
 };
 
 const savedStates = new SavedStates();
+export const testing = { runInOperation: <T>(fn: () => T, state: OperationState = {}): T => savedStates.operations.run(state, fn), buildToolResult, browserObservationResult, waitForViewText, performSearchUi };
 let resourceScheduler = new ResourceScheduler();
 
 function operationState(): OperationState {
@@ -328,6 +334,10 @@ function persistOperation(state: OperationState): void {
 	const resourceKey = state.resourceKey ?? desktopResourceKey(state.currentTarget);
 	const epoch = state.epoch ?? resourceScheduler.epoch(resourceKey);
 	savedStates.saveDesktop(state, resourceKey, epoch);
+}
+
+export async function setComputerUseActivity(active: boolean): Promise<void> {
+	await currentPlatformBackend.setActivity?.(active);
 }
 
 /** Release handles and state owned by the current Pi session. */
@@ -765,8 +775,12 @@ function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget 
 	return { ...baseTarget, windowRef: storeWindowRefForAppWindow(app, window).ref };
 }
 
-function nativeWindowRequest(target: Pick<CurrentTarget, "pid" | "windowId" | "nativeWindowRef">): { pid: number; windowId: number; windowRef?: string } {
-	return { pid: target.pid, windowId: target.windowId, windowRef: target.nativeWindowRef };
+export function nativeWindowRequest(target: Pick<CurrentTarget, "pid" | "windowId" | "nativeWindowRef">): { pid: number; windowId?: number; rootRef?: string; windowRef?: string } {
+	return {
+		pid: target.pid,
+		...(target.windowId > 0 ? { windowId: target.windowId } : {}),
+		...(target.nativeWindowRef ? { rootRef: target.nativeWindowRef, windowRef: target.nativeWindowRef } : {}),
+	};
 }
 
 function setCurrentTarget(target: ResolvedTarget): void {
@@ -851,7 +865,7 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 	return resolved;
 }
 
-async function resolveCurrentTarget(signal?: AbortSignal): Promise<ResolvedTarget> {
+async function resolveCurrentTarget(signal?: AbortSignal, options: { preferModal?: boolean } = {}): Promise<ResolvedTarget> {
 	const current = currentTargetOrThrow();
 	const windows = await listWindows(current.pid, signal);
 	if (!windows.length) {
@@ -884,7 +898,7 @@ async function resolveCurrentTarget(signal?: AbortSignal): Promise<ResolvedTarge
 		throw new Error(CURRENT_TARGET_GONE_ERROR);
 	}
 
-	const modal = windows
+	const modal = options.preferModal === false ? undefined : windows
 		.filter((window) => shouldPreferForegroundModalWindow(match!, window))
 		.sort((a, b) => scoreWindow(b) - scoreWindow(a))[0];
 	if (modal) match = modal;
@@ -1019,6 +1033,18 @@ async function captureCurrentTarget(signal?: AbortSignal, readText: "auto" | "al
 	};
 }
 
+function renderStateView(outline: Outline, stateId: string, detail: ObserveDetail, reason?: string): { detail: ObserveDetail; text: string } {
+	const reasonText = reason ? `, full view: ${reason}` : "";
+	const controls = detail === "compact" ? renderInteractiveControls(outline) : undefined;
+	if (controls?.controlCount) {
+		const unlabeled = controls.omittedUnlabeled ? `, including ${controls.omittedUnlabeled} unlabeled control${controls.omittedUnlabeled === 1 ? "" : "s"}` : "";
+		const footer = `… ${controls.nodeCount - controls.renderedRefs.length} other nodes hidden${unlabeled}. Use search_ui to find more; expand_ui({ stateId: "${stateId}", ref: "${outline.root.ref}", depth: 2 }) or observe_ui detail "outline" for structure.`;
+		return { detail, text: `Controls (${controls.renderedRefs.length} of ${controls.nodeCount} nodes, stateId ${stateId}, root ${outline.root.ref}${reasonText}):\n${controls.text}\n${footer}` };
+	}
+	const folded = foldToBudget(outline);
+	return { detail: "outline", text: `Outline (${folded.nodeCount} nodes, stateId ${stateId}${reasonText}${controls ? ", no actionable controls found" : ""}${folded.truncated ? ", folded output truncated" : ""}):\n${folded.text}` };
+}
+
 async function buildToolResult(
 	tool: string,
 	summary: string,
@@ -1027,12 +1053,14 @@ async function buildToolResult(
 	_signal?: AbortSignal,
 	imageMode: ImageMode = operationState().currentImageMode ?? "auto",
 	base?: { stateId: string; outline: Outline },
+	detail: ObserveDetail = "compact",
 ): Promise<AgentToolResult<ComputerUseDetails>> {
 	const state = operationState();
 	const fallbackReason = imageFallbackReason(tool, result, imageMode);
 	const transition = base ? changesBetween(base.outline, result.outline) : undefined;
 	const useDiff = Boolean(transition && !transition.useFullView);
 	const folded = foldToBudget(result.outline);
+	const view = useDiff ? undefined : renderStateView(result.outline, result.capture.stateId, detail, transition?.reason);
 	const renderedNote = renderNote(state.currentNote);
 
 	const details: ComputerUseDetails = {
@@ -1060,6 +1088,7 @@ async function buildToolResult(
 		changes: useDiff ? transition?.changes : undefined,
 		viewReason: transition?.useFullView ? transition.reason : undefined,
 		renderedOutline: folded.text,
+		detail: view?.detail,
 		outline: serializeOutline(result.outline),
 		note: state.currentNote,
 		activation: result.activation,
@@ -1086,9 +1115,9 @@ async function buildToolResult(
 	// The model must echo capture.stateId into follow-up tools. Exposing only the
 	// helper-internal lookId here makes a plausible but invalid stateId easy to use.
 	const renderedChanges = useDiff ? renderChanges(transition!.changes) : "";
-	const outlineText = useDiff
-		? `\n\nChanges (${transition!.changedNodeCount}, ${base!.stateId} → ${result.capture.stateId}):\n${renderedChanges || "(no element changes)"}\nUse stateId ${result.capture.stateId} for subsequent actions and queries.`
-		: `\n\nOutline (${folded.nodeCount} nodes, stateId ${result.capture.stateId}${transition?.reason ? `, full view: ${transition.reason}` : ""}${folded.truncated ? ", folded output truncated" : ""}):\n${folded.text}`;
+	const outlineText = view
+		? `\n\n${view.text}`
+		: `\n\nChanges (${transition!.changedNodeCount}, ${base!.stateId} → ${result.capture.stateId}):\n${renderedChanges || "(no element changes)"}\nUse stateId ${result.capture.stateId} for subsequent actions and queries.`;
 	const fallbackText = fallbackReason ? `\n\n${fallbackReason.message}` : "";
 	const deltaText = rootDeltaLines(execution).join("\n");
 	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${deltaText ? `\n${deltaText}` : ""}${consoleText}${noteText}${outlineText}${fallbackText}` }];
@@ -1297,14 +1326,7 @@ async function windowDetailsForFind(query: FindParams, config: ReturnType<typeof
 }
 
 async function performListWindows(params: FindParams, signal?: AbortSignal): Promise<AgentToolResult<ListWindowsDetails>> {
-	const rawParams = params ?? {};
-	const query: FindParams = {
-		text: trimOrUndefined(rawParams.text),
-		app: trimOrUndefined(rawParams.app),
-		bundleId: trimOrUndefined(rawParams.bundleId),
-		pid: Number.isFinite(rawParams.pid) ? Math.trunc(rawParams.pid!) : undefined,
-		kind: rawParams.kind,
-	};
+	const query = normalizeFindParams(params);
 	const config = getComputerUseConfig();
 	const desktopForest = await windowDetailsForFind(query, config, signal);
 	const includeBrowserPages = !query.pid && !query.bundleId && (!query.app || normalizeText(query.app) === "browser") && config.browser_use;
@@ -1379,17 +1401,18 @@ async function withBrowserWrite<T>(contextId: string, work: () => Promise<T>): P
 	return result.value;
 }
 
-function browserObservationResult(browser: CdpPageSnapshot, resourceKey: string, epoch: number, tool: string, base?: { stateId: string; outline: SerializedOutline }): AgentToolResult<BrowserObservationDetails> {
+function browserObservationResult(browser: CdpPageSnapshot, resourceKey: string, epoch: number, tool: string, base?: { stateId: string; outline: SerializedOutline }, detail: ObserveDetail = "compact"): AgentToolResult<BrowserObservationDetails> {
 	savedStates.set({ stateId: browser.snapshotId, resourceKey, epoch, value: { kind: "browser", snapshot: browser, outline: browser.outline } });
 	const currentOutline = restoreOutline(browser.outline);
 	const transition = base ? changesBetween(restoreOutline(base.outline), currentOutline) : undefined;
 	const useDiff = Boolean(transition && !transition.useFullView);
 	const folded = foldToBudget(currentOutline);
+	const view = useDiff ? undefined : detail === "outline" ? { detail, text: folded.text } : renderStateView(currentOutline, browser.snapshotId, detail);
 	const root = { ref: storeBrowserRootRef(browser.contextId), kind: "browser_page" as const, title: browser.title, url: browser.url };
-	const details: BrowserObservationDetails = { tool, kind: "browser_page", stateId: browser.snapshotId, baseStateId: base?.stateId, view: useDiff ? "diff" : "full", changes: useDiff ? transition?.changes : undefined, root, outline: browser.outline, renderedOutline: folded.text };
-	const viewText = useDiff
-		? `Changes (${transition!.changedNodeCount}, ${base!.stateId} → ${browser.snapshotId}):\n${renderChanges(transition!.changes) || "(no element changes)"}\nUse stateId ${browser.snapshotId} for subsequent actions and queries.`
-		: folded.text;
+	const details: BrowserObservationDetails = { tool, kind: "browser_page", stateId: browser.snapshotId, baseStateId: base?.stateId, view: useDiff ? "diff" : "full", changes: useDiff ? transition?.changes : undefined, root, outline: browser.outline, renderedOutline: folded.text, detail: view?.detail };
+	const viewText = view
+		? view.text
+		: `Changes (${transition!.changedNodeCount}, ${base!.stateId} → ${browser.snapshotId}):\n${renderChanges(transition!.changes) || "(no element changes)"}\nUse stateId ${browser.snapshotId} for subsequent actions and queries.`;
 	return { content: [{ type: "text", text: `${tool} completed for ${root.ref} ${JSON.stringify(browser.title)}. State ${browser.snapshotId}.\n${viewText}` }], details };
 }
 
@@ -1518,6 +1541,10 @@ function conditionScopeNode(outline: Outline, condition: ReturnType<typeof valid
 	return scopeNode;
 }
 
+function waitForViewText(outline: Outline, stateId: string, transition: OutlineDiff): string {
+	return transition.useFullView ? renderStateView(outline, stateId, "compact").text : `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${stateId} for subsequent actions and queries.`;
+}
+
 async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Promise<AgentToolResult<WaitForDetails>> {
 	const contextId = operationState().contextId;
 	const condition = validateCondition(params);
@@ -1541,8 +1568,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 			const renderedOutline = foldToBudget(successorOutline).text;
 			const details: WaitForDetails = { tool: "wait_for", stateId: lastSnapshot.snapshotId, baseStateId: baseSnapshot.snapshotId, view: useDiff ? "diff" : "full", changes: useDiff ? transition.changes : undefined, found, gone: found && gone || undefined, timedOut, nodeCount: lastSnapshot.targets.length, text, role, value, scopeRef, outline: lastSnapshot.outline, renderedOutline };
 			const message = found ? (gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
-			const viewText = useDiff ? `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${lastSnapshot.snapshotId} for subsequent actions and queries.` : renderedOutline;
-			return { content: [{ type: "text", text: `${message}\n${viewText}` }], details };
+			return { content: [{ type: "text", text: `${message}\n${waitForViewText(successorOutline, lastSnapshot.snapshotId, transition)}` }], details };
 		};
 		do {
 			const scheduled = await resourceScheduler.read(state.resourceKey, async () => await cdpSnapshotForContext(contextId));
@@ -1597,8 +1623,7 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		renderedOutline: foldToBudget(refreshed.outline).text,
 	};
 	const message = details.found ? (details.gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
-	const viewText = useDiff ? `${renderChanges(transition.changes) || "(no element changes)"}\nUse stateId ${refreshed.capture.stateId} for subsequent actions and queries.` : details.renderedOutline;
-	return { content: [{ type: "text", text: `${message}\n${viewText}` }], details };
+	return { content: [{ type: "text", text: `${message}\n${waitForViewText(refreshed.outline, refreshed.capture.stateId, transition)}` }], details };
 }
 
 function sameRootIdentity(a: CurrentTarget, b: CurrentTarget): boolean {
@@ -1619,7 +1644,7 @@ async function performObserve(params: ObserveParams, signal?: AbortSignal): Prom
 		const scheduled = await resourceScheduler.read(resourceKey, async () => await cdpSnapshotForContext(browserContextId));
 		const browser = scheduled.value;
 		if (!browser) throw new Error(`Browser context '${browserContextId}' is no longer available. Call find_roots again.`);
-		return browserObservationResult(browser, resourceKey, scheduled.epoch, "observe_ui");
+		return browserObservationResult(browser, resourceKey, scheduled.epoch, "observe_ui", undefined, params.detail);
 	}
 	const state = operationState();
 	const mode = params.mode ?? "fused";
@@ -1648,7 +1673,7 @@ async function performObserve(params: ObserveParams, signal?: AbortSignal): Prom
 		);
 	}
 	const summary = `Observed ${mode} ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest outline state.`;
-	return await buildToolResult("observe_ui", summary, captureResult, executionTrace("look", "stealth"), signal, imageMode);
+	return await buildToolResult("observe_ui", summary, captureResult, executionTrace("look", "stealth"), signal, imageMode, undefined, params.detail);
 }
 
 function currentOutlineOrThrow(stateId?: string): Outline {
@@ -1696,7 +1721,8 @@ async function performSearchUi(params: SearchUiParams, signal?: AbortSignal): Pr
 	}
 	const detailMatches = matches.map(serializeOutlineSearchMatch);
 	const details: OutlineToolDetails = { tool: "search_ui", stateId: state.currentCapture?.stateId, lookId: outline.lookId, matches: detailMatches, totalMatches: ranked.totalMatches, returned: matches.length, hasMore: ranked.totalMatches > matches.length, note: state.currentNote };
-	const lines = matches.map((match) => `${match.ref} ${match.role || "Unknown"} ${JSON.stringify(match.label || "(unlabeled)")} [${match.matchReason}${match.matchReason === "fuzzy" ? ` ${match.score?.toFixed(2)}` : ""}]\n  path: ${match.path}`);
+	const collides = (match: OutlineSearchMatch) => matches.some((other) => other !== match && other.role === match.role && other.label === match.label);
+	const lines = matches.map((match) => `${controlLine(match.node)} [${match.matchReason}${match.matchReason === "fuzzy" ? ` ${match.score?.toFixed(2)}` : ""}]${collides(match) ? `\n  path: ${match.path}` : ""}`);
 	const noteHeader = renderNote(state.currentNote);
 	const noteText = noteHeader ? `${noteHeader}\n\n` : "";
 	const escalationText = escalatedOCR ? " OCR text was escalated for this search after the cached outline had no matches." : "";
@@ -1854,7 +1880,7 @@ function clearDesktopOperationState(state: OperationState): void {
 	state.currentNote = undefined;
 }
 
-async function terminalDesktopActionResult(
+export async function terminalDesktopActionResult(
 	target: ResolvedTarget,
 	baseStateId: string,
 	execution: ExecutionTrace,
@@ -1904,9 +1930,14 @@ async function terminalDesktopActionResult(
 			};
 		}
 	}
+	const successors = targetClosed
+		? (execution.rootDelta ?? []).filter((delta) => delta.change === "appeared" && delta.pid === target.pid).map((delta) => ({ ref: delta.ref, kind: delta.kind, title: delta.title, isModal: delta.isModal }))
+		: [];
 	const status = targetClosed ? "target_closed" : "post_action_observation_failed";
-	const code = targetClosed ? "target_closed" : "post_action_observation_failed";
-	const message = error instanceof Error ? error.message : String(error);
+	const rawMessage = error instanceof Error ? error.message : String(error);
+	const rootExpired = !targetClosed && /Root is not (available through Accessibility|owned by a running app)|root_not_found/.test(rawMessage);
+	const code = targetClosed ? "target_closed" : rootExpired ? "root_stale" : "post_action_observation_failed";
+	const message = rootExpired ? `Root expired or was never valid for observation (${rawMessage}). Rediscover with find_roots.` : rawMessage;
 	clearDesktopOperationState(operationState());
 	const details: TerminalDesktopActionDetails = {
 		tool: "act_ui",
@@ -1923,9 +1954,11 @@ async function terminalDesktopActionResult(
 		},
 		execution,
 		error: { code, message },
+		...(targetClosed ? { cause: successors.length > 0 ? "replaced" as const : "closed" as const, successors } : {}),
 	};
+	const successorText = successors.length > 0 ? ` It was replaced by ${successors.map((item) => `${item.kind} ${JSON.stringify(item.title ?? "")}${item.isModal ? " (modal)" : ""}`).join(", ")}.` : "";
 	const result = targetClosed
-		? `The action was delivered, and its source root ${target.appName} — ${target.windowTitle} closed before a successor observation could be captured.`
+		? `The action was delivered, and its source root ${target.appName} — ${target.windowTitle} closed before a successor observation could be captured.${successorText}`
 		: `The action was delivered, but its source root ${target.appName} — ${target.windowTitle} could not be observed afterward: ${message}`;
 	return {
 		content: [{ type: "text", text: `${result}\nNo successor state was created. Call find_roots, then observe_ui to continue.` }],
@@ -1941,7 +1974,7 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 	const baseView = { stateId: state.currentCapture!.stateId, outline: state.currentOutline! };
 	const condition = params.expect ? validateCondition(params.expect) : undefined;
 	const scopeNode = condition ? conditionScopeNode(look.parsedOutline!, condition) : undefined;
-	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
+	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal, { preferModal: false }), signal);
 	const noteBefore = state.currentNote;
 	return await withWindowWriteLock(target, async () => {
 		const headless = getComputerUseConfig().headless;
@@ -2883,3 +2916,189 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 		}
 	}
 }
+
+/*
+PI_DOCS_REFERENCE_BEGIN reference/agent/contract
+
+The normal loop is:
+
+1. Find a desktop or browser root.
+2. Observe that root and retain its `stateId`.
+3. Search, expand, or inspect that immutable state.
+4. Act using the same `stateId` and its `@e` refs.
+
+## Tool surface
+
+| Tool | Purpose |
+| --- | --- |
+| `find_roots` | Return a bounded, ranked set of desktop and CDP browser-page roots. |
+| `observe_ui` | Capture the current/frontmost root or one exact `@r` root and return a compact list of actionable `@e` controls plus `stateId`. |
+| `search_ui` | Run a bounded, ranked query over the full cached outline. |
+| `expand_ui` | Show local outline context for one ref. |
+| `inspect_ui` | Show fields, rects, actions, and evidence for one ref. |
+| `act_ui` | Perform checked actions and return the resulting saved state, showing its changes or a full view when needed. |
+| `read_text` | Read fixed pages from state-owned `@e` text or immutable `@o` output. |
+| `wait_for` | Wait for a precise, optionally scoped condition. |
+| `launch_browser` | Start a managed CDP browser and return its observed page state. |
+| `navigate_browser` | Navigate the browser page owned by a state. |
+| `evaluate_browser` | Evaluate JavaScript in the browser page owned by a state. |
+| `jev_observe` | Observe a CDP browser page as jev's indexed action space. |
+| `jev_step` | Execute one observed jev action with code-owned guards. |
+| `jev_run` | Run jev's bounded autonomous policy loop for one goal. |
+
+The exact registered descriptions, prompt guidance, parameters, enums, and constraints are generated from source in [the tool reference](./tools.mdx). This page owns the cross-tool operating contract and examples instead of duplicating those schemas.
+
+## Refs and state
+
+`find_roots` returns roots such as `@r1`. Every desktop window, transient surface, and CDP page participates in that same forest. `observe_ui` returns element refs such as `@e12` and a `stateId`.
+
+Every tool that consumes an `@e` ref also requires its owning `stateId`. A state remains queryable while it is in the bounded store, but a mutation from an old resource epoch is rejected as stale. `act_ui` returns the next usable `stateId`; consume it directly instead of observing again. Observe again only after an uncertain external mutation or state eviction.
+
+Truncated textual output receives an immutable session-local ref such as `@o1`. Continue it with `read_text({ ref: "@o1", offset })`; output refs don't use a UI state id. Tool-provided `@o` offsets are UTF-8 byte offsets, while `@e` text offsets count Unicode characters.
+
+Nodes marked `pictureOnly` have visual evidence but no platform accessibility element. Semantic actions cannot target them. Coordinate actions are available only from a current image-bearing desktop state.
+
+## Progressive disclosure
+
+Use `observe_ui({ root: "@r1" })` for the compact first view. It lists actionable controls only; containers, static text, tooltips, geometry, and unlabeled non-text controls are omitted and counted:
+
+```text
+Controls (3 of 212 nodes, stateId S7, root @e1):
+@e12 textarea "Message" = "draft" [focused]
+@e18 button "Search the web"
+@e27 link "New chat"
+… 209 other nodes hidden, including 4 unlabeled controls. Use search_ui to find more; expand_ui({ stateId: "S7", ref: "@e1", depth: 2 }) or observe_ui detail "outline" for structure.
+```
+
+The focused control is always listed first, followed by controls inside an open sheet or dialog. If a root exposes no actionable controls, the response falls back to the folded outline and says so. Use `observe_ui({ root: "@r1", detail: "outline" })` to get the folded outline directly. Then query without another capture:
+
+```ts
+search_ui({ stateId, text: "Save" })
+expand_ui({ stateId, ref: "@e7", depth: 3 })
+inspect_ui({ stateId, ref: "@e12" })
+```
+
+`semantic` observation is cheapest, `fused` is the default, and `visual` forces visual text evidence. Search requires at least one of `text`, `role`, or `capability`. It ranks exact, prefix, and substring text before conservative fuzzy matches, returns a fixed top set with the total match count, and asks the caller to refine broad queries. Search can escalate OCR once when the original desktop look omitted it; that refresh is checked against the state's resource epoch.
+
+## Acting and batching
+
+The public action shape is always transactional:
+
+```ts
+act_ui({ stateId, actions: [{ action: "press", ref: "@e12" }] })
+```
+
+When an action has an observable completion signal, attach it to the same
+transaction. Pi waits through the platform change-notification path and marks
+the execution `didnt` with `postcondition_failed` if the application swallowed
+the delivered event:
+
+```js
+act_ui({
+  stateId,
+  actions: [{ action: "press", ref: "@e12" }],
+  expect: { text: "Archive completed", until: "present", timeoutMs: 3000 }
+})
+```
+
+Verification reports `verified`, `preexisting`, or `failed`. A preexisting
+condition means the requested end state holds, but is not evidence that the
+action caused it. Use `ref` for one exact element or `scopeRef` for a subtree;
+role-only conditions must be scoped, and value checks require an exact `ref`.
+
+Batch steps only when the second step does not need to inspect the result of the first:
+
+```ts
+act_ui({
+  stateId,
+  actions: [
+    { action: "setText", ref: "@e18", text: "hello" },
+    { action: "press", ref: "@e22" },
+  ],
+})
+```
+
+Steps run sequentially against one resource and retain helper checks. The native helper uses one root baseline and final settle for the transaction, and the bridge returns one final observation. If a transition can change the meaning of later refs or requires a decision, send one action, inspect the returned state, then continue.
+
+Clicks into editable regions establish foreground focus for later keyboard steps in the same transaction. Omit `ref` from `typeText` or `keypress` after such a click so input is sent to the editor established by that click:
+
+```ts
+act_ui({
+  stateId,
+  actions: [
+    { action: "click", x: 420, y: 300 },
+    { action: "typeText", text: "hello" },
+  ],
+  expect: { text: "hello" },
+})
+```
+
+The runtime prefers background semantics when they are credible, verifies the result, and escalates side-effect-free failed keyboard input to foreground delivery automatically. Ambiguous pointer actions are never replayed blindly.
+
+### Successor views
+
+The initial `observe_ui` response is the compact control list; expand for structure. A normal `act_ui` response saves the complete resulting state but renders only its trustworthy changes:
+
+```text
+Successor diff (1 change, S1 → S2):
+~ @e9 (@e1 > @e9) value="hello"
+Use stateId S2 for subsequent actions and queries.
+```
+
+Confidently matched elements retain their model-facing refs across resulting states. New nodes receive new refs and removed nodes are named explicitly. The runtime returns the compact control list instead when the root was replaced, identity confidence is low, or the change budget is too large. `search_ui`, `expand_ui`, and `inspect_ui` always query the complete saved state regardless of how it was rendered.
+
+Coordinate fallback uses image pixels from the observed state:
+
+```ts
+act_ui({ stateId, actions: [{ action: "click", x: 420, y: 300 }] })
+```
+
+## Bounded output
+
+Every model-visible textual result is limited to 48 KiB or 2,000 lines. Oversized results return a 16 KiB preview, focused-query guidance, and an immutable `@o` continuation. Discovery tools don't page through irrelevant matches: refine `find_roots` and `search_ui` instead. Continuation is intended for concrete long text, evaluation values, and diagnostics.
+
+## Browser use
+
+Browser-specific commands operate only on CDP browser-page states. `launch_browser` chooses the configured browser and debugging port internally and immediately returns an observed state:
+
+```ts
+const launched = launch_browser({ url: "https://example.com" })
+act_ui({ stateId: launched.stateId, actions: [{ action: "press", ref: "@e7" }] })
+navigate_browser({ stateId: returnedStateId, url: "https://openai.com" })
+evaluate_browser({ stateId: returnedStateId, expression: "document.title" })
+```
+
+Browser states use the same outline, action, text, and condition contracts as desktop states. Native browser windows remain ordinary desktop UI; use `observe_ui` and `act_ui` rather than `navigate_browser` or `evaluate_browser` on them.
+
+## Jev browser layer
+
+`jev_observe`, `jev_step`, and `jev_run` add a browser layer ported from
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). It
+builds a flat, indexed action space instead of a nested outline and executes
+only observed, code-owned action ids with semantic freshness and occlusion
+guards:
+
+```ts
+jev_observe({ root: "@r3" })                        // numbered element table + stateId
+jev_step({ stateId, action: "e3" })                 // execute one observed action
+jev_step({ stateId, action: "e1", text: "Zürich" })
+jev_step({ stateId, goal: "Book a one-way flight to London" })
+jev_run({ stateId, goal: "Book a one-way flight to London", maxSteps: 20 })
+```
+
+Jev is controlled by `jev_enabled`, `jev_decide`, `jev_backend`, `jev_model`,
+`jev_gateway_zdr`, and `jev_max_steps` in the configuration files, or by
+`PI_COMPUTER_USE_JEV_ENABLED`, `PI_COMPUTER_USE_JEV_DECIDE`,
+`PI_COMPUTER_USE_JEV_BACKEND`, `PI_COMPUTER_USE_JEV_MODEL`,
+`PI_COMPUTER_USE_JEV_GATEWAY_ZDR`, and `PI_COMPUTER_USE_JEV_MAX_STEPS`. Use
+`/computer-use jev on|off` and `/computer-use jev-decide on|off` for a
+session-scoped override. A jev state is separate from `observe_ui` states:
+`act_ui` refuses it, and `jev_step`/`jev_run` accept only jev states. See
+[Jev browser layer](../../explanation/jev.mdx) for the action-space format,
+credentials, guard semantics, and limits.
+
+## Parallel calls
+
+Pi may issue tool calls concurrently. Cached queries can overlap freely. Live work for different desktop processes or CDP pages can overlap; work for the same physical resource is ordered. Do not intentionally race two mutations derived from the same state: one wins and the other receives a stale-state error by design.
+PI_DOCS_REFERENCE_END
+*/

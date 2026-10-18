@@ -1,6 +1,7 @@
 export type RootSelector = string;
 export type ImageMode = "auto" | "always" | "never";
 export type MouseButtonName = "left" | "right" | "middle";
+export type ObserveDetail = "compact" | "outline";
 
 export interface ObserveTargetParams {
 	root?: RootSelector;
@@ -10,6 +11,7 @@ export interface FindParams {
 	text?: string;
 	app?: string;
 	bundleId?: string;
+	/** Exact positive process id. */
 	pid?: number;
 	/** Filters on the platform's best-effort presentation hint; only window vs transient is guaranteed. */
 	kind?: "window" | "menu" | "sheet" | "popover" | "dialog" | "browser_page";
@@ -34,6 +36,7 @@ export interface EvaluateBrowserParams {
 
 export interface ObserveParams extends ObserveTargetParams {
 	mode?: "semantic" | "visual" | "fused";
+	detail?: ObserveDetail;
 	/** Internal capture override; not part of the model-facing schema. */
 	readText?: "auto" | "always" | "never";
 }

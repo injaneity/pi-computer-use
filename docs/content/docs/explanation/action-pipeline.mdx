@@ -1,0 +1,36 @@
+---
+title: 'Action execution and evidence'
+description: 'How intent is validated, grounded, delivered, checked, and converted into one immutable successor state.'
+---
+
+An action is not considered successful merely because an input API accepted it. The runtime separates intent, delivery, and evidence so uncertain effects remain explicit.
+
+## Ownership by layer
+
+[`src/actions.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/actions.ts) validates action shapes, normalizes intent, resolves targets, tracks dependent focus, and decides whether retry is safe. [`src/bridge.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/bridge.ts) validates state ownership, acquires the resource lane, and coordinates the transaction. The selected platform backend grounds coordinates and refs, performs preflight, delivers input, and gathers evidence.
+
+```text
+intent → state validation → resource lock → grounding → preflight → delivery → evidence → successor observation
+```
+
+## Dependent transactions
+
+One `act_ui` call can contain several ordered steps when no intermediate observation is required. The transaction validates one base state, stays inside one resource lane, and stops at the first failed or invalidated step. Partial results identify the checked boundary, after which the caller must observe again.
+
+Focus established by an editable click can carry into a following unscoped typing step. This dependency is transaction-local rather than a mutable global focus assumption.
+
+## Delivery versus success
+
+Backends report `worked`, `didnt`, or `unknown`. Read-back values, selection changes, focused-window changes, sheets, and root deltas can provide evidence. A posted pointer or keyboard event alone may remain unknown.
+
+Optional `expect` conditions add semantic evidence such as text or a role appearing or disappearing. A failed postcondition changes the outcome to `didnt`; event delivery is not upgraded to success.
+
+## Retry safety
+
+A retry is allowed only when checked evidence shows that the earlier attempt had no effect and the next strategy is policy-compliant. Ambiguous pointer outcomes are not replayed because duplicate delivery could produce a second side effect.
+
+Platform mechanisms differ. The macOS backend can use AX operations, background `CGEvent` delivery, or controlled foreground fallback; [Actions and input delivery](../reference/platforms/macos/actions.mdx) documents that strategy. Windows uses UIA and native input while preserving the same outcome contract.
+
+## Successor state
+
+After execution settles, the backend observes one final root state. The runtime stores that complete immutable successor and renders a compact diff only when identity confidence and change size make the diff trustworthy. Otherwise it returns a folded full view.

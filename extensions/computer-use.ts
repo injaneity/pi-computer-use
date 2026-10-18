@@ -17,6 +17,7 @@ import {
 	executeSearchUi,
 	executeWaitFor,
 	reconstructStateFromBranch,
+	setComputerUseActivity,
 	shutdownComputerUseSession,
 } from "../src/bridge.ts";
 import { getComputerUseConfig, getLoadedComputerUseConfig, loadComputerUseConfig, resetComputerUseConfig, updateComputerUseConfig } from "../src/config.ts";
@@ -58,7 +59,7 @@ const findTool = defineTool({
 		text: Type.Optional(Type.String({ description: "Ranked app or title text", maxLength: 256 })),
 		app: Type.Optional(Type.String({ description: "Exact normalized app name", maxLength: 256 })),
 		bundleId: Type.Optional(Type.String({ description: "Exact bundle id" })),
-		pid: Type.Optional(Type.Number({ description: "Exact process id" })),
+		pid: Type.Optional(Type.Integer({ minimum: 1, description: "Exact positive process id" })),
 		kind: Type.Optional(Type.Union([Type.Literal("window"), Type.Literal("menu"), Type.Literal("sheet"), Type.Literal("popover"), Type.Literal("dialog"), Type.Literal("browser_page")], { description: "Exact root kind" })),
 	}),
 	execute: executeFind,
@@ -67,15 +68,17 @@ const findTool = defineTool({
 const observeTool = defineTool({
 	name: "observe_ui",
 	label: "Observe UI",
-	description: "Capture the current/frontmost root or one exact @r root and return a bounded UI outline.",
+	description: "Capture the current/frontmost root or one exact @r root and return a compact list of actionable @e controls plus stateId.",
 	promptSnippet: "Primary UI observation tool. Follow with search_ui, expand_ui, inspect_ui, or act_ui.",
 	promptGuidelines: [
 		"Use mode=semantic to skip OCR and images, visual to force them, and fused for automatic selection.",
 		"Use @e outline refs from observe_ui/search_ui for act_ui; pictureOnly refs are coordinate-only and blocked by UI-tree-only policy.",
+		"Use search_ui for unlisted controls; expand_ui on the root ref or detail=outline for structure.",
 	],
 	parameters: Type.Object({
 		root: Type.Optional(Type.String({ description: "Exact @r ref issued by find_roots" })),
 		mode: Type.Optional(Type.Union([Type.Literal("semantic"), Type.Literal("visual"), Type.Literal("fused")], { description: "Observation mode, default fused" })),
+		detail: Type.Optional(Type.Union([Type.Literal("compact"), Type.Literal("outline")], { description: "compact (default) lists actionable refs; outline returns the folded tree" })),
 	}),
 	execute: executeObserve,
 });
@@ -97,7 +100,7 @@ const searchUiTool = defineTool({
 const expandUiTool = defineTool({
 	name: "expand_ui",
 	label: "Expand UI",
-	description: "Unfold bounded local outline context for one @e ref.",
+	description: "Unfold bounded local outline context for one @e ref; use the root ref for full structure.",
 	promptSnippet: "Expand a specific ref instead of dumping unrelated UI.",
 	parameters: Type.Object({ ref: Type.String(), depth: Type.Optional(Type.Number({ minimum: 1, maximum: 8, description: "Subtree depth, default 3" })), stateId }),
 	execute: executeExpandUi,
@@ -224,6 +227,7 @@ function formatConfigStatus(): string {
 		`managed_browser: ${loaded.config.managed_browser}`,
 		`headless: ${loaded.config.headless ? "enabled" : "disabled"}`,
 		`cursor_overlay: ${loaded.config.cursor_overlay ? "enabled" : "disabled"}`,
+		`activity_glow: ${loaded.config.activity_glow ? "enabled" : "disabled"}`,
 		`jev_enabled: ${loaded.config.jev_enabled ? "enabled" : "disabled"}`,
 		`jev_decide: ${loaded.config.jev_decide ? "enabled" : "disabled"}`,
 		`jev_backend: ${loaded.config.jev_backend}${loaded.config.jev_model ? ` (${loaded.config.jev_model})` : ""}`,
@@ -260,6 +264,8 @@ function applyConfigCommand(args: string): string | undefined {
 const BASE_TOOLS = [findTool, observeTool, searchUiTool, expandUiTool, inspectUiTool, actTool, readTextTool, waitForTool, launchBrowserTool, navigateBrowserTool, evaluateBrowserTool];
 const JEV_TOOLS = [jevObserveTool, jevStepTool, jevRunTool];
 const JEV_TOOL_NAMES = ["jev_observe", "jev_step", "jev_run"];
+const COMPUTER_USE_TOOLS = [...BASE_TOOLS, ...JEV_TOOLS];
+const COMPUTER_USE_TOOL_NAMES = new Set(COMPUTER_USE_TOOLS.map((tool) => tool.name));
 let jevToolsRegistered = false;
 
 /**
@@ -280,6 +286,8 @@ function syncJevTools(pi: ExtensionAPI): void {
 }
 
 export default function computerUseExtension(pi: ExtensionAPI): void {
+	let activityGlowActive = false;
+
 	for (const tool of BASE_TOOLS) pi.registerTool(tool);
 
 	pi.registerCommand("computer-use", {
@@ -301,7 +309,22 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		try { await ensureComputerUseSetup(ctx); } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning"); }
 	});
 
+	pi.on("tool_execution_start", async (event) => {
+		const config = getComputerUseConfig();
+		if (process.platform !== "darwin" || config.headless || !config.activity_glow || !COMPUTER_USE_TOOL_NAMES.has(event.toolName)) return;
+		activityGlowActive = true;
+		try { await setComputerUseActivity(true); } catch {}
+	});
+
+	pi.on("agent_end", async () => {
+		if (!activityGlowActive) return;
+		activityGlowActive = false;
+		try { await setComputerUseActivity(false); } catch {}
+	});
+
 	pi.on("session_shutdown", async () => {
+		activityGlowActive = false;
+		try { await setComputerUseActivity(false); } catch {}
 		await shutdownComputerUseSession();
 	});
 }

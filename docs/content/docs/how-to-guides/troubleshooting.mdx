@@ -1,0 +1,126 @@
+---
+title: 'Troubleshoot setup and runtime failures'
+description: 'Repair helper installation, permissions, capture, stale state, and action delivery problems.'
+---
+
+Start with `/computer-use` in Pi to confirm the active configuration and its source. For macOS implementation details and Apple API citations, use the [macOS reference](../reference/platforms/macos/implementation.mdx).
+
+macOS uses an installed helper app and TCC permissions. Windows uses the active desktop session. Linux uses a per-user helper and the graphical session's AT-SPI2 bus.
+
+## Repair Linux accessibility
+
+Run Pi as the same user and inside the same graphical session as the target apps. Check the bus with:
+
+```bash
+busctl --user get-property org.a11y.Bus /org/a11y/bus org.a11y.Bus Address
+```
+
+If it is missing, install or enable your distribution's AT-SPI2 services and restart the graphical login session. Reinstall the helper with `node scripts/setup-helper.mjs --platform linux --runtime`; for development use `npm run build:linux` followed by `node scripts/setup-helper.mjs --platform linux`. The installer replaces the helper whenever the build output differs from the installed copy.
+
+AT-SPI semantic presses/clicks and editable-text replacement are attempted first on Linux. X11 also supports window capture plus non-headless EWMH focus and XTEST pointer/keyboard/scroll/drag fallback. Strict headless, `ax_only`, and `background` policies block XTEST/focus. Native Wayland remains semantic-only. Diagnostics may read portal version and capability properties, but never creates or starts a portal session. Interactive portal capture and input dispatch are disabled, so installing a portal backend alone does not enable them. The [Linux support guide](./linux.mdx) lists the full capability matrix.
+
+## Repair a missing macOS helper
+
+The normal runtime requires this executable inside the resolved helper app:
+
+```text
+~/Applications/pi-computer-use.app/Contents/MacOS/bridge
+```
+
+Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. Set `PI_COMPUTER_USE_HELPER_APP_PATH` only when an explicit location is needed for development or testing.
+
+Install the packaged, downloaded, or locally buildable helper with:
+
+```bash
+node scripts/setup-helper.mjs --runtime
+```
+
+For source development, rebuild first and then run the same installer:
+
+```bash
+npm run build:native
+node scripts/setup-helper.mjs --runtime
+```
+
+There is no `--force` installer option. If replacement is refused because only an ad-hoc signing identity is available, prefer a signed helper or managed local signing identity. Set `PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1` only when intentionally replacing a development helper.
+
+## Grant macOS permissions
+
+Grant Accessibility and Screen Recording to the resolved `pi-computer-use.app`, normally `~/Applications/pi-computer-use.app`, then choose Recheck. Recheck restarts the helper before checking again.
+
+The helper checks Accessibility with `AXIsProcessTrusted` and Screen Recording with Core Graphics preflight plus a ScreenCaptureKit content query ([macOS permissions reference](../reference/platforms/macos/accessibility.mdx#trust-and-permission)). System Settings labels can vary by macOS version, so identify the app by its name and path rather than relying on one pane label.
+
+If setup reports `source.attribution: caller`, the bridge is not running as the installed helper app. Restart Pi and rerun setup so the client launches the installed bundle.
+
+If permission checks still disagree after recheck, reset only this bundle's entries and grant them again:
+
+```bash
+tccutil reset Accessibility com.injaneity.pi-computer-use
+tccutil reset ScreenCapture com.injaneity.pi-computer-use
+```
+
+A successful reset command only removes the stored decision; it does not grant permission.
+
+## Fix an empty Accessibility outline
+
+Confirm Accessibility is enabled for `pi-computer-use.app`, choose Recheck, and observe again. If one app alone remains sparse, inspect it in fused or visual mode because the target may expose little Accessibility data:
+
+```ts
+observe_ui({ root: "@r1", mode: "fused" })
+```
+
+The helper can only report attributes and actions exposed through the target's Accessibility tree. OCR can add visual text evidence, but OCR-only `pictureOnly` nodes are not semantic action targets.
+
+## Fix a failed or black window capture
+
+Confirm that:
+
+- Screen Recording is enabled for `pi-computer-use.app`;
+- the target still has an open window;
+- the root has a Core Graphics window ID;
+- the window wasn't closed between discovery and observation.
+
+The helper captures with ScreenCaptureKit first and then tries `/usr/sbin/screencapture` for the same window ID. A successful permission readiness check does not guarantee that either method can capture every later window ([capture reference](../reference/platforms/macos/capture.mdx)).
+
+If the target is ambiguous, find the exact root by app and window title, then observe it:
+
+```ts
+find_roots({ app: "TextEdit", text: "Untitled" })
+observe_ui({ root: "@r1" })
+```
+
+## Handle strict headless rejection
+
+`headless: true` permits only Accessibility actions on macOS. Coordinate targeting, Accessibility fallbacks that would need synthesized pointer input, every `typeText` and `keypress`, and web text replacement fail with `foreground_required` before the helper activates an app or posts events. The bridge does not retry them in the foreground.
+
+Use a current semantic ref when the target exposes the required action. If the workflow genuinely needs synthesized events, run that action without strict headless mode and let the checked fallback policy decide whether foreground delivery is allowed.
+
+## Recover from stale state or refs
+
+A mutation must use the `stateId` that owns its refs and must still match the resource epoch. Use the successor state returned by `act_ui`. If another actor changed the app, the state was evicted, or the target identity is uncertain, call `observe_ui` and resolve the target again.
+
+The native helper may reacquire an element from stored role, identifier, label, and geometry, but this is best effort and does not override epoch checks.
+
+## Recover from rejected coordinates
+
+Coordinates are image pixels owned by one image-bearing state. Observe again if the window moved, resized, changed, or was replaced. Outline-only roots, including unmatched macOS menus, cannot accept coordinate actions.
+
+## Enable browser JavaScript fallback on macOS
+
+The macOS browser fallback uses `osascript` for supported browser-window operations. If the returned error specifically says that JavaScript through Apple Events is disabled, enable “Allow JavaScript from Apple Events” in that browser's developer settings and retry. This setting is only relevant when that fallback path reports the error.
+
+## Enable browser windows
+
+If browser roots are refused, run `/computer-use`. When `browser_use` is disabled, enable it in the project or global configuration:
+
+```json
+{
+  "browser_use": true
+}
+```
+
+If `launch_browser` cannot find the selected browser, set `PI_COMPUTER_USE_CHROME_EXECUTABLE` or `PI_COMPUTER_USE_HELIUM_EXECUTABLE` to an executable absolute path. A manual Chromium CDP launch needs both `--remote-debugging-port` and a non-default `--user-data-dir`.
+
+## Use an interactive desktop
+
+When macOS grants are missing, start Pi with its UI available so the setup selector can open System Settings and recheck. After permissions are granted, Pi can run noninteractively, but macOS automation still requires a logged-in graphical user session. On Windows, use an unlocked interactive desktop session. On Linux, run Pi inside the target user's graphical session.

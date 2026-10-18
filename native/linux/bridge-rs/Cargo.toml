@@ -13,6 +13,9 @@ tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-th
 x11rb = { version = "0.13", features = ["composite", "xtest"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 
+[dev-dependencies]
+zbus = { version = "4", default-features = false, features = ["tokio", "p2p"] }
+
 [lib]
 name = "linux_bridge"
 path = "src/lib.rs"

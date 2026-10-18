@@ -10,7 +10,7 @@ import type { PlatformDiagnostics } from "../types.ts";
 import { resolveMacosHelperAppPath } from "./helper-path.mjs";
 
 const COMMAND_TIMEOUT_MS = 15_000;
-const HELPER_PROTOCOL_VERSION = 6;
+const HELPER_PROTOCOL_VERSION = 7;
 const HELPER_SETUP_TIMEOUT_MS = 60_000;
 
 export const HELPER_BUNDLE_ID = "com.injaneity.pi-computer-use";
@@ -289,3 +289,102 @@ export class MacosHelperClient {
 }
 
 export const macosHelper = new MacosHelperClient();
+
+class MacosActivityGlowConnection {
+	private socket?: net.Socket;
+	private connecting?: Promise<net.Socket>;
+	private tail: Promise<void> = Promise.resolve();
+	private requestSequence = 0;
+
+	async setActive(active: boolean): Promise<void> {
+		const operation = this.tail.then(async () => {
+			const socket = await this.ensureConnection();
+			await this.send(socket, active);
+		});
+		this.tail = operation.catch(() => undefined);
+		await operation;
+	}
+
+	async close(): Promise<void> {
+		await this.tail.catch(() => undefined);
+		const socket = this.socket;
+		this.socket = undefined;
+		this.connecting = undefined;
+		if (!socket) return;
+		if (socket.writable) socket.end();
+		else socket.destroy();
+	}
+
+	private async ensureConnection(): Promise<net.Socket> {
+		if (this.socket && !this.socket.destroyed) return this.socket;
+		if (this.connecting) return await this.connecting;
+
+		this.connecting = (async () => {
+			if (!(await macosHelper.ensureDaemon())) {
+				throw new HelperTransportError(`pi-computer-use helper app daemon is unavailable at ${HELPER_APP_PATH}.`);
+			}
+			return await new Promise<net.Socket>((resolve, reject) => {
+				const socket = net.createConnection(HELPER_SOCKET_PATH);
+				const onError = (error: Error) => {
+					socket.destroy();
+					reject(new HelperTransportError(error.message));
+				};
+				socket.once("error", onError);
+				socket.once("connect", () => {
+					socket.off("error", onError);
+					socket.on("error", () => socket.destroy());
+					socket.on("close", () => {
+						if (this.socket === socket) this.socket = undefined;
+					});
+					this.socket = socket;
+					resolve(socket);
+				});
+			});
+		})();
+
+		try {
+			return await this.connecting;
+		} finally {
+			this.connecting = undefined;
+		}
+	}
+
+	private async send(socket: net.Socket, active: boolean): Promise<void> {
+		await new Promise<void>((resolve, reject) => {
+			const id = `activity_${++this.requestSequence}`;
+			let buffer = "";
+			const timer = setTimeout(() => {
+				cleanup();
+				socket.destroy();
+				reject(new HelperTransportError("Activity glow command timed out."));
+			}, 2_000);
+			const cleanup = () => {
+				clearTimeout(timer);
+				socket.off("data", onData);
+				socket.off("close", onClose);
+			};
+			const onClose = () => {
+				cleanup();
+				reject(new HelperTransportError("Activity glow connection closed."));
+			};
+			const onData = (chunk: Buffer | string) => {
+				buffer += String(chunk);
+				const newline = buffer.indexOf("\n");
+				if (newline < 0) return;
+				cleanup();
+				try {
+					const response = JSON.parse(buffer.slice(0, newline));
+					if (response.id === id && response.ok === true) resolve();
+					else reject(new HelperCommandError(response?.error?.message ?? "Activity glow command failed.", response?.error?.code));
+				} catch (error) {
+					reject(error);
+				}
+			};
+			socket.on("data", onData);
+			socket.once("close", onClose);
+			socket.write(`${JSON.stringify({ id, cmd: "setActivityGlow", active })}\n`);
+		});
+	}
+}
+
+export const macosActivityGlow = new MacosActivityGlowConnection();

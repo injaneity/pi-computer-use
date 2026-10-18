@@ -1,0 +1,10 @@
+{
+  "title": "macOS",
+  "icon": "Apple",
+  "pages": [
+    "accessibility",
+    "capture",
+    "actions",
+    "root-targeting"
+  ]
+}

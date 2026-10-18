@@ -6,7 +6,7 @@
 
 `pi-computer-use` lets AI agents use desktop apps on macOS, Windows, and Linux.
 
-The macOS helper requires macOS 14 or newer.
+The macOS helper requires macOS 14 or newer; the [macOS reference](./docs/content/docs/reference/platforms/macos/implementation.mdx) maps each platform claim to Apple documentation and the implementation.
 
 An agent can look at an app window, understand the buttons and text inside it, and perform actions like clicking, typing, scrolling, and waiting for something to change. This is useful when the agent needs to work with a normal desktop app instead of an API, a terminal command, or a file.
 
@@ -41,24 +41,11 @@ pi install npm:@injaneity/pi-computer-use
 
 Start Pi and complete the platform setup flow.
 
-On macOS, the helper is installed per user by default. Grant permissions to:
+On macOS, the runtime installs the helper per user at `~/Applications/pi-computer-use.app` and requests Accessibility and Screen Recording. Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. Enable both grants for that app in System Settings, then choose Recheck. The [macOS reference](./docs/content/docs/reference/platforms/macos/accessibility.mdx#trust-and-permission) documents the exact APIs and avoids relying on version-specific pane labels.
 
-```text
-~/Applications/pi-computer-use.app
-```
+On Windows, use an interactive desktop session. Windows support uses the platform accessibility APIs and does not use the macOS helper app.
 
-Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`.
-
-Required macOS permissions:
-
-- Accessibility
-- Screen Recording, shown as Screen and System Audio Recording on newer macOS versions
-
-The macOS setup flow registers the helper first, so it should already appear in both Settings panes. Enable the toggles and choose Recheck.
-
-On Windows, use an interactive desktop session. Windows support uses the platform accessibility APIs and does not use the macOS helper app or TCC permission flow.
-
-On Linux, run Pi inside the target user's graphical session with a working AT-SPI2 accessibility bus. AT-SPI semantic operations remain background-first. X11 additionally supports EWMH window metadata/focus, window capture, and policy-gated XTEST physical input; strict headless/background policies never use focus or XTEST. Native Wayland remains semantic-only; diagnostics reads portal capability properties without creating a session, and interactive portal use is disabled. See [Linux support](./docs/linux.md) for the exact capability matrix and portal status.
+On Linux, run Pi inside the target user's graphical session with a working AT-SPI2 accessibility bus. AT-SPI semantic operations remain background-first. X11 additionally supports EWMH window metadata/focus, window capture, and policy-gated XTEST physical input; strict headless/background policies never use focus or XTEST. Native Wayland remains semantic-only; diagnostics reads portal capability properties without creating a session, and interactive portal use is disabled. See [Linux support](./docs/content/docs/how-to-guides/linux.mdx) for the exact capability matrix and portal status.
 
 Use `/computer-use` inside Pi to show the active configuration and where it came from.
 
@@ -76,7 +63,7 @@ Use `/computer-use` inside Pi to show the active configuration and where it came
 - `jev_step`
 - `jev_run`
 
-See [docs/usage.md](./docs/usage.md) for the full tool reference.
+Follow the [getting-started tutorial](./docs/content/docs/tutorials/getting-started.mdx), then use the generated [agent state and action contract](./docs/content/docs/reference/agent/contract.mdx) for operating behavior or the generated [tool schema reference](./docs/content/docs/reference/agent/tools.mdx) for exact parameters.
 
 ## Jev browser layer
 
@@ -94,18 +81,20 @@ decision-making needs an additional credential, and it is controlled by
 `jev_max_steps`, or by `/computer-use jev on|off` and
 `/computer-use jev-decide on|off`.
 
-See [docs/jev.md](./docs/jev.md) for the action-space format, credentials, and
+See [Jev browser layer](./docs/content/docs/explanation/jev.mdx) for the action-space format, credentials, and
 guard semantics.
 
 ## Documentation
 
-- [Usage](./docs/usage.md)
-- [Jev browser layer](./docs/jev.md)
-- [Architecture](./docs/architecture.md)
-- [Configuration](./docs/configuration.md)
-- [Development](./docs/development.md)
-- [Troubleshooting](./docs/troubleshooting.md)
-- [Linux support](./docs/linux.md)
+The docs follow [Diátaxis](https://diataxis.fr/) and render through the Next.js/Fumadocs app in [`docs/`](./docs/README.md). Run `npm install --prefix docs` once, then `npm run docs:dev` and open `http://localhost:8080/docs`.
+
+- [Tutorials](./docs/content/docs/tutorials/getting-started.mdx)
+- [How-to guides](./docs/content/docs/how-to-guides/troubleshooting.mdx)
+- [Explanation](./docs/content/docs/explanation/architecture.mdx)
+- [Reference](./docs/content/docs/reference/index.mdx)
+- [Jev browser layer](./docs/content/docs/explanation/jev.mdx)
+- [macOS root targeting](./docs/content/docs/reference/platforms/macos/root-targeting.mdx)
+- [Linux support](./docs/content/docs/how-to-guides/linux.mdx)
 - [Contributing](./CONTRIBUTING.md)
 
 ## Development status

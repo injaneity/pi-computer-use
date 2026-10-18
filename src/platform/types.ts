@@ -128,10 +128,16 @@ export interface HelperActResult {
 	stoppedAt?: number;
 }
 
+/**
+ * Native root identity. `windowId` is a CoreGraphics-style id and is omitted (never `0`) when the
+ * root has no capturable window. `rootRef` and `windowRef` are two spellings of the same native
+ * root reference; backends normalize them with `normalizeTarget`.
+ */
 export interface PlatformTarget {
 	pid?: number;
 	windowId?: number;
 	rootRef?: string;
+	windowRef?: string;
 }
 
 export interface PlatformObserveRequest {
@@ -205,6 +211,7 @@ export interface ComputerUsePlatformBackend {
 	name: PlatformName;
 	/** Release process-local resources when the Pi session is torn down. */
 	shutdown?(): void | Promise<void>;
+	setActivity?(active: boolean): void | Promise<void>;
 	ensureReady(ctx: ExtensionContext, state: PlatformReadyState, signal?: AbortSignal): Promise<PlatformReadyState>;
 	listApps(signal?: AbortSignal): Promise<PlatformApp[]>;
 	listRoots(query: PlatformRootQuery, signal?: AbortSignal): Promise<PlatformRoot[]>;

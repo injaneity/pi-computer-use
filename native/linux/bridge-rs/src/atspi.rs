@@ -22,7 +22,7 @@ const COMPONENT: &str = "org.a11y.atspi.Component";
 const ACTION: &str = "org.a11y.atspi.Action";
 const MAX_ATSPI_ACTIONS: usize = 64;
 const EDITABLE_TEXT: &str = "org.a11y.atspi.EditableText";
-const TEXT: &str = "org.a11y.atspi.Text";
+pub const TEXT: &str = "org.a11y.atspi.Text";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AccessibleRef {
@@ -185,13 +185,6 @@ impl AtspiClient {
     }
 
     async fn application_pid(&self, accessible: &AccessibleRef) -> u64 {
-        let application_id = match self.proxy(accessible, "org.a11y.atspi.Application").await {
-            Ok(proxy) => proxy.get_property::<i32>("Id").await.unwrap_or(0),
-            Err(_) => 0,
-        };
-        if let Some(pid) = positive_application_pid(application_id) {
-            return pid;
-        }
         let Ok(bus) = Proxy::new(
             &self.connection,
             DBUS_DESTINATION,
@@ -209,7 +202,7 @@ impl AtspiClient {
             )
             .await
             .ok();
-        fallback_application_pid(application_id, connection_pid)
+        connection_pid.map(u64::from).unwrap_or(0)
     }
 
     pub async fn list_roots(
@@ -524,16 +517,6 @@ fn relative_coordinate(value: i32, origin: i32) -> i32 {
     value.saturating_sub(origin)
 }
 
-fn positive_application_pid(application_id: i32) -> Option<u64> {
-    u64::try_from(application_id).ok().filter(|pid| *pid > 0)
-}
-
-fn fallback_application_pid(application_id: i32, connection_pid: Option<u32>) -> u64 {
-    positive_application_pid(application_id)
-        .or_else(|| connection_pid.filter(|pid| *pid > 0).map(u64::from))
-        .unwrap_or(0)
-}
-
 fn unavailable(error: impl std::fmt::Display) -> ProtocolError {
     ProtocolError::new(
         format!("AT-SPI2 is unavailable: {error}"),
@@ -585,13 +568,60 @@ mod tests {
         assert_eq!(relative_coordinate(355, 100), 255);
     }
 
-    #[test]
-    fn application_pid_prefers_positive_atspi_id_then_bus_fallback() {
-        assert_eq!(fallback_application_pid(42, Some(99)), 42);
-        assert_eq!(fallback_application_pid(0, Some(99)), 99);
-        assert_eq!(fallback_application_pid(-1, Some(99)), 99);
-        assert_eq!(fallback_application_pid(0, Some(0)), 0);
-        assert_eq!(fallback_application_pid(0, None), 0);
+    struct MockBus;
+
+    #[zbus::interface(name = "org.freedesktop.DBus")]
+    impl MockBus {
+        #[zbus(name = "GetConnectionUnixProcessID")]
+        fn get_connection_unix_process_id(&self, name: &str) -> u32 {
+            assert_eq!(name, ":1.42");
+            25361
+        }
+    }
+
+    struct MockApplication;
+
+    #[zbus::interface(name = "org.a11y.atspi.Application")]
+    impl MockApplication {
+        #[zbus(property)]
+        fn id(&self) -> i32 {
+            8
+        }
+    }
+
+    #[tokio::test]
+    async fn application_pid_uses_only_accessibility_bus_process_id() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (server_socket, client_socket) = tokio::net::UnixStream::pair().unwrap();
+            let guid = zbus::Guid::generate();
+            let server = zbus::connection::Builder::unix_stream(server_socket)
+                .server(guid)
+                .unwrap()
+                .p2p()
+                .serve_at(DBUS_ROOT, MockBus)
+                .unwrap()
+                .serve_at(REGISTRY_ROOT, MockApplication)
+                .unwrap()
+                .build();
+            let client = zbus::connection::Builder::unix_stream(client_socket)
+                .p2p()
+                .build();
+            let (server, connection) = tokio::try_join!(server, client).unwrap();
+            let client = AtspiClient { connection };
+            let app = AccessibleRef {
+                destination: ":1.42".into(),
+                path: REGISTRY_ROOT.into(),
+            };
+            let application = client
+                .proxy(&app, "org.a11y.atspi.Application")
+                .await
+                .unwrap();
+            assert_eq!(application.get_property::<i32>("Id").await.unwrap(), 8);
+            assert_eq!(client.application_pid(&app).await, 25361);
+            drop(server);
+        })
+        .await
+        .expect("mock accessibility bus should respond promptly");
     }
 
     #[tokio::test]

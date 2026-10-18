@@ -1,4 +1,7 @@
-# Development
+---
+title: 'Develop and validate changes'
+description: 'Repository layout, validation, native helper development, and release signing.'
+---
 
 ## Repository layout
 
@@ -9,8 +12,8 @@ src/actions.ts                   Action preparation and result reconciliation
 src/runtime.ts                   Immutable state store and resource scheduler
 src/state.ts                     Saved UI state ownership and restoration
 src/view.ts                      Stable refs and resulting-state change views
-src/outline.ts                   Outline parsing, folding, search, and ref mapping
-src/jev/snapshot.ts               Atomic DOM snapshot (typed, serialized into the controlled page)
+src/outline.ts                   Outline parsing, folding, control lists, search, and ref mapping
+src/jev/snapshot.ts              Atomic DOM snapshot (typed, serialized into the controlled page)
 src/jev/driver.ts                CDP observe, freshness, guarded execution, settle
 src/jev/space.ts                 Indexed action space, fingerprint, table rendering
 src/jev/questions.ts             Shared decision questions and evaluated state
@@ -19,6 +22,7 @@ src/jev/vercel.ts                Vercel AI SDK experimental_evaluate backend
 src/jev/loop.ts                  Bounded predict -> act -> observe loop
 src/note.ts                      Disposable running-note generation
 native/macos/bridge.swift        macOS helper for AX, capture, permissions, and input
+native/macos/activity_glow.swift macOS activity indicator windows and client ownership
 native/windows/                 Windows backend/helper code when developing on Windows
 native/linux/bridge-rs/         Linux AT-SPI2 helper (Rust)
 scripts/build-native.mjs         macOS helper build script
@@ -41,7 +45,7 @@ Run all static checks:
 npm test
 ```
 
-This runs TypeScript, tool-schema compatibility checks, architecture invariants, offline jev contracts, and native helper checks available on the current platform.
+This runs TypeScript, generated documentation checks, tool-schema compatibility checks, architecture invariants, offline jev contracts, and native helper checks available on the current platform. After changing a tool definition or a source-owned `PI_DOCS_REFERENCE` block, run `npm run docs:generate` and commit the regenerated pages.
 
 The jev browser layer also has an opt-in live check that starts a local headless Chrome, serves a fixture page, and exercises the ported guards without model calls:
 
@@ -65,7 +69,7 @@ npm run build:native
 
 The runtime is state-scoped and outline-first:
 
-- `observe_ui` returns a folded UI outline and running note.
+- `observe_ui` returns a compact control list and running note; `detail: "outline"` returns the folded outline.
 - `search_ui`, `expand_ui`, and `inspect_ui` provide progressive disclosure.
 - `act_ui` is the only public desktop action entrypoint.
 - UI observations are immutable records; request-local hydration replaces global current state.
@@ -105,34 +109,15 @@ On macOS, the helper installed for permissions is normally:
 ~/Applications/pi-computer-use.app
 ```
 
-Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. The macOS helper targets macOS 14+ and uses ScreenCaptureKit. Local development can use ad-hoc signing. Release builds must use the release workflow so the helper app is signed with the stable release certificate.
+Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. The macOS helper targets macOS 14 and links ApplicationServices, AppKit, ScreenCaptureKit, Foundation, SwiftUI, Vision, and ImageIO through the Swift sources and build scripts. The [macOS implementation reference](../reference/platforms/macos/implementation.mdx) records the exact platform behavior and Apple API citations; update it whenever the helper changes.
 
-On Windows, development uses the Windows platform backend/helper and the active desktop session rather than the macOS app bundle or TCC permission model.
+Local setup chooses a Developer ID identity when one is available, otherwise its managed local signing identity, and finally ad-hoc signing. The installer refuses to replace an existing helper with an ad-hoc rebuild unless `PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE=1` is set. This is project safety policy, not a guarantee about permission retention ([setup-helper.mjs](https://github.com/injaneity/pi-computer-use/blob/main/scripts/setup-helper.mjs#L427)).
+
+On Windows, development uses the Windows platform backend/helper and the active desktop session rather than the macOS app bundle.
 
 On Linux, install Rust/Cargo and run `npm run build:linux`, `npm run test:linux`, and `npm run test:linux-scripts`. Live checks must run inside the target user's graphical D-Bus session. The helper installs to `~/.pi/agent/helpers/pi-computer-use/linux-bridge`.
 
-## Release signing
-
-This section applies to macOS releases. macOS TCC keys Accessibility and Screen Recording grants to an app's code-signing identity. Ad-hoc and locally self-signed development builds may require permission review whenever their native code changes. Only Developer ID-signed release bundles should be treated as having a stable update identity.
-
-Release setup:
-
-1. Run `./scripts/make-signing-cert.sh` once, or use a Developer ID Application certificate.
-2. Add repository secrets:
-   - `APPLICATION_CERT_BASE64`
-   - `CERT_PASSWORD`
-   - `SIGN_IDENTITY`
-3. For Developer ID notarization, set repository variable `NOTARIZE=true` and add:
-   - `TEAM_ID`
-   - `APPLE_ID`
-   - `APP_SPECIFIC_PASSWORD`
-4. Push a `v*` tag or run the `Release` workflow manually.
-
-For macOS, `.github/workflows/publish-npm.yml` builds the universal helper, signs it, optionally notarizes it, stages a draft GitHub Release, injects the same signed helper app into the npm package, publishes npm, and only then publishes the GitHub Release.
-
-For an isolated X11 acceptance run, install Xvfb, xfwm4, the AT-SPI2 runtime,
-xfce4-appfinder, and xfce4-terminal, then build and install the helper before
-running the explicitly gated live suite:
+For an isolated X11 acceptance run, install Xvfb, xfwm4, the AT-SPI2 runtime, xfce4-appfinder, and xfce4-terminal, then build and install the helper before running the explicitly gated live suite:
 
 ```bash
 npm run build:linux
@@ -140,6 +125,10 @@ node scripts/setup-helper.mjs --platform linux
 npm run test:linux-live
 ```
 
-The harness creates its own D-Bus and Xvfb session. It fails rather than
-silently passing when the live flag, helper, accessibility bridge, or required
-X11 applications are unavailable.
+The harness creates its own D-Bus and Xvfb session. It fails rather than silently passing when the live flag, helper, accessibility bridge, or required X11 applications are unavailable.
+
+## macOS release signing
+
+`.github/workflows/publish-npm.yml` is the release source of truth. It builds a universal helper on `macos-14`, assembles the app with a `14.0` minimum system version, signs it with the configured certificate and hardened runtime, and verifies the signature. When the repository variable `NOTARIZE` is `true`, it submits and staples the app before packaging ([publish-npm.yml](https://github.com/injaneity/pi-computer-use/blob/main/.github/workflows/publish-npm.yml#L39)).
+
+The workflow requires `APPLICATION_CERT_BASE64`, `CERT_PASSWORD`, and `SIGN_IDENTITY`. Optional notarization additionally requires `TEAM_ID`, `APPLE_ID`, and `APP_SPECIFIC_PASSWORD`. It stages the helper in a draft GitHub Release, injects the same artifact into the npm package, publishes npm, and publishes the GitHub Release last.

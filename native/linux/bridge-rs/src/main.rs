@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use linux_bridge::atspi::{outline_json, root_json, AtspiClient, NodeSnapshot, Rect, RootSnapshot};
+use linux_bridge::atspi::{
+    outline_json, root_json, AtspiClient, NodeSnapshot, Rect, RootSnapshot, TEXT,
+};
 use linux_bridge::protocol::PROTOCOL_VERSION;
 use linux_bridge::state::{fresh_state_id, HelperState};
 use linux_bridge::wayland::{PortalCapabilities, PortalClient, PortalError};
@@ -710,10 +712,12 @@ async fn read_text(state: &Arc<Mutex<HelperState>>, args: &Value) -> Result<Valu
             ErrorCode::SecureTextUnreadable,
         ));
     }
-    let text = AtspiClient::connect()
-        .await?
-        .read_text(&node.accessible)
-        .await?;
+    let text = if node.interfaces.contains(TEXT) {
+        let client = AtspiClient::connect().await?;
+        client.read_text(&node.accessible).await?
+    } else {
+        String::new()
+    };
     let characters = text.chars().collect::<Vec<_>>();
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(4096) as usize;
@@ -905,6 +909,38 @@ mod tests {
             &None,
             &None
         ));
+    }
+
+    #[tokio::test]
+    async fn read_text_without_text_interface_returns_empty_text() {
+        let root = RootSnapshot {
+            accessible: AccessibleRef {
+                destination: ":1.1".into(),
+                path: "/window".into(),
+            },
+            pid: 1,
+            name: "Calculator".into(),
+            app_name: "Calculator".into(),
+            role: "frame".into(),
+            frame: None,
+            x11_window: None,
+            is_focused: false,
+            is_minimized: false,
+            z_order: None,
+        };
+        let mut display = node();
+        display.interfaces.insert("org.a11y.atspi.Action".into());
+        let state = Arc::new(Mutex::new(HelperState::default()));
+        let (look_id, nodes) = lock(&state).unwrap().insert_look(root, vec![display], None);
+        let result = read_text(
+            &state,
+            &json!({"lookId": look_id, "elementRef": nodes[0].reference}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["text"], "");
+        assert_eq!(result["totalChars"], 0);
+        assert_eq!(result["hasMore"], false);
     }
 
     #[test]
