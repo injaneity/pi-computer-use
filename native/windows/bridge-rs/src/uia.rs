@@ -78,64 +78,48 @@ pub fn extract_elements_from(
 // `#[cfg(windows)] native` module.  We suppress the lint for that case.
 // ---------------------------------------------------------------------------
 
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_WINDOW_CONTROL: u32 = 50032;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_PANE_CONTROL: u32 = 50033;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_DOCUMENT_CONTROL: u32 = 50030;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_EDIT_CONTROL: u32 = 50004;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_BUTTON_CONTROL: u32 = 50000;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_CHECKBOX_CONTROL: u32 = 50002;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_RADIOBUTTON_CONTROL: u32 = 50007;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_COMBOBOX_CONTROL: u32 = 50003;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_LIST_CONTROL: u32 = 50008;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_LISTITEM_CONTROL: u32 = 50009;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TREE_CONTROL: u32 = 50020;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TREEITEM_CONTROL: u32 = 50021;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_MENUITEM_CONTROL: u32 = 50010;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TEXT_CONTROL: u32 = 50019;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_HYPERLINK_CONTROL: u32 = 50005;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TAB_CONTROL: u32 = 50018;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TABITEM_CONTROL: u32 = 50022;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_HEADER_CONTROL: u32 = 50034;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_HEADERITEM_CONTROL: u32 = 50035;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TABLE_CONTROL: u32 = 50036;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_IMAGE_CONTROL: u32 = 50031;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_SLIDER_CONTROL: u32 = 50013;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_PROGRESSBAR_CONTROL: u32 = 50006;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TOOLBAR_CONTROL: u32 = 50016;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_STATUSBAR_CONTROL: u32 = 50014;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_TOOLTIP_CONTROL: u32 = 50015;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_SCROLLBAR_CONTROL: u32 = 50011;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_GROUP_CONTROL: u32 = 50026;
-#[cfg_attr(not(windows), allow(dead_code))]
-const UIA_SEPARATOR_CONTROL: u32 = 50039;
+// Windows uses SDK constants; numeric mirrors keep non-Windows tests available.
+macro_rules! control_type_ids {
+    ($( $name:ident = $sdk:ident, $id:literal; )*) => { $(
+        #[cfg(windows)]
+        const $name: u32 = windows::Win32::UI::Accessibility::$sdk.0 as u32;
+        #[cfg(not(windows))]
+        #[allow(dead_code)]
+        const $name: u32 = $id;
+    )* };
+}
+
+control_type_ids! {
+    UIA_WINDOW_CONTROL = UIA_WindowControlTypeId, 50032;
+    UIA_PANE_CONTROL = UIA_PaneControlTypeId, 50033;
+    UIA_DOCUMENT_CONTROL = UIA_DocumentControlTypeId, 50030;
+    UIA_EDIT_CONTROL = UIA_EditControlTypeId, 50004;
+    UIA_BUTTON_CONTROL = UIA_ButtonControlTypeId, 50000;
+    UIA_CHECKBOX_CONTROL = UIA_CheckBoxControlTypeId, 50002;
+    UIA_RADIOBUTTON_CONTROL = UIA_RadioButtonControlTypeId, 50013;
+    UIA_COMBOBOX_CONTROL = UIA_ComboBoxControlTypeId, 50003;
+    UIA_LIST_CONTROL = UIA_ListControlTypeId, 50008;
+    UIA_LISTITEM_CONTROL = UIA_ListItemControlTypeId, 50007;
+    UIA_TREE_CONTROL = UIA_TreeControlTypeId, 50023;
+    UIA_TREEITEM_CONTROL = UIA_TreeItemControlTypeId, 50024;
+    UIA_MENUITEM_CONTROL = UIA_MenuItemControlTypeId, 50011;
+    UIA_TEXT_CONTROL = UIA_TextControlTypeId, 50020;
+    UIA_HYPERLINK_CONTROL = UIA_HyperlinkControlTypeId, 50005;
+    UIA_TAB_CONTROL = UIA_TabControlTypeId, 50018;
+    UIA_TABITEM_CONTROL = UIA_TabItemControlTypeId, 50019;
+    UIA_HEADER_CONTROL = UIA_HeaderControlTypeId, 50034;
+    UIA_HEADERITEM_CONTROL = UIA_HeaderItemControlTypeId, 50035;
+    UIA_TABLE_CONTROL = UIA_TableControlTypeId, 50036;
+    UIA_IMAGE_CONTROL = UIA_ImageControlTypeId, 50006;
+    UIA_SLIDER_CONTROL = UIA_SliderControlTypeId, 50015;
+    UIA_PROGRESSBAR_CONTROL = UIA_ProgressBarControlTypeId, 50012;
+    UIA_TOOLBAR_CONTROL = UIA_ToolBarControlTypeId, 50021;
+    UIA_STATUSBAR_CONTROL = UIA_StatusBarControlTypeId, 50017;
+    UIA_TOOLTIP_CONTROL = UIA_ToolTipControlTypeId, 50022;
+    UIA_SCROLLBAR_CONTROL = UIA_ScrollBarControlTypeId, 50014;
+    UIA_GROUP_CONTROL = UIA_GroupControlTypeId, 50026;
+    UIA_SEPARATOR_CONTROL = UIA_SeparatorControlTypeId, 50038;
+}
 
 /// Map a UIA control type ID to a semantic role string.
 ///
@@ -1067,7 +1051,7 @@ mod unit_tests {
 
     #[test]
     fn test_control_type_to_role_radio() {
-        assert_eq!(control_type_to_role(50007), "radio");
+        assert_eq!(control_type_to_role(50013), "radio");
     }
 
     #[test]
@@ -1082,12 +1066,12 @@ mod unit_tests {
 
     #[test]
     fn test_control_type_to_role_menu_item() {
-        assert_eq!(control_type_to_role(50010), "menuItem");
+        assert_eq!(control_type_to_role(50011), "menuItem");
     }
 
     #[test]
     fn test_control_type_to_role_list_item() {
-        assert_eq!(control_type_to_role(50009), "listItem");
+        assert_eq!(control_type_to_role(50007), "listItem");
     }
 
     #[test]
@@ -1099,6 +1083,28 @@ mod unit_tests {
     fn test_control_type_to_role_unknown() {
         assert_eq!(control_type_to_role(99999), "unknown");
         assert_eq!(control_type_to_role(0), "unknown");
+    }
+
+    #[test]
+    fn control_roles_follow_sdk_ids() {
+        for (id, role) in [
+            (50000, "button"), (50002, "checkbox"), (50003, "comboBox"),
+            (50004, "edit"), (50005, "link"), (50006, "image"),
+            (50007, "listItem"), (50008, "list"), (50011, "menuItem"),
+            (50012, "progressBar"), (50013, "radio"), (50014, "scrollBar"),
+            (50015, "slider"), (50017, "statusBar"), (50018, "tab"),
+            (50019, "tabItem"), (50020, "text"), (50021, "toolBar"),
+            (50022, "toolTip"), (50023, "tree"), (50024, "treeItem"),
+            (50026, "group"), (50030, "document"), (50032, "window"),
+            (50033, "pane"), (50034, "header"), (50035, "headerItem"),
+            (50036, "table"), (50038, "separator"),
+        ] {
+            assert_eq!(control_type_to_role(id), role, "control type {id}");
+        }
+        // These IDs belong to controls with no role mapping here.
+        for id in [50009, 50010, 50016, 50031, 50039] {
+            assert_eq!(control_type_to_role(id), "unknown", "control type {id}");
+        }
     }
 
     // -- Element JSON shape (cross-platform) --------------------------------
