@@ -1,14 +1,23 @@
 //! Window and element reference store.
 //!
 //! Maps monotonically increasing display-form references (`@w1`, `@e2`, …)
-//! to opaque native handles (HWND, UIA element pointer).  Each `State`
+//! to native window handles and owned marshalled UIA references. Each `State`
 //! should get its own `RefStore` so that references remain scoped to a
 //! single discovery session.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-/// An opaque native handle (e.g., HWND or UIA element pointer).
+/// A marshalled UIA reference, owned by its discovery store or look record.
+#[cfg(windows)]
+pub type UiaElement = windows::core::AgileReference<
+    windows::Win32::UI::Accessibility::IUIAutomationElement,
+>;
+#[cfg(not(windows))]
+#[derive(Clone, Debug)]
+pub struct UiaElement;
+
+/// An opaque native handle (e.g., HWND).
 ///
 /// Kept inside helper memory; never serialized to JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,7 +92,7 @@ impl fmt::Display for ElementRef {
 // RefStore
 // ---------------------------------------------------------------------------
 
-/// An owned store of window and element native handles.
+/// An owned store of window handles and marshalled element references.
 ///
 /// Assigns monotonically increasing, 1-indexed references.  Each
 /// discovery state should hold its own `RefStore` so that reference
@@ -94,7 +103,7 @@ pub struct RefStore {
     next_element_id: u64,
     windows: HashMap<u64, NativeHandle>,
     window_ids: HashMap<NativeHandle, u64>,
-    elements: HashMap<u64, NativeHandle>,
+    elements: HashMap<u64, (NativeHandle, Option<UiaElement>)>,
 }
 
 impl RefStore {
@@ -125,7 +134,7 @@ impl RefStore {
     pub fn insert_element(&mut self, handle: NativeHandle) -> ElementRef {
         let id = self.next_element_id;
         self.next_element_id += 1;
-        self.elements.insert(id, handle);
+        self.elements.insert(id, (handle, None));
         ElementRef { id }
     }
 
@@ -140,7 +149,25 @@ impl RefStore {
     ///
     /// Returns `None` if the ref did not originate from this store.
     pub fn get_element(&self, eref: &ElementRef) -> Option<NativeHandle> {
-        self.elements.get(&eref.id).copied()
+        self.elements.get(&eref.id).map(|(handle, _)| *handle)
+    }
+
+    /// Retain the observed COM object without sharing an apartment-bound pointer.
+    #[cfg(windows)]
+    pub fn insert_uia_element(
+        &mut self,
+        element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+    ) -> windows::core::Result<ElementRef> {
+        let retained = UiaElement::new(element)?;
+        let eref = self.insert_element(NativeHandle::new(0));
+        self.elements.get_mut(&eref.id).unwrap().1 = Some(retained);
+        Ok(eref)
+    }
+
+    /// Clone the agile reference into the owning look, before this store is dropped.
+    pub fn get_uia_element(&self, reference: &str) -> Option<UiaElement> {
+        let id = reference.strip_prefix("@e")?.parse::<u64>().ok()?;
+        self.elements.get(&id)?.1.clone()
     }
 
     /// Keep only the currently discoverable windows while preserving refs for

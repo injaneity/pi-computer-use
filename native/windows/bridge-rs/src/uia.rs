@@ -9,7 +9,40 @@
 
 use serde_json::Value;
 
-use crate::refs::RefStore;
+use crate::refs::{RefStore, UiaElement};
+
+/// Keep confirmed provider removal distinct from an unknown query failure.
+#[derive(Debug)]
+pub enum ElementQueryError {
+    ElementNotAvailable,
+    Other(String),
+}
+
+impl From<String> for ElementQueryError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<ElementQueryError> for String {
+    fn from(error: ElementQueryError) -> Self {
+        match error {
+            ElementQueryError::ElementNotAvailable => "Element reference is stale".to_owned(),
+            ElementQueryError::Other(message) => message,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl From<windows::core::Error> for ElementQueryError {
+    fn from(error: windows::core::Error) -> Self {
+        if error.code().0 as u32 == windows::Win32::UI::Accessibility::UIA_E_ELEMENTNOTAVAILABLE {
+            Self::ElementNotAvailable
+        } else {
+            Self::Other(error.to_string())
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public interface
@@ -57,15 +90,16 @@ pub fn extract_elements_from(
     hwnd: isize,
     runtime_id: &[i32],
     automation_id: &str,
+    retained: Option<&UiaElement>,
 ) -> Result<Vec<Value>, String> {
     #[cfg(not(windows))]
     {
-        let _ = (store, hwnd, runtime_id, automation_id);
+        let _ = (store, hwnd, runtime_id, automation_id, retained);
         Ok(Vec::new())
     }
     #[cfg(windows)]
     {
-        native::uia_extract_from(store, hwnd, runtime_id, automation_id)
+        native::uia_extract_from(store, hwnd, runtime_id, automation_id, retained)
     }
 }
 
@@ -176,6 +210,11 @@ fn control_type_to_role(ctrl_type: u32) -> &'static str {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn runtime_ids_match(candidate: Option<&[i32]>, target: &[i32]) -> bool {
+    candidate.is_some_and(|id| !id.is_empty() && id == target)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ElementAnnotationSignals {
     pub invoke: bool,
@@ -213,7 +252,8 @@ mod native {
         annotation_can_press, annotation_can_set_text, control_type_to_role,
         ElementAnnotationSignals,
     };
-    use crate::refs::{NativeHandle, RefStore};
+    use crate::refs::{RefStore, UiaElement};
+    use super::ElementQueryError;
 
     use windows::core::{BSTR, VARIANT};
     use windows::Win32::Foundation::*;
@@ -248,8 +288,9 @@ mod native {
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
     ) -> Result<Vec<Value>, String> {
-        let (_com, uia, root) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, uia, root) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
         extract_from_root(store, &uia, &root)
     }
 
@@ -290,7 +331,11 @@ mod native {
             let parent_runtime_id = unsafe { walker.GetParentElement(&element).ok() }
                 .and_then(|parent| runtime_id(&parent))
                 .unwrap_or_default();
-            if let Some(json_val) = element_to_json(store, &element, parent_runtime_id) {
+            if let Some(mut json_val) = element_to_json(&element, parent_runtime_id) {
+                let eref = store
+                    .insert_uia_element(&element)
+                    .map_err(|_| "Element reference is stale")?;
+                json_val["ref"] = json!(eref.to_string());
                 elements.push(json_val);
             }
         }
@@ -299,6 +344,7 @@ mod native {
             let retained = elements
                 .iter()
                 .filter_map(|element| element.get("runtimeId").and_then(Value::as_array))
+                .filter(|runtime_id| !runtime_id.is_empty())
                 .map(|runtime_id| {
                     runtime_id
                         .iter()
@@ -338,7 +384,9 @@ mod native {
                     .map(i32::to_string)
                     .collect::<Vec<_>>()
                     .join(".");
-                truncated.insert(root_key);
+                if !root_key.is_empty() {
+                    truncated.insert(root_key);
+                }
             }
             for element in &mut elements {
                 let key = element
@@ -390,14 +438,25 @@ mod native {
     /// Returns `None` for elements that are offscreen, zero-sized, or
     /// otherwise uninteresting.
     fn element_to_json(
-        store: &mut RefStore,
         element: &IUIAutomationElement,
         parent_runtime_id: Vec<i32>,
     ) -> Option<Value> {
-        let ctrl_type = unsafe { element.CurrentControlType().ok()? };
+        element_to_json_for_query(element, parent_runtime_id, false).ok().flatten()
+    }
+
+    fn element_to_json_for_query(
+        element: &IUIAutomationElement,
+        parent_runtime_id: Vec<i32>,
+        strict: bool,
+    ) -> Result<Option<Value>, ElementQueryError> {
+        let ctrl_type = unsafe { element.CurrentControlType()? };
         let role = control_type_to_role(ctrl_type.0 as u32);
 
-        let name = unsafe { element.CurrentName().unwrap_or_default().to_string() };
+        let name = match unsafe { element.CurrentName() } {
+            Ok(value) => value.to_string(),
+            Err(error) if strict => return Err(error.into()),
+            Err(_) => String::new(),
+        };
         let automation_id = unsafe {
             element
                 .CurrentAutomationId()
@@ -408,23 +467,22 @@ mod native {
         let class_name = unsafe { element.CurrentClassName().unwrap_or_default().to_string() };
 
         // Bounding rectangle.
-        let rect = unsafe { element.CurrentBoundingRectangle().ok()? };
+        let rect = unsafe { element.CurrentBoundingRectangle()? };
 
         // Skip invisible / offscreen elements.
         let w = rect.right - rect.left;
         let h = rect.bottom - rect.top;
         if w <= 0 || h <= 0 {
-            return None;
+            return Ok(None);
         }
 
-        let is_offscreen = unsafe {
-            element
-                .CurrentIsOffscreen()
-                .map(|value| value.as_bool())
-                .unwrap_or(true)
+        let is_offscreen = match unsafe { element.CurrentIsOffscreen() } {
+            Ok(value) => value.as_bool(),
+            Err(error) if strict => return Err(error.into()),
+            Err(_) => true,
         };
         if is_offscreen {
-            return None;
+            return Ok(None);
         }
 
         // Capabilities.
@@ -446,16 +504,30 @@ mod native {
                 .map(|value| value.as_bool())
                 .unwrap_or(false)
         };
-        let value_pattern = unsafe {
-            element
-                .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-                .ok()
+        let value_available = if strict {
+            let available = unsafe {
+                element.GetCurrentPropertyValue(UIA_IsValuePatternAvailablePropertyId)?
+            };
+            bool::try_from(&available)?
+        } else {
+            true
         };
-        let value = value_pattern
-            .as_ref()
-            .and_then(|pattern| unsafe { pattern.CurrentValue().ok() })
-            .map(|value| value.to_string())
-            .unwrap_or_default();
+        let value_pattern = if value_available {
+            match unsafe {
+                element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            } {
+                Ok(pattern) => Some(pattern),
+                Err(error) if strict => return Err(error.into()),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        let value = match value_pattern.as_ref().map(|pattern| unsafe { pattern.CurrentValue() }) {
+            Some(Ok(value)) => value.to_string(),
+            Some(Err(error)) if strict => return Err(error.into()),
+            _ => String::new(),
+        };
         let value_read_only = value_pattern
             .as_ref()
             .and_then(|pattern| unsafe { pattern.CurrentIsReadOnly().ok() })
@@ -480,10 +552,7 @@ mod native {
         let can_set_value = annotation_can_set_text(&signals);
         let can_scroll = pattern_available(element, UIA_IsScrollPatternAvailablePropertyId);
 
-        let eref = store.insert_element(NativeHandle::new(0));
-
-        Some(json!({
-            "ref": eref.to_string(),
+        Ok(Some(json!({
             "role": role,
             "label": name,
             "automationId": automation_id,
@@ -507,21 +576,36 @@ mod native {
                 "canSetValue": can_set_value,
                 "canScroll": can_scroll,
             },
-        }))
+        })))
     }
 
     pub fn read_live_text(
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
     ) -> Result<String, String> {
-        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
         Ok(read_text_from_element(&element))
     }
 
     pub fn live_elements(hwnd: isize) -> Result<Vec<Value>, String> {
         let mut store = RefStore::new();
         uia_extract(&mut store, hwnd)
+    }
+
+    pub fn live_elements_from(
+        hwnd: isize,
+        runtime_id_target: &[i32],
+        automation_id: &str,
+        retained: Option<&UiaElement>,
+        exact: bool,
+    ) -> Result<Vec<Value>, ElementQueryError> {
+        let (_com, uia, root) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
+        if exact {
+            return Ok(element_to_json_for_query(&root, Vec::new(), true)?.into_iter().collect());
+        }
+        extract_from_root(&mut RefStore::new(), &uia, &root).map_err(Into::into)
     }
 
     pub struct ElementSnapshot {
@@ -552,8 +636,9 @@ mod native {
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
     ) -> Result<ElementSnapshot, String> {
-        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
         let rect = unsafe {
             element
                 .CurrentBoundingRectangle()
@@ -574,8 +659,9 @@ mod native {
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
     ) -> Result<PressResult, String> {
-        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
         if let Ok(pattern) = unsafe {
             element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
         } {
@@ -677,9 +763,10 @@ mod native {
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
         text: &str,
     ) -> Result<SetTextResult, String> {
-        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
         if let Ok(pattern) =
             unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
         {
@@ -704,8 +791,9 @@ mod native {
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
     ) -> Result<(), String> {
-        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
         unsafe { element.SetFocus().map_err(|e| format!("SetFocus: {e}")) }
     }
 
@@ -713,10 +801,11 @@ mod native {
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
         x: f64,
         y: f64,
     ) -> Result<ScrollResult, String> {
-        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, _uia, element) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
         if let Ok(pattern) = unsafe {
             element.GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId)
         } {
@@ -748,10 +837,24 @@ mod native {
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
+        retained: Option<&UiaElement>,
         x: f64,
         y: f64,
     ) -> Result<bool, String> {
-        let (_com, uia, target) = resolve(hwnd, runtime_id_target, automation_id)?;
+        let (_com, uia, target) = resolve(hwnd, runtime_id_target, automation_id, retained)?;
+        if unsafe { target.CurrentIsOffscreen().map_err(|_| "Element reference is stale")? }.as_bool()
+            || !unsafe { target.CurrentIsEnabled().map_err(|_| "Element reference is stale")? }.as_bool()
+        {
+            return Ok(false);
+        }
+        let rect = unsafe { target.CurrentBoundingRectangle() }
+            .map_err(|_| "Element reference is stale")?;
+        if rect.right <= rect.left || rect.bottom <= rect.top
+            || x < f64::from(rect.left) || x >= f64::from(rect.right)
+            || y < f64::from(rect.top) || y >= f64::from(rect.bottom)
+        {
+            return Ok(false);
+        }
         let hit = unsafe {
             uia.ElementFromPoint(POINT {
                 x: x.round() as i32,
@@ -759,54 +862,67 @@ mod native {
             })
             .map_err(|e| format!("ElementFromPoint: {e}"))?
         };
-        let target_id = runtime_id(&target).unwrap_or_default();
-        let hit_id = runtime_id(&hit).unwrap_or_default();
-        if !target_id.is_empty() && target_id == hit_id {
+        if unsafe { uia.CompareElements(&target, &hit) }
+            .map_err(|_| "Element reference is stale")?
+            .as_bool()
+        {
             return Ok(true);
         }
         let walker = unsafe {
             uia.ControlViewWalker()
                 .map_err(|e| format!("ControlViewWalker: {e}"))?
         };
-        Ok(is_ancestor(&walker, &target_id, hit) || is_ancestor(&walker, &hit_id, target))
+        Ok(is_ancestor(&uia, &walker, &target, hit.clone())?
+            || is_ancestor(&uia, &walker, &hit, target)?)
     }
 
     fn is_ancestor(
+        uia: &IUIAutomation,
         walker: &IUIAutomationTreeWalker,
-        ancestor_id: &[i32],
+        ancestor: &IUIAutomationElement,
         mut element: IUIAutomationElement,
-    ) -> bool {
-        if ancestor_id.is_empty() {
-            return false;
-        }
+    ) -> Result<bool, String> {
         for _ in 0..64 {
             let Some(parent) = (unsafe { walker.GetParentElement(&element).ok() }) else {
-                return false;
+                return Ok(false);
             };
-            let parent_id = runtime_id(&parent).unwrap_or_default();
-            if parent_id == ancestor_id {
-                return true;
+            if unsafe { uia.CompareElements(&parent, ancestor) }
+                .map_err(|_| "Element reference is stale")?
+                .as_bool()
+            {
+                return Ok(true);
             }
             element = parent;
         }
-        false
+        Ok(false)
     }
 
     fn resolve(
         hwnd: isize,
         runtime_id_target: &[i32],
         automation_id: &str,
-    ) -> Result<(ComGuard, IUIAutomation, IUIAutomationElement), String> {
+        retained: Option<&UiaElement>,
+    ) -> Result<(ComGuard, IUIAutomation, IUIAutomationElement), ElementQueryError> {
         let com = ComGuard::new()?;
         let uia: IUIAutomation = unsafe {
             CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
                 .map_err(|e| format!("CoCreateInstance IUIAutomation: {e}"))?
         };
+        if let Some(retained) = retained {
+            let element = retained.resolve().map_err(ElementQueryError::from)?;
+            // A disconnected provider must not fall back to a different tree object.
+            unsafe { element.CurrentControlType() }.map_err(ElementQueryError::from)?;
+            return Ok((com, uia, element));
+        }
+        // Without a retained object, only a nonempty RuntimeId proves identity.
+        if runtime_id_target.is_empty() {
+            return Err("Element reference is stale".to_owned().into());
+        }
         let root = unsafe {
             uia.ElementFromHandle(HWND(hwnd as *mut _))
                 .map_err(|e| format!("ElementFromHandle: {e}"))?
         };
-        if runtime_id(&root).as_deref() == Some(runtime_id_target) {
+        if super::runtime_ids_match(runtime_id(&root).as_deref(), runtime_id_target) {
             return Ok((com, uia, root));
         }
         // UIA RuntimeId is exposed as a SAFEARRAY and is not reliably accepted by
@@ -819,18 +935,7 @@ mod native {
                 unsafe { uia.CreatePropertyCondition(UIA_AutomationIdPropertyId, &value) }
             {
                 if let Ok(element) = unsafe { root.FindFirst(TreeScope_Subtree, &condition) } {
-                    if runtime_id(&element).as_deref() == Some(runtime_id_target)
-                        || runtime_id_target.is_empty()
-                    {
-                        return Ok((com, uia, element));
-                    }
-                    let candidate_id = unsafe {
-                        element
-                            .CurrentAutomationId()
-                            .unwrap_or_default()
-                            .to_string()
-                    };
-                    if candidate_id == automation_id && runtime_id_target.is_empty() {
+                    if super::runtime_ids_match(runtime_id(&element).as_deref(), runtime_id_target) {
                         return Ok((com, uia, element));
                     }
                 }
@@ -850,32 +955,17 @@ mod native {
                 .Length()
                 .map_err(|e| format!("ElementArray.Length: {e}"))?
         };
-        let mut automation_fallback = None;
         for i in 0..count {
             let element = unsafe {
                 found
                     .GetElement(i)
                     .map_err(|e| format!("GetElement({i}): {e}"))?
             };
-            if runtime_id(&element).as_deref() == Some(runtime_id_target) {
+            if super::runtime_ids_match(runtime_id(&element).as_deref(), runtime_id_target) {
                 return Ok((com, uia, element));
             }
-            if !automation_id.is_empty() {
-                let candidate_id = unsafe {
-                    element
-                        .CurrentAutomationId()
-                        .unwrap_or_default()
-                        .to_string()
-                };
-                if candidate_id == automation_id && automation_fallback.is_none() {
-                    automation_fallback = Some(element);
-                }
-            }
         }
-        if let Some(element) = automation_fallback {
-            return Ok((com, uia, element));
-        }
-        Err("Element reference is stale".to_owned())
+        Err("Element reference is stale".to_owned().into())
     }
 
     fn read_text_from_element(element: &IUIAutomationElement) -> String {
@@ -916,7 +1006,16 @@ mod native {
             // SAFETY: COM must be initialised for the calling thread before
             // any UIA calls.  S_OK (0) and S_FALSE (1) are both success
             // indicators; only a negative HRESULT means failure.
-            let hr = unsafe { CoInitializeEx(Some(std::ptr::null()), COINIT_APARTMENTTHREADED) };
+            // Keep the MTA alive between requests, while bounded look records own
+            // agile references. The usage cookie deliberately lives until process exit.
+            static MTA: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+            MTA.get_or_init(|| unsafe {
+                CoIncrementMTAUsage()
+                    .map(|_| ())
+                    .map_err(|_| "Element reference is stale".to_owned())
+            })
+            .clone()?;
+            let hr = unsafe { CoInitializeEx(Some(std::ptr::null()), COINIT_MULTITHREADED) };
             if hr.0 < 0 {
                 return Err(format!("CoInitializeEx failed: {:#010x}", hr.0));
             }
@@ -933,12 +1032,150 @@ mod native {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows::core::{AgileReference, Interface};
+
+        #[test]
+        fn only_element_not_available_hresult_proves_removal() {
+            let removed = windows::core::Error::from_hresult(
+                windows::core::HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32));
+            assert!(matches!(ElementQueryError::from(removed), ElementQueryError::ElementNotAvailable));
+            let unknown = windows::core::Error::from_hresult(E_FAIL);
+            let message = unknown.to_string();
+            assert!(matches!(ElementQueryError::from(unknown), ElementQueryError::Other(text) if text == message));
+        }
+
+        #[test]
+        fn empty_id_without_observed_object_is_stale() {
+            // No window lookup occurs, including when AutomationId is present.
+            assert!(resolve(0, &[], "", None).is_err());
+            assert!(resolve(0, &[], "duplicate-id", None).is_err());
+        }
+
+        #[test]
+        #[ignore = "requires an interactive Windows desktop"]
+        fn retained_empty_id_refs_distinguish_same_name_controls() {
+            use windows::core::w;
+            use windows::Win32::System::Threading::GetCurrentThreadId;
+            use windows::Win32::UI::WindowsAndMessaging::*;
+
+            // The fixture owns its windows and message loop; no user app is targeted.
+            struct Fixture {
+                thread_id: u32,
+                worker: Option<std::thread::JoinHandle<()>>,
+            }
+            impl Drop for Fixture {
+                fn drop(&mut self) {
+                    unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+                        .unwrap();
+                    self.worker.take().unwrap().join().unwrap();
+                }
+            }
+            let (send, receive) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || unsafe {
+                let left = CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_NOACTIVATE, w!("BUTTON"), w!("Duplicate label"),
+                    WS_POPUP | WS_VISIBLE, 30, 30, 180, 80,
+                    None, None, None, None,
+                ).unwrap();
+                let right = CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_NOACTIVATE, w!("BUTTON"), w!("Duplicate label"),
+                    WS_POPUP | WS_VISIBLE, 230, 30, 180, 80,
+                    None, None, None, None,
+                ).unwrap();
+                send.send((GetCurrentThreadId(), left.0 as isize, right.0 as isize)).unwrap();
+                let mut message = MSG::default();
+                while GetMessageW(&mut message, None, 0, 0).0 > 0 {
+                    let _ = TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                DestroyWindow(right).unwrap();
+                DestroyWindow(left).unwrap();
+            });
+            let (thread_id, left_hwnd, right_hwnd) = receive.recv().unwrap();
+            let _fixture = Fixture { thread_id, worker: Some(worker) };
+            let _com = ComGuard::new().unwrap();
+            let uia: IUIAutomation = unsafe {
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).unwrap()
+            };
+            let left = unsafe { uia.ElementFromHandle(HWND(left_hwnd as *mut _)).unwrap() };
+            let right = unsafe { uia.ElementFromHandle(HWND(right_hwnd as *mut _)).unwrap() };
+            let mut store = RefStore::new();
+            let left_ref = store.insert_uia_element(&left).unwrap().to_string();
+            let right_ref = store.insert_uia_element(&right).unwrap().to_string();
+            let left_retained = store.get_uia_element(&left_ref).unwrap();
+            let right_retained = store.get_uia_element(&right_ref).unwrap();
+            drop(store);
+            // Force the missing-ID path, even on providers that supply RuntimeId.
+            // A name/AutomationId search must never substitute the other object.
+            let (_, _, resolved_left) = resolve(left_hwnd, &[], "", Some(&left_retained)).unwrap();
+            let (_, _, resolved_right) = resolve(left_hwnd, &[], "", Some(&right_retained)).unwrap();
+            assert!(unsafe { uia.CompareElements(&left, &resolved_left).unwrap() }.as_bool());
+            assert!(unsafe { uia.CompareElements(&right, &resolved_right).unwrap() }.as_bool());
+            assert!(!unsafe { uia.CompareElements(&resolved_left, &resolved_right).unwrap() }.as_bool());
+            assert_eq!(read_live_text(left_hwnd, &[], "", Some(&left_retained)).unwrap(), "Duplicate label");
+            let bounds = unsafe { left.CurrentBoundingRectangle().unwrap() };
+            let x = f64::from(bounds.left + bounds.right) / 2.0;
+            let y = f64::from(bounds.top + bounds.bottom) / 2.0;
+            assert!(occlusion_ok(left_hwnd, &[], "", Some(&left_retained), x, y).unwrap());
+            // The other object has the same label but cannot pass the target hit test.
+            assert!(!occlusion_ok(left_hwnd, &[], "", Some(&right_retained), x, y).unwrap());
+            unsafe {
+                SetWindowPos(HWND(right_hwnd as *mut _), HWND_TOPMOST, 30, 30, 180, 80,
+                    SWP_NOACTIVATE).unwrap();
+            }
+            // A different same-name object covering the target is real occlusion.
+            assert!(!occlusion_ok(left_hwnd, &[], "", Some(&left_retained), x, y).unwrap());
+            assert_eq!(live_elements_from(left_hwnd, &[], "", Some(&left_retained), true).unwrap().len(), 1);
+            drop(_fixture);
+            assert!(read_live_text(left_hwnd, &[], "", Some(&left_retained)).is_err());
+        }
+
+        #[test]
+        fn agile_references_survive_creator_exit_and_eight_mta_workers() {
+            fn assert_send_sync<T: Send + Sync>() {}
+            assert_send_sync::<UiaElement>();
+            let (yes, no) = std::thread::spawn(|| {
+                let _com = ComGuard::new().unwrap();
+                let uia: IUIAutomation = unsafe {
+                    CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).unwrap()
+                };
+                let yes: IUIAutomationBoolCondition = unsafe {
+                    uia.CreateTrueCondition().unwrap().cast().unwrap()
+                };
+                let no: IUIAutomationBoolCondition = unsafe {
+                    uia.CreateFalseCondition().unwrap().cast().unwrap()
+                };
+                (AgileReference::new(&yes).unwrap(), AgileReference::new(&no).unwrap())
+            })
+            .join()
+            .unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let workers = (0..8).map(|_| {
+                let (yes, no, barrier) = (yes.clone(), no.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    let _com = ComGuard::new().unwrap();
+                    barrier.wait();
+                    let yes = yes.resolve().unwrap();
+                    let no = no.resolve().unwrap();
+                    assert!(unsafe { yes.BooleanValue().unwrap() }.as_bool());
+                    assert!(!unsafe { no.BooleanValue().unwrap() }.as_bool());
+                })
+            }).collect::<Vec<_>>();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
 pub use native::{
-    focus, live_elements, occlusion_ok, press, read_live_text, scroll, set_text, snapshot,
-    uia_extract, ElementSnapshot, PressResult, ScrollResult, SetTextResult,
+    focus, live_elements, live_elements_from, occlusion_ok, press, read_live_text, scroll,
+    set_text, snapshot, uia_extract, ElementSnapshot, PressResult, ScrollResult, SetTextResult,
 };
 
 #[cfg(not(windows))]
@@ -971,6 +1208,7 @@ pub fn read_live_text(
     _hwnd: isize,
     _runtime_id: &[i32],
     _automation_id: &str,
+    _retained: Option<&UiaElement>,
 ) -> Result<String, String> {
     Err("UIA is only supported on Windows".to_owned())
 }
@@ -979,10 +1217,21 @@ pub fn live_elements(_hwnd: isize) -> Result<Vec<Value>, String> {
     Ok(Vec::new())
 }
 #[cfg(not(windows))]
+pub fn live_elements_from(
+    _hwnd: isize,
+    _runtime_id: &[i32],
+    _automation_id: &str,
+    _retained: Option<&UiaElement>,
+    _exact: bool,
+) -> Result<Vec<Value>, ElementQueryError> {
+    Ok(Vec::new())
+}
+#[cfg(not(windows))]
 pub fn snapshot(
     _hwnd: isize,
     _runtime_id: &[i32],
     _automation_id: &str,
+    _retained: Option<&UiaElement>,
 ) -> Result<ElementSnapshot, String> {
     Err("UIA is only supported on Windows".to_owned())
 }
@@ -991,6 +1240,7 @@ pub fn press(
     _hwnd: isize,
     _runtime_id: &[i32],
     _automation_id: &str,
+    _retained: Option<&UiaElement>,
 ) -> Result<PressResult, String> {
     Err("UIA is only supported on Windows".to_owned())
 }
@@ -999,12 +1249,18 @@ pub fn set_text(
     _hwnd: isize,
     _runtime_id: &[i32],
     _automation_id: &str,
+    _retained: Option<&UiaElement>,
     _text: &str,
 ) -> Result<SetTextResult, String> {
     Err("UIA is only supported on Windows".to_owned())
 }
 #[cfg(not(windows))]
-pub fn focus(_hwnd: isize, _runtime_id: &[i32], _automation_id: &str) -> Result<(), String> {
+pub fn focus(
+    _hwnd: isize,
+    _runtime_id: &[i32],
+    _automation_id: &str,
+    _retained: Option<&UiaElement>,
+) -> Result<(), String> {
     Err("UIA is only supported on Windows".to_owned())
 }
 #[cfg(not(windows))]
@@ -1012,6 +1268,7 @@ pub fn scroll(
     _hwnd: isize,
     _runtime_id: &[i32],
     _automation_id: &str,
+    _retained: Option<&UiaElement>,
     _x: f64,
     _y: f64,
 ) -> Result<ScrollResult, String> {
@@ -1022,6 +1279,7 @@ pub fn occlusion_ok(
     _hwnd: isize,
     _runtime_id: &[i32],
     _automation_id: &str,
+    _retained: Option<&UiaElement>,
     _x: f64,
     _y: f64,
 ) -> Result<bool, String> {
@@ -1037,6 +1295,16 @@ mod unit_tests {
     use super::*;
     use crate::refs::NativeHandle;
     use serde_json::json;
+
+    #[test]
+    fn empty_runtime_ids_never_establish_identity() {
+        assert!(!runtime_ids_match(Some(&[]), &[]));
+        assert!(!runtime_ids_match(None, &[]));
+        assert!(!runtime_ids_match(Some(&[42]), &[]));
+        assert!(!runtime_ids_match(Some(&[]), &[42]));
+        assert!(!runtime_ids_match(Some(&[43]), &[42]));
+        assert!(runtime_ids_match(Some(&[42, 7]), &[42, 7]));
+    }
 
     // -- Platform support check (non-Windows) -------------------------------
 

@@ -14,10 +14,6 @@ use windows_bridge::{
 #[derive(Clone, Debug)]
 struct ElementRecord {
     hwnd: isize,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
     automation_id: String,
     class_name: String,
     is_secure: bool,
@@ -25,6 +21,7 @@ struct ElementRecord {
     can_set_value: bool,
     can_scroll: bool,
     runtime_id: Vec<i32>,
+    retained: Option<windows_bridge::refs::UiaElement>,
 }
 
 #[derive(Clone, Debug)]
@@ -422,6 +419,7 @@ fn handle_look(args: &Value) -> Result<Value, ProtocolError> {
             scope.hwnd,
             &scope.runtime_id,
             &scope.automation_id,
+            scope.retained.as_ref(),
         )
         .map_err(stale_ref_from_uia)?;
         base_look = Some(owning_look);
@@ -442,6 +440,13 @@ fn handle_look(args: &Value) -> Result<Value, ProtocolError> {
         fw,
         fh,
     );
+    for raw in &elements {
+        if let Some(native_ref) = raw.get("ref").and_then(Value::as_str) {
+            if let Some(element) = element_records.get_mut(&format!("win:{look_id}:{native_ref}")) {
+                element.retained = store.get_uia_element(native_ref);
+            }
+        }
+    }
     if let Some(scope_ref) = scope_ref.as_deref() {
         outline = scoped_outline_root(outline, scope_ref);
     }
@@ -544,7 +549,7 @@ fn outline_from_elements(
         let can_press = caps.get("canPress").or_else(|| caps.get("canInvoke")).and_then(Value::as_bool).unwrap_or(false);
         let can_set_value = caps.get("canSetValue").or_else(|| caps.get("canEditText")).and_then(Value::as_bool).unwrap_or(false);
         let can_scroll = caps.get("canScroll").and_then(Value::as_bool).unwrap_or(false);
-        if !reference.is_empty() { records.insert(reference.clone(), ElementRecord { hwnd, x: screen_x, y: screen_y, w: screen_w, h: screen_h, automation_id: automation_id.clone(), class_name, is_secure, can_press, can_set_value, can_scroll, runtime_id: runtime_id.clone() }); }
+        if !reference.is_empty() { records.insert(reference.clone(), ElementRecord { hwnd, automation_id: automation_id.clone(), class_name, is_secure, can_press, can_set_value, can_scroll, runtime_id: runtime_id.clone(), retained: None }); }
         let node = json!({
             "ref": reference,
             "role": role,
@@ -933,6 +938,7 @@ fn act_on_ref(
             element.hwnd,
             &element.runtime_id,
             &element.automation_id,
+            element.retained.as_ref(),
         )
         .map_err(stale_ref_from_uia)?
         {
@@ -965,6 +971,7 @@ fn act_on_ref(
                 element.hwnd,
                 &element.runtime_id,
                 &element.automation_id,
+                element.retained.as_ref(),
                 text,
             )
             .map_err(stale_ref_from_uia)?
@@ -986,6 +993,7 @@ fn act_on_ref(
                         element.hwnd,
                         &element.runtime_id,
                         &element.automation_id,
+                        element.retained.as_ref(),
                     );
                     coordinate_fallback(args, parsed, &element)
                 }
@@ -1006,6 +1014,7 @@ fn act_on_ref(
                 element.hwnd,
                 &element.runtime_id,
                 &element.automation_id,
+                element.retained.as_ref(),
                 sx,
                 sy,
             )
@@ -1035,21 +1044,18 @@ fn coordinate_fallback(
             element.hwnd,
             &element.runtime_id,
             &element.automation_id,
+            element.retained.as_ref(),
         )
-        .map_err(stale_ref_from_uia)
-        .unwrap_or(windows_bridge::uia::ElementSnapshot {
-            rect: (element.x, element.y, element.w, element.h),
-            runtime_id: element.runtime_id.clone(),
-        });
+        .map_err(stale_ref_from_uia)?;
         let x = snapshot.rect.0 + snapshot.rect.2 / 2.0;
         let y = snapshot.rect.1 + snapshot.rect.3 / 2.0;
-        let mut occlusion_unknown = false;
         let mut clear = false;
         for attempt in 0..3 {
             match windows_bridge::uia::occlusion_ok(
                 element.hwnd,
-                &snapshot.runtime_id,
+                &element.runtime_id,
                 &element.automation_id,
+                element.retained.as_ref(),
                 x,
                 y,
             ) {
@@ -1059,11 +1065,7 @@ fn coordinate_fallback(
                 }
                 Ok(false) if attempt < 2 => sleep(Duration::from_millis(20)),
                 Ok(false) => break,
-                Err(_) => {
-                    occlusion_unknown = true;
-                    clear = true;
-                    break;
-                }
+                Err(message) => return Err(stale_ref_from_uia(message)),
             }
         }
         if !clear {
@@ -1074,12 +1076,7 @@ fn coordinate_fallback(
         }
         let mut executable = args.clone();
         executable["resolvedPoint"] = json!({ "x": x, "y": y });
-        let mut response = input::act(&executable)?;
-        if occlusion_unknown {
-            response["outcome"] = json!("unknown");
-            response["evidence"]["preflight"] = json!("unknown");
-        }
-        Ok(response)
+        input::act(&executable)
     })
 }
 
@@ -1259,6 +1256,7 @@ fn handle_read_text(args: &Value) -> Result<Value, ProtocolError> {
         element.hwnd,
         &element.runtime_id,
         &element.automation_id,
+        element.retained.as_ref(),
     )
     .map_err(stale_ref_from_uia)?;
     let characters = text.chars().collect::<Vec<_>>();
@@ -1290,7 +1288,7 @@ fn handle_wait_for(args: &Value) -> Result<Value, ProtocolError> {
         .map(|s| s.trim().to_lowercase());
     let gone = args.get("gone").and_then(Value::as_bool).unwrap_or(false);
     let scope_exact = args.get("scopeExact").and_then(Value::as_bool).unwrap_or(false);
-    let scope_runtime_id = match (
+    let scope_element = match (
         args.get("lookId").and_then(Value::as_str),
         args.get("scopeRef").and_then(Value::as_str),
     ) {
@@ -1298,8 +1296,7 @@ fn handle_wait_for(args: &Value) -> Result<Value, ProtocolError> {
             helper_state()
                 .lock()
                 .map_err(|_| internal("helper state lock poisoned"))?
-                .element_for_look(look_id, scope_ref)?
-                .runtime_id,
+                .element_for_look(look_id, scope_ref)?,
         ),
         (None, Some(_)) => return Err(invalid("scopeRef requires lookId")),
         _ => None,
@@ -1311,30 +1308,23 @@ fn handle_wait_for(args: &Value) -> Result<Value, ProtocolError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut node_count = 0;
     while Instant::now() < deadline {
-        let elements = windows_bridge::uia::live_elements(hwnd).map_err(internal)?;
+        let elements = if let Some(scope) = &scope_element {
+            wait_scope_elements(
+                windows_bridge::uia::live_elements_from(
+                    scope.hwnd,
+                    &scope.runtime_id,
+                    &scope.automation_id,
+                    scope.retained.as_ref(),
+                    scope_exact,
+                ),
+                scope_exact,
+                gone,
+            )?
+        } else {
+            windows_bridge::uia::live_elements(hwnd).map_err(internal)?
+        };
         node_count = elements.len();
-        let parents: HashMap<String, String> = elements
-            .iter()
-            .filter_map(|element| {
-                let runtime = element.get("runtimeId")?.as_array()?;
-                let parent = element.get("parentRuntimeId")?.as_array()?;
-                Some((serde_json::to_string(runtime).ok()?, serde_json::to_string(parent).ok()?))
-            })
-            .collect();
-        let scope_key = scope_runtime_id.as_ref().and_then(|id| serde_json::to_string(id).ok());
         let found = elements.iter().any(|element| {
-            if let Some(scope_key) = &scope_key {
-                let Some(mut current) = element.get("runtimeId").and_then(Value::as_array).and_then(|id| serde_json::to_string(id).ok()) else { return false; };
-                let mut within_scope = false;
-                for _ in 0..64 {
-                    if &current == scope_key { within_scope = true; break; }
-                    if scope_exact { break; }
-                    let Some(parent) = parents.get(&current) else { break; };
-                    if parent == &current { break; }
-                    current = parent.clone();
-                }
-                if !within_scope { return false; }
-            }
             let candidate_text = ["value", "label", "name", "title"]
                 .iter()
                 .filter_map(|key| element.get(*key).and_then(Value::as_str))
@@ -1365,6 +1355,19 @@ fn handle_wait_for(args: &Value) -> Result<Value, ProtocolError> {
         sleep(Duration::from_millis(150));
     }
     Ok(json!({ "found": false, "timedOut": true, "nodeCount": node_count }))
+}
+
+fn wait_scope_elements(
+    query: Result<Vec<Value>, windows_bridge::uia::ElementQueryError>,
+    exact: bool,
+    gone: bool,
+) -> Result<Vec<Value>, ProtocolError> {
+    match query {
+        Err(windows_bridge::uia::ElementQueryError::ElementNotAvailable) if exact && gone => {
+            Ok(Vec::new())
+        }
+        other => other.map_err(|error| stale_ref_from_uia(error.into())),
+    }
 }
 
 fn wait_target_hwnd(args: &Value) -> Result<isize, ProtocolError> {
@@ -1571,7 +1574,96 @@ mod tests {
         assert_eq!(error.code, ErrorCode::InvalidRequest);
     }
 
-    fn look_with_element(x: f64) -> LookRecord {
+    #[test]
+    fn only_confirmed_exact_absence_consumes_provider_removal() {
+        use windows_bridge::uia::ElementQueryError::{ElementNotAvailable, Other};
+
+        assert!(wait_scope_elements(Err(ElementNotAvailable), true, true).unwrap().is_empty());
+        assert_eq!(wait_scope_elements(Err(ElementNotAvailable), true, false).unwrap_err().code,
+            ErrorCode::StaleRef);
+        assert!(wait_scope_elements(Err(ElementNotAvailable), false, true).is_err());
+        assert_eq!(wait_scope_elements(Err(Other("provider failed: 0x80004005".to_owned())), true, true)
+            .unwrap_err().code, ErrorCode::InternalError);
+        // An error message is not proof of removal, even if it mentions staleness.
+        assert!(wait_scope_elements(Err(Other("Element reference is stale".to_owned())), true, true).is_err());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn exact_wait_accepts_removed_child_but_read_and_act_stay_stale() {
+        use windows::core::w;
+        use windows::Win32::Foundation::*;
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::*;
+
+        struct Fixture(u32, Option<std::thread::JoinHandle<()>>);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                unsafe { PostThreadMessageW(self.0, WM_QUIT, WPARAM(0), LPARAM(0)) }.unwrap();
+                self.1.take().unwrap().join().unwrap();
+            }
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || unsafe {
+            let parent = CreateWindowExW(WS_EX_NOACTIVATE, w!("STATIC"), w!("Wait fixture"),
+                WS_POPUP | WS_VISIBLE, 30, 150, 400, 120, None, None, None, None).unwrap();
+            let child = CreateWindowExW(WINDOW_EX_STYLE::default(), w!("BUTTON"), w!("Working"),
+                WS_CHILD | WS_VISIBLE, 20, 20, 150, 60, parent, None, None, None).unwrap();
+            let sibling = CreateWindowExW(WINDOW_EX_STYLE::default(), w!("BUTTON"), w!("Working"),
+                WS_CHILD | WS_VISIBLE, 210, 20, 150, 60, parent, None, None, None).unwrap();
+            send.send((GetCurrentThreadId(), parent.0 as isize, child.0 as isize, sibling.0 as isize)).unwrap();
+            let mut message = MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).0 > 0 {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            DestroyWindow(parent).unwrap();
+        });
+        let (thread_id, parent, child, sibling) = receive.recv().unwrap();
+        let _fixture = Fixture(thread_id, Some(worker));
+        let mut refs = RefStore::new();
+        let mut buttons = windows_bridge::uia::extract_elements(&mut refs, parent).into_iter()
+            .filter(|node| node["label"] == "Working").collect::<Vec<_>>();
+        buttons.sort_by_key(|node| node["bounds"]["x"].as_i64().unwrap());
+        assert_eq!(buttons.len(), 2);
+        let observed = &buttons[0];
+        let mut record = look_with_element(0);
+        record.hwnd = parent;
+        let element = record.elements.get_mut("same-ref").unwrap();
+        element.hwnd = parent;
+        element.runtime_id = observed["runtimeId"].as_array().unwrap().iter()
+            .map(|id| id.as_i64().unwrap() as i32).collect();
+        assert!(!element.runtime_id.is_empty());
+        element.retained = refs.get_uia_element(observed["ref"].as_str().unwrap());
+        assert!(element.retained.is_some());
+        drop(refs);
+        store_look_record("f1-wait".to_owned(), record.clone()).unwrap();
+        let mut condition = json!({ "lookId": "f1-wait", "scopeRef": "same-ref",
+            "windowId": parent, "scopeExact": true, "text": "Working", "timeoutMs": 100 });
+        assert_eq!(handle_wait_for(&condition).unwrap()["found"], true);
+        condition["gone"] = json!(true);
+        assert_eq!(handle_wait_for(&condition).unwrap()["timedOut"], true);
+        unsafe { SendMessageW(HWND(child as *mut _), WM_CLOSE, WPARAM(0), LPARAM(0)); }
+        assert!(!unsafe { IsWindow(HWND(child as *mut _)) }.as_bool());
+        assert!(unsafe { IsWindow(HWND(parent as *mut _)) }.as_bool());
+        assert!(unsafe { IsWindow(HWND(sibling as *mut _)) }.as_bool());
+        // Same native request boundary used by wait_for and act_ui expect.
+        let absent = handle_wait_for(&condition).unwrap();
+        assert_eq!(absent["found"], true);
+        assert_eq!(absent["gone"], true);
+        assert_eq!(absent["nodeCount"], 0);
+        condition["gone"] = json!(false);
+        assert_eq!(handle_wait_for(&condition).unwrap_err().code, ErrorCode::StaleRef);
+        assert_eq!(handle_read_text(&json!({ "lookId": "f1-wait", "elementRef": "same-ref" }))
+            .unwrap_err().code, ErrorCode::StaleRef);
+        let action = json!({ "lookId": "f1-wait", "target": { "ref": "same-ref" },
+            "action": "press", "policy": "ax_only" });
+        let parsed = input::parse_act_request(&action).unwrap();
+        assert_eq!(act_on_ref(&action, &parsed, &record, "same-ref").unwrap_err().code, ErrorCode::StaleRef);
+    }
+
+    fn look_with_element(identity: i32) -> LookRecord {
         LookRecord {
             pid: 1,
             hwnd: 1,
@@ -1586,17 +1678,14 @@ mod tests {
                 "same-ref".to_owned(),
                 ElementRecord {
                     hwnd: 1,
-                    x,
-                    y: 0.0,
-                    w: 1.0,
-                    h: 1.0,
                     automation_id: String::new(),
                     class_name: String::new(),
                     is_secure: false,
                     can_press: true,
                     can_set_value: true,
                     can_scroll: true,
-                    runtime_id: vec![],
+                    runtime_id: vec![identity],
+                    retained: None,
                 },
             )]),
         }
@@ -1605,12 +1694,12 @@ mod tests {
     #[test]
     fn observation_ownership_is_explicit_and_bounded() {
         let mut state = HelperState::default();
-        state.insert_look("look-a".to_owned(), look_with_element(1.0));
-        state.insert_look("look-b".to_owned(), look_with_element(2.0));
-        assert_eq!(state.element_for_look("look-a", "same-ref").unwrap().x, 1.0);
-        assert_eq!(state.element_for_look("look-b", "same-ref").unwrap().x, 2.0);
+        state.insert_look("look-a".to_owned(), look_with_element(1));
+        state.insert_look("look-b".to_owned(), look_with_element(2));
+        assert_eq!(state.element_for_look("look-a", "same-ref").unwrap().runtime_id, vec![1]);
+        assert_eq!(state.element_for_look("look-b", "same-ref").unwrap().runtime_id, vec![2]);
         for index in 0..MAX_LOOK_RECORDS {
-            state.insert_look(format!("new-{index}"), look_with_element(index as f64));
+            state.insert_look(format!("new-{index}"), look_with_element(index as i32));
         }
         assert_eq!(state.looks.len(), MAX_LOOK_RECORDS);
         assert_eq!(
@@ -1654,7 +1743,7 @@ mod tests {
 
     #[test]
     fn batch_locking_is_capability_driven() {
-        let mut record = look_with_element(1.0);
+        let mut record = look_with_element(1);
         let native_press = json!({"lookId":"look","action":"press","policy":"default","target":{"ref":"same-ref"},"params":{}});
         assert!(!action_may_use_physical_input(&native_press, &record));
         record.elements.get_mut("same-ref").unwrap().class_name = "Chrome_WidgetWin_1".to_owned();
