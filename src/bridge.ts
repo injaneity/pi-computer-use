@@ -1814,6 +1814,22 @@ async function dispatchUiAction(action: UiAction, target: ResolvedTarget, look: 
 	return trace;
 }
 
+/**
+ * Validates every action against the base look before the write lock is taken.
+ * The write lock advances the resource epoch before dispatch, so a request that
+ * fails pure validation must be rejected here or it would stale a state on which
+ * nothing was delivered.
+ */
+function preflightUiTransaction(actions: UiAction[], look: LookResponse, headless: boolean): void {
+	const actionState: ActionState = { currentFocus: false };
+	for (const action of actions) {
+		const prepared = prepareUiAction(action, actionState, look, headless);
+		if (!headless && (prepared.establishesFocus || (prepared.action === "click" && "x" in prepared.target))) {
+			actionState.currentFocus = true;
+		}
+	}
+}
+
 async function dispatchUiTransaction(actions: UiAction[], target: ResolvedTarget, look: LookResponse, headless: boolean, signal?: AbortSignal): Promise<ExecutionTrace> {
 	// Strict-headless batches have one immutable delivery class. When foreground
 	// fallback is permitted, decide independently per action so a completed
@@ -1968,10 +1984,11 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 	const baseView = { stateId: state.currentCapture!.stateId, outline: state.currentOutline! };
 	const condition = params.expect ? validateCondition(params.expect) : undefined;
 	const scopeNode = condition ? conditionScopeNode(look.parsedOutline!, condition) : undefined;
+	const headless = getComputerUseConfig().headless;
+	preflightUiTransaction(actions, look, headless);
 	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal, { preferModal: false }), signal);
 	const noteBefore = state.currentNote;
 	return await withWindowWriteLock(target, async () => {
-		const headless = getComputerUseConfig().headless;
 		const execution = await dispatchUiTransaction(actions, target, look, headless, signal);
 		const executedActions = actions.slice(0, execution.actionCount ?? actions.length);
 		try {

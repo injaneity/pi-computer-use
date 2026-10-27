@@ -210,6 +210,13 @@ check("INV-14 native batches settle once", () => {
 	assert(swift.includes('response["stoppedAt"]') && windows.includes('response["stoppedAt"]'), "native batches do not report their checked stop boundary");
 });
 
+check("INV-21 action validation precedes the write epoch", () => {
+	const transaction = ts.slice(ts.indexOf("async function performDesktopTransaction"), ts.indexOf("async function performBrowserTransaction"));
+	const preflight = transaction.indexOf("preflightUiTransaction(actions");
+	const lock = transaction.indexOf("withWindowWriteLock(");
+	assert(preflight >= 0 && lock > preflight, "desktop actions are not validated before the write lock advances the epoch");
+});
+
 check("INV-15 semantic action postconditions", () => {
 	const extension = fs.readFileSync(path.join(root, "extensions/computer-use.ts"), "utf8");
 	const actions = fs.readFileSync(path.join(root, "src/actions.ts"), "utf8");
