@@ -32,6 +32,15 @@ check(resolveCaptureTarget(windowId: nil, wantsImage: false) == .semanticOnly, "
 check(resolveCaptureTarget(windowId: nil, wantsImage: true) == .notCapturable, "unpaired visual errors")
 check(resolveCaptureTarget(windowId: 0, wantsImage: true) == .notCapturable, "window 0 never captured")
 
+func near(_ value: Double?, _ expected: Double) -> Bool { value.map { abs($0 - expected) < 0.001 } ?? false }
+check(near(scrollBarTargetValue(current: 0, delta: 600, viewportLength: 579, contentLength: 1374, thumbLength: nil, trackLength: nil), 600.0 / 795.0), "content size maps points to the scroll bar range (#99)")
+check(near(scrollBarTargetValue(current: 0.5, delta: 2_000, viewportLength: 579, contentLength: 1374, thumbLength: nil, trackLength: nil), 1), "large delta clamps to the end")
+check(near(scrollBarTargetValue(current: 0.5, delta: -2_000, viewportLength: 579, contentLength: 1374, thumbLength: nil, trackLength: nil), 0), "negative delta clamps to the start")
+check(near(scrollBarTargetValue(current: 0, delta: 100, viewportLength: 500, contentLength: nil, thumbLength: 250, trackLength: 500), 0.2), "thumb ratio estimates the content length")
+check(scrollBarTargetValue(current: 1, delta: 100, viewportLength: 579, contentLength: 1374, thumbLength: nil, trackLength: nil) == nil, "bar at the end can't scroll further")
+check(scrollBarTargetValue(current: 0, delta: 100, viewportLength: 579, contentLength: 579, thumbLength: nil, trackLength: nil) == nil, "content that fits has nothing to scroll")
+check(scrollBarTargetValue(current: 0, delta: 0, viewportLength: 579, contentLength: 1374, thumbLength: nil, trackLength: nil) == nil, "zero delta does nothing")
+
 if failures > 0 { exit(1) }
 print("macos native pure checks passed")
 `;

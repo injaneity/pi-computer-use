@@ -120,6 +120,25 @@ func resolveCaptureTarget(windowId: UInt32?, wantsImage: Bool) -> CaptureTarget 
 	if let windowId, windowId > 0 { return wantsImage ? .capture(windowId: windowId) : .semanticOnly }
 	return wantsImage ? .notCapturable : .semanticOnly
 }
+
+/// The scroll bar value, 0 at the start and 1 at the end, that moves a scroll
+/// area's content by `delta` points. The scrollable range comes from the content
+/// length when the area reports it, otherwise from the scroll bar's thumb to
+/// track ratio, which equals the viewport to content ratio. Returns nil when the
+/// range is unknown or empty, or when the bar is already at the end in the
+/// requested direction.
+func scrollBarTargetValue(current: Double, delta: Int, viewportLength: Double, contentLength: Double?, thumbLength: Double?, trackLength: Double?) -> Double? {
+	guard delta != 0, viewportLength > 0, current.isFinite else { return nil }
+	var content = contentLength ?? 0
+	if content <= viewportLength, let thumbLength, let trackLength, thumbLength > 0, trackLength > thumbLength {
+		content = viewportLength * trackLength / thumbLength
+	}
+	let range = content - viewportLength
+	guard range > 1 else { return nil }
+	let clamped = min(1, max(0, current))
+	let target = min(1, max(0, clamped + Double(delta) / range))
+	return abs(target - clamped) < 0.0001 ? nil : target
+}
 // END PURE
 
 private struct LookRecord {
@@ -2187,6 +2206,17 @@ final class Bridge {
 				let after = scrollPositionSignature(element)
 				return finish(["outcome": before != after ? "worked" : "unknown", "performed": performed])
 			}
+			// SwiftUI and many AppKit scroll areas expose no scroll actions and can
+			// ignore wheel events posted to a background app, but accept a write to
+			// their scroll bar's value.
+			if let scrolled = setScrollBarValueOrAncestor(startingAt: element, targetPid: pid, scrollX: (params["scrollX"] as? NSNumber)?.intValue ?? 0, scrollY: (params["scrollY"] as? NSNumber)?.intValue ?? 0) {
+				performed["grounding"] = "description"
+				performed["delivery"] = "ax"
+				performed["axScroll"] = "scroll_bar_value"
+				if let cursorPoint { animateCursor(at: cursorPoint) }
+				return finish(["outcome": "worked", "performed": performed, "evidence": ["scrollBarValue": scrolled]])
+			}
+			performed["axScroll"] = result["reason"] ?? "no_scroll_action"
 			try executeCoordinates(coordinatePoint())
 		} else {
 			try executeCoordinates(coordinatePoint())
@@ -2486,6 +2516,50 @@ final class Bridge {
 		}
 
 		return ["scrolled": false, "reason": "no_scroll_action"]
+	}
+
+	/// Moves the nearest scroll area, at or above `element`, whose scroll bar can
+	/// still move in the requested direction, by writing the bar's value. Returns
+	/// the new value read back from the bar, or nil when no bar moved.
+	private func setScrollBarValueOrAncestor(startingAt element: AXUIElement, targetPid: Int32, scrollX: Int, scrollY: Int) -> Double? {
+		var current: AXUIElement? = element
+		var depth = 0
+		while let candidate = current, depth < 10 {
+			if let pid = pidForElement(candidate), pid != targetPid { return nil }
+			if stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) == (kAXScrollAreaRole as String) {
+				var moved: Double?
+				if scrollY != 0 { moved = setScrollBarValue(area: candidate, barAttribute: "AXVerticalScrollBar", delta: scrollY, vertical: true) }
+				if scrollX != 0, let value = setScrollBarValue(area: candidate, barAttribute: "AXHorizontalScrollBar", delta: scrollX, vertical: false) { moved = moved ?? value }
+				if let moved { return moved }
+			}
+			current = parentElement(candidate)
+			depth += 1
+		}
+		return nil
+	}
+
+	private func setScrollBarValue(area: AXUIElement, barAttribute: String, delta: Int, vertical: Bool) -> Double? {
+		guard let barObject = copyAttribute(area, attribute: barAttribute as CFString),
+			CFGetTypeID(barObject as CFTypeRef) == AXUIElementGetTypeID()
+		else { return nil }
+		let bar = unsafeBitCast(barObject, to: AXUIElement.self)
+		var settable = DarwinBoolean(false)
+		guard AXUIElementIsAttributeSettable(bar, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue,
+			let current = (copyAttribute(bar, attribute: kAXValueAttribute as CFString) as? NSNumber)?.doubleValue,
+			let viewport = sizeAttribute(area, attribute: kAXSizeAttribute as CFString)
+		else { return nil }
+		let length = { (size: CGSize) in Double(vertical ? size.height : size.width) }
+		let content = sizeAttribute(area, attribute: "AXContentSize" as CFString).map(length)
+		let thumb = axElementArray(bar, attribute: kAXChildrenAttribute as CFString)
+			.first { stringAttribute($0, attribute: kAXRoleAttribute as CFString) == (kAXValueIndicatorRole as String) }
+			.flatMap { sizeAttribute($0, attribute: kAXSizeAttribute as CFString) }
+			.map(length)
+		let track = sizeAttribute(bar, attribute: kAXSizeAttribute as CFString).map(length)
+		guard let target = scrollBarTargetValue(current: current, delta: delta, viewportLength: length(viewport), contentLength: content, thumbLength: thumb, trackLength: track),
+			AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, NSNumber(value: target)) == .success
+		else { return nil }
+		guard let after = (copyAttribute(bar, attribute: kAXValueAttribute as CFString) as? NSNumber)?.doubleValue, abs(after - current) > 0.0001 else { return nil }
+		return after
 	}
 
 	private func performActionOrAncestor(startingAt element: AXUIElement, action: CFString, targetPid: Int32) -> [String: Any] {
