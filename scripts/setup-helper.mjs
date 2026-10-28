@@ -212,6 +212,8 @@ async function findDeveloperIdIdentity() {
 	return line?.trim().split(/\s+/)[1];
 }
 
+export { helperSourcePaths };
+
 export function parseCodeSigningIdentities(output, commonName = localCodeSignCommonName) {
 	return output.split("\n")
 		.map((line) => line.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"/i))
