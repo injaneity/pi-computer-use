@@ -4,6 +4,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+if (process.platform === "win32") {
+	// The fixture helpers are shebang scripts that Windows cannot spawn directly; Linux CI runs these checks.
+	console.log("Linux platform checks skipped on Windows");
+	process.exit(0);
+}
+
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-computer-use-linux-platform-"));
 const fakeHelper = path.join(tempDir, "linux-bridge");
 await fs.writeFile(fakeHelper, `#!/usr/bin/env node

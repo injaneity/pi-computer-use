@@ -45,6 +45,28 @@ jobs:
           GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: npm run test:commits
 
+  windows:
+    name: Windows tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run checks
+        run: npm test && npm run test:platform && npm run test:windows-scripts
+
   linux-native:
     name: Linux native (${{ matrix.arch }})
     strategy:

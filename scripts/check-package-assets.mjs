@@ -24,7 +24,10 @@ try {
 console.log("package assets passed");
 
 async function createTarball() {
-	const { stdout } = await execFileAsync("npm", ["pack", "--ignore-scripts", "--silent"], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+	// npm is a .cmd shim on Windows; reuse the running npm CLI through node when available.
+	const npmCli = process.env.npm_execpath;
+	const [command, prefix] = npmCli ? [process.execPath, [npmCli]] : ["npm", []];
+	const { stdout } = await execFileAsync(command, [...prefix, "pack", "--ignore-scripts", "--silent"], { encoding: "utf8", maxBuffer: 1024 * 1024 });
 	const filename = stdout.trim().split("\n").reverse().find((line) => line.endsWith(".tgz"));
 	assert.ok(filename, "npm pack did not produce a tarball");
 	return filename;

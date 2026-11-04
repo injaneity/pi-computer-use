@@ -10,7 +10,7 @@ const userHelperAppPath = path.join(homeDir, "Applications", "pi-computer-use.ap
 
 assert.equal(
 	resolveMacosHelperAppPath({ env: { PI_COMPUTER_USE_HELPER_APP_PATH: "/tmp/custom-helper.app" }, homeDir }),
-	"/tmp/custom-helper.app",
+	path.resolve("/tmp/custom-helper.app"),
 	"explicit helper path should win",
 );
 

@@ -245,9 +245,15 @@ console.log(`\n${LABEL} setup-helper.mjs (no args, platform detection)`);
   const result = await runScript("setup-helper.mjs", []);
   if (isWin32()) {
     // On Windows, no-args should auto-detect win32 and attempt Windows helper setup.
-    // It may succeed or hit EPERM if the destination is locked.
-    const isAcceptable = result.code === 0 || result.stderr.includes("EPERM");
-    tap(isAcceptable, true, "no-args handles win32 auto-detection");
+    // With a prebuilt it may succeed or hit EPERM if the destination is locked;
+    // a source checkout without a prebuilt must report the same missing-prebuilt error.
+    if (fs.existsSync(path.join(ROOT, "prebuilt", "windows", "windows-bridge.exe"))) {
+      const isAcceptable = result.code === 0 || result.stderr.includes("EPERM");
+      tap(isAcceptable, true, "no-args handles win32 auto-detection");
+    } else {
+      tap(result.code, 1, "no-args exits 1 on win32 when prebuilt absent");
+      tapMatch(result.stderr, /No Windows prebuilt helper found/, "no-args auto-detects win32 and prints missing-prebuilt error");
+    }
   } else if (isDarwin()) {
     tap(result.code === 0 || result.stderr.includes("EPERM"), true, "no-args installs only into the isolated test app on macOS");
     const combined = result.stderr + result.stdout;
