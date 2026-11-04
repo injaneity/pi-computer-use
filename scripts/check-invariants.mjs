@@ -3,11 +3,12 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { noteAfterAct, noteFromLook } from "../src/note.ts";
 import { countOutlineNodes, foldToBudget, graftScopedOutline, nodeByRef, parseLookResponse, renderInteractiveControls } from "../src/outline.ts";
 import { shouldPreferForegroundModalWindow } from "../src/root-selection.ts";
 
-const root = path.resolve(new URL("..", import.meta.url).pathname);
+const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const swift = fs.readFileSync(path.join(root, "native/macos/bridge.swift"), "utf8");
 const agentCursorSwift = fs.readFileSync(path.join(root, "native/macos/agent_cursor.swift"), "utf8");
 const activityGlowSwift = fs.readFileSync(path.join(root, "native/macos/activity_glow.swift"), "utf8");
@@ -33,6 +34,12 @@ function check(name, fn) {
 		process.exitCode = 1;
 		console.error(`FAIL ${name}: ${error.message}`);
 	}
+}
+
+// Swift checks need the macOS toolchain (xcrun); other platforms report them as skipped, not passed.
+function checkDarwin(name, fn) {
+	if (process.platform === "darwin") return check(name, fn);
+	console.log(`SKIP ${name}: requires macOS`);
 }
 
 function assert(condition, message) {
@@ -163,7 +170,8 @@ check("INV-7 static no label-confirm press regex", () => {
 });
 
 check("INV-8 tsc no unused locals", () => {
-	execFileSync("npx", ["tsc", "--noEmit"], { cwd: root, stdio: "pipe" });
+	// Run the local TypeScript CLI through node: `npx` is a .cmd shim that execFile cannot spawn on Windows.
+	execFileSync(process.execPath, [path.join(root, "node_modules", "typescript", "bin", "tsc"), "--noEmit"], { cwd: root, stdio: "pipe" });
 });
 
 check("INV-9 immutable state ownership", () => {
@@ -298,7 +306,7 @@ check("INV-20 bounded broad root discovery", () => {
 	assert(swift.includes("recentCompletedRequestIds"), "helper diagnostics cannot establish abandoned-request completion");
 });
 
-check("INV-8 swift typecheck", () => {
+checkDarwin("INV-8 swift typecheck", () => {
 	const triple = process.arch === "x64" ? "x86_64-apple-macosx14.0" : "arm64-apple-macosx14.0";
 	execFileSync("xcrun", [
 		"swiftc", "-target", triple, "-parse-as-library",
@@ -316,7 +324,7 @@ check("INV-8 swift typecheck", () => {
 	], { cwd: root, stdio: "pipe" });
 });
 
-check("INV-17 macOS agent cursor lifecycle", () => {
+checkDarwin("INV-17 macOS agent cursor lifecycle", () => {
 	const triple = process.arch === "x64" ? "x86_64-apple-macosx14.0" : "arm64-apple-macosx14.0";
 	const binary = path.join(os.tmpdir(), `pi-computer-use-cursor-tests-${process.pid}`);
 	try {

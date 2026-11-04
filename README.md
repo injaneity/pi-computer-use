@@ -41,7 +41,7 @@ Start Pi and complete the platform setup flow.
 
 On macOS, the runtime installs the helper per user at `~/Applications/pi-computer-use.app` and requests Accessibility and Screen Recording. Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`. Enable both grants for that app in System Settings, then choose Recheck. The [macOS reference](./docs/content/docs/reference/platforms/macos/accessibility.mdx#trust-and-permission) documents the exact APIs and avoids relying on version-specific pane labels.
 
-On Windows, use an interactive desktop session. Windows support uses the platform accessibility APIs and does not use the macOS helper app.
+On Windows, run Pi in an unlocked interactive desktop session. The package ships a prebuilt helper that setup copies to `%USERPROFILE%\.pi\agent\helpers\pi-computer-use\windows-bridge.exe` (override with `PI_COMPUTER_USE_WINDOWS_HELPER_PATH`). It reads the UI through UI Automation, captures windows with `PrintWindow`, and sends raw input with `SendInput`; there is no permission prompt and the macOS helper app is not used. Limitations on elevated or UIAccess windows are reported as errors. See the [Windows bridge reference](./docs/content/docs/reference/platforms/windows.mdx) for behavior and constraints.
 
 On Linux, run Pi inside the target user's graphical session with a working AT-SPI2 accessibility bus. AT-SPI semantic operations remain background-first. X11 additionally supports EWMH window metadata/focus, window capture, and policy-gated XTEST physical input; strict headless/background policies never use focus or XTEST. Native Wayland remains semantic-only; diagnostics reads portal capability properties without creating a session, and interactive portal use is disabled. See [Linux support](./docs/content/docs/how-to-guides/linux.mdx) for the exact capability matrix and portal status.
 
@@ -69,6 +69,7 @@ The docs follow [Diátaxis](https://diataxis.fr/) and render through the Next.js
 - [Explanation](./docs/content/docs/explanation/architecture.mdx)
 - [Reference](./docs/content/docs/reference/index.mdx)
 - [macOS root targeting](./docs/content/docs/reference/platforms/macos/root-targeting.mdx)
+- [Windows bridge](./docs/content/docs/reference/platforms/windows.mdx)
 - [Linux support](./docs/content/docs/how-to-guides/linux.mdx)
 - [Contributing](./CONTRIBUTING.md)
 
