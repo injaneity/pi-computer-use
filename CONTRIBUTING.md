@@ -33,6 +33,8 @@ macOS permissions should normally be granted to:
 
 Existing writable system-wide installs remain at `/Applications/pi-computer-use.app`.
 
+On Windows, `npm test` runs the checks that apply there and reports macOS Swift checks as `SKIP`. A source checkout has no `prebuilt/windows/windows-bridge.exe`, so build it with `npm run build:windows` (requires Rust and `cargo`) before running the checkout in Pi.
+
 ## Validation
 
 Use the smallest check that proves the change:
