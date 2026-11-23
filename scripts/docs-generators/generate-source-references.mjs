@@ -105,7 +105,7 @@ function listFiles(directory) {
 
 function codebasePage() {
 	const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-	const modules = ["extensions", "src", "src/platform/macos", "src/platform/windows", "src/platform/linux", "native/macos", "native/windows/bridge-rs/src", "native/linux/bridge-rs/src", "scripts/docs-generators"];
+	const modules = ["extensions", "src", "src/platform/macos", "src/platform/windows", "src/platform/linux", "src/platform/android", "native/macos", "native/windows/bridge-rs/src", "native/linux/bridge-rs/src", "native/android/src/dev/picomputeruse", "scripts/docs-generators"];
 	const sections = modules.map((directory) => {
 		const files = listFiles(directory);
 		return `### \`${directory}/\`\n\n${files.map((file) => `- [\`${file}\`](${sourceUrl(file)})`).join("\n")}`;

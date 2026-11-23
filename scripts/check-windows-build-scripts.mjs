@@ -252,9 +252,12 @@ console.log(`\n${LABEL} setup-helper.mjs (no args, platform detection)`);
     tap(result.code === 0 || result.stderr.includes("EPERM"), true, "no-args installs only into the isolated test app on macOS");
     const combined = result.stderr + result.stdout;
     tap(/installed|current|unavailable|EPERM/i.test(combined), true, "prints macOS install/current/sandbox status");
+  } else if (process.platform === "android") {
+    tap(result.code, 0, "Android setup returns manual guidance");
+    tapMatch(result.stdout, /Android companion.*manual/, "does not install or authorize the companion");
   } else {
-    tap(result.code, 1, "no-args exits 1 on non-Windows/non-macOS");
-    tapMatch(result.stderr, /only supported on macOS/, "prints macOS-only error");
+    tap(result.code, 1, "no-args exits 1 on unsupported hosts");
+    tapMatch(result.stderr, /supported on macOS/, "prints supported platform guidance");
   }
 }
 
@@ -273,6 +276,9 @@ console.log(`\n${LABEL} setup-helper.mjs --postinstall (platform detection)`);
     tap(result.code, 0, "--postinstall exits 0 on macOS");
     const combined = result.stderr + result.stdout;
     tap(/installed|current|unavailable|skipped|EPERM/i.test(combined), true, "prints macOS install/current/sandbox status");
+  } else if (process.platform === "android") {
+    tap(result.code, 0, "Android postinstall returns manual guidance");
+    tapMatch(result.stdout, /pair-android\.mjs --clipboard/, "prints manual pairing command");
   } else {
     tap(result.code, 0, "--postinstall exits 0 on non-Windows/non-macOS");
     tapMatch(result.stderr, /skipping helper setup/, "prints skip warning");

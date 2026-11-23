@@ -1,0 +1,218 @@
+---
+title: Android preview (Termux)
+description: Pair the local Android companion, use the existing tools, and check preview limits.
+---
+
+# Android preview (Termux)
+
+This fork adds an Android companion to `pi-computer-use`.
+Pi runs in Termux on the same unlocked phone.
+The companion supplies accessibility trees, window screenshots, and supported input actions.
+It does not run a model.
+
+**CAUTION: Automation can change app data.**
+Test with the companion's safe test page first.
+Do not use this preview on passwords, payments, permission prompts, or other sensitive pages.
+The Pi model provider can receive interface text and screenshots.
+
+## Requirements
+
+- Android 14 / API 34 or newer.
+- Pi and Node.js in Termux on the same phone.
+- The companion APK from this fork, with its accessibility service enabled manually.
+- An unlocked screen with the target app open.
+
+The current device check covers Android 16 / API 36 only.
+Android 14 and 15 remain untested.
+The APK uses a local debug signature, not a production release signature.
+The upstream npm release does not include these uncommitted fork changes.
+
+## Build and install
+
+The build uses Java and Android platform APIs without third-party Android libraries.
+It needs `aapt2`, `javac`, `java`, `d8`, `apksigner`, and `python3` on `PATH`.
+It also needs an API 36 `android.jar` and an existing Android debug keystore.
+The script does not download tools or create a keystore.
+
+From the fork checkout:
+
+```bash
+npm ci
+npm run build:android
+```
+
+Set `ANDROID_JAR` or `ANDROID_DEBUG_KEYSTORE` if the default paths do not match your environment.
+The defaults are:
+
+```text
+$HOME/android-build-test/sdk/platforms/android-36/android.jar
+$HOME/.android/debug.keystore
+```
+
+The build writes:
+
+```text
+tmp/android-build/PiComputerUse-0.1.0-preview.6.apk
+```
+
+On Termux, the build also copies the APK to this directory when shared storage is available:
+
+```text
+~/storage/shared/APK-BUILD/PiComputerUse-0.1.0-preview.6.apk
+```
+
+Install the APK with the Android package installer.
+If you install it from a file manager or browser instead of ADB, Android 13 and later blocks accessibility services from side-loaded apps.
+Open the app info page, open the overflow menu, select **Allow restricted settings**, then enable the service in accessibility settings.
+Do this yourself; the companion cannot and must not change that setting.
+ADB is optional for development installation and diagnostics.
+Runtime operations do not need root or ADB.
+Use this fork as a local Pi package; do not substitute the upstream npm package.
+
+## Manual pairing
+
+1. Open **Pi Computer Use**.
+2. Open accessibility settings from the companion.
+3. Enable the **Pi Computer Use** service manually.
+4. Run this command in Termux from the fork checkout:
+
+   ```bash
+   node scripts/pair-android.mjs --clipboard
+   ```
+
+5. Paste the 64-character secret into the companion's pairing field.
+6. Select **确认配对并启用**.
+7. Read the disclosure, then confirm **允许**.
+8. Open **打开安全测试页面**.
+
+The clipboard command needs `termux-clipboard-set`.
+If the clipboard is unavailable, run the script with `--show` in a private interactive terminal.
+Never paste the secret into chat, logs, or shared storage.
+After pairing, replace the clipboard contents with non-sensitive text.
+
+The Termux credential file is `~/.config/pi-computer-use/android.json` with mode `0600`.
+The client also accepts `PI_COMPUTER_USE_ANDROID_CREDENTIALS` for an alternate private file.
+The APK stores its copy in private app preferences and disables Android backup.
+
+The listener binds only to `127.0.0.1:39871`.
+Fresh nonces and role-separated HMAC proofs authenticate both ends before each command.
+The secret itself does not cross the connection.
+Commands use one connection each; the client never reconnects to replay input.
+Loopback is a transport boundary, not user consent or a separate encryption layer.
+
+## Tools and identity
+
+Use the existing tools:
+
+```javascript
+find_roots({ bundleId: "dev.picomputeruse" })
+observe_ui({ root: "@r1", mode: "semantic" })
+search_ui({ stateId, text: "SAVE TEST MESSAGE" })
+act_ui({
+  stateId,
+  actions: [{ action: "setText", ref: inputRef, text: "Hello Android" }],
+  expect: { ref: inputRef, value: "Hello Android" }
+})
+```
+
+Use refs from actual tool responses, not the example's placeholders.
+Use the resulting `stateId` for the next action.
+Use an explicit `expect` condition to check a button's application result.
+Action delivery alone does not prove success.
+
+Android targets use package names and generation-scoped window references.
+They do not use fabricated target PIDs.
+All live phone operations share one device resource, including operations on different apps.
+The APK also serializes commands from different clients.
+
+The native store retains up to 8 observations for 5 minutes.
+An action invalidates old observations for writes before input dispatch.
+Historical `read_text` remains available until native eviction or expiry.
+Refs belong to an observation; a ref from another observation is invalid.
+
+## Preview capabilities
+
+| Operation | Current behavior |
+| --- | --- |
+| `find_roots` | Accessible windows on the default display; package filter, not PID filter. |
+| `observe_ui` | Accessibility outline; optional window screenshot. |
+| `search_ui`, `inspect_ui`, `expand_ui` | Queries of the cached outline. No scoped native refresh. |
+| `read_text` | Text from the owning immutable native observation. |
+| `wait_for` | Text, role, value, or scoped condition in the selected window. |
+| `setText` | Semantic replacement in an editable, non-password node; checks the resulting value. |
+| `press`, semantic `click` | Accessibility action; reports `unknown` without a verified application result. |
+| `scroll` | One native vertical scroll action on a scrollable ref, not an exact pixel distance. |
+| Coordinate `click`, `drag` | Needs an image-bearing observation, unchanged geometry, and a touch path that no higher window covers. |
+| Batch | Up to 20 actions; stops on the first failed or uncertain result. No rollback. An unexecuted suffix keeps the result at `unknown`. |
+| `headless: true` | Android actions fail with `foreground_required`; no background-input guarantee. |
+
+The preview does not implement OCR, `typeText`, arbitrary key events, mouse movement, or browser CDP.
+It does not activate another app or unlock the screen.
+Open the target app manually.
+Use `setText` for supported editable nodes.
+Use `drag.path` for a touch swipe; do not assume desktop wheel semantics.
+
+Coordinate input checks every segment of the touch path against higher windows.
+A status bar or floating window blocks only the touches it actually covers.
+The check uses screen coordinates and a one-pixel margin for rounding.
+An unstable capture can trigger up to 3 read-only capture attempts against the same window identity.
+This does not repeat input.
+A timeout or disconnect can leave an action outcome unknown.
+
+Observe again before deciding what to do; do not repeat the old action blindly.
+
+## Stop and recovery
+
+- Select **暂停并断开** to pause control and close connections.
+- Select **继续已配对连接** to resume an existing pairing manually.
+- Select **撤销配对** to remove the APK's authorization and secret.
+- Disable the accessibility service in Android settings to stop the service.
+
+If diagnostics report `device_locked`, unlock the phone manually.
+If the connection is refused, check service status and pairing in the companion.
+If `stale_state` or `stale_root` appears, discover and observe the target again.
+If a screenshot fails, inspect the reported capture error; do not bypass Android's secure-window protection.
+A semantic outline is not proof that a page is safe to automate.
+
+## Verification
+
+Offline checks:
+
+```bash
+npm run test:android
+npm run typecheck
+npm test
+```
+
+Fixture-only device checks, after manual pairing and opening the safe test page:
+
+```bash
+npm run test:android-live
+```
+
+The live scripts refuse other apps and verify the fixture marker before input.
+They use the real registered tool definitions and native connection, not a mocked Android backend.
+They are not a test of a reloaded Pi session or of every Android app.
+
+The current successful device run covers discovery, outline queries, screenshot, text replacement, Save, and postcondition checks.
+It also covers stale-write rejection, historical text reads, batch stop on an uncertain step, cancelled queued input, coordinate bounds, and a physical tap whose focus change was verified afterward.
+Rotation was checked in landscape and restored to portrait with the accessibility settings unchanged.
+With the keyboard open, taps in the keyboard area, the status bar, the gesture bar, and a floating system window were rejected; a tap above the keyboard was delivered.
+Pause, revoke, and service restart were checked in preview.3.
+After a restart, a new service generation is required: previous root references return `stale_root` and previous look ids return `stale_state`.
+
+## Setup page layout
+
+The setup page uses edge-to-edge layout, as required from API 35.
+It pads by the real system bar and IME insets, so a button is not covered by the navigation bar.
+Spacing uses density-independent units, and the page follows the system dark theme.
+
+The safe test page uses the same styling and keeps its test contract: the title `Pi Computer Use test page`,
+the element ids `fixture_input`, `fixture_save`, and `fixture_result`, and the row labels `Test row 1` to `Test row 25`.
+
+A `uiautomator dump` check on preview.6 measured the last button bottom at 2239 px.
+The navigation bar starts at 2346 px on that 2400 px screen.
+The setup activity stays excluded from discoverable roots while it is visible.
+Screenshots of the setup page are blocked by `FLAG_SECURE`, so that page was checked by layout bounds and a dark-mode smoke test, not by a picture.
+Independent review remains pending.
+The general test suite skips macOS-native checks on non-macOS hosts.

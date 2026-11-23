@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LookResponse } from "../outline.ts";
 import type { PermissionStatus } from "../permissions.ts";
 
-export type PlatformName = "macos" | "windows" | "linux";
+export type PlatformName = "macos" | "windows" | "linux" | "android";
 export type NativeInputDelivery = "hid" | "pid";
 export type ActOutcome = "worked" | "didnt" | "unknown";
 /**
@@ -37,13 +37,15 @@ export interface PlatformReadyState {
 
 export interface PlatformRootQuery {
 	pid?: number;
+	bundleId?: string;
 	title?: string;
 }
 
 export interface PlatformApp {
 	appName: string;
 	bundleId?: string;
-	pid: number;
+	/** Desktop process identity. Android uses bundleId (package name), not a fabricated PID. */
+	pid?: number;
 	isFrontmost?: boolean;
 }
 
@@ -81,7 +83,7 @@ export interface PlatformRoot {
 export interface PlatformFrontmostResult {
 	appName: string;
 	bundleId?: string;
-	pid: number;
+	pid?: number;
 	windowTitle?: string;
 	windowId?: number;
 	rootRef?: string;
@@ -113,7 +115,8 @@ export interface PlatformRootDelta {
 	kind: string;
 	ref?: string;
 	title?: string;
-	pid: number;
+	pid?: number;
+	bundleId?: string;
 	isModal?: boolean;
 	metadata?: Record<string, unknown>;
 }
@@ -205,10 +208,14 @@ export interface PlatformWaitForResponse {
 	gone?: boolean;
 	timedOut?: boolean;
 	nodeCount?: number;
+	/** Native bound actually applied. May be shorter than the requested timeout. */
+	timeoutMs?: number;
 }
 
 export interface ComputerUsePlatformBackend {
 	name: PlatformName;
+	/** A false value prevents unsupported OCR/scoped refresh attempts. Omitted preserves desktop behavior. */
+	capabilities?: { ocr: boolean; scopedRefresh: boolean; nativeTransactions: boolean; snapshotText?: boolean };
 	/** Release process-local resources when the Pi session is torn down. */
 	shutdown?(): void | Promise<void>;
 	setActivity?(active: boolean): void | Promise<void>;

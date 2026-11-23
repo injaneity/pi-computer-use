@@ -6,7 +6,7 @@ import { restoreOutline, serializeOutline, type LookResponse, type Outline, type
 import { StateStore, type StoredState } from "./runtime.ts";
 
 interface StateTargetSnapshot {
-	pid: number;
+	pid?: number;
 	windowId: number;
 	windowRef?: string;
 }
@@ -14,7 +14,7 @@ interface StateTargetSnapshot {
 export interface CurrentTarget {
 	appName: string;
 	bundleId?: string;
-	pid: number;
+	pid?: number;
 	windowTitle: string;
 	windowId: number;
 	windowRef?: string;

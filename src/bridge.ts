@@ -16,6 +16,7 @@ import { applyOutputEnvelope, boundToolError, clearStoredOutputs, readStoredOutp
 import { AGENT_TOOL_NAMES, type ActParams, type EvaluateBrowserParams, type ExpandUiParams, type ImageMode, type InspectUiParams, type LaunchBrowserParams, type FindParams, type NavigateBrowserParams, type ObserveDetail, type ObserveParams, type ObserveTargetParams, type ReadTextParams, type RootSelector, type SearchUiParams, type UiAction, type WaitForParams } from "./contract.ts";
 import { toFiniteNumber } from "./platform/coerce.ts";
 import { currentPlatformBackend } from "./platform/index.ts";
+import { appIdentity, resourceKeyForTarget, rootIdentity } from "./platform/identity.ts";
 import type { FramePoints, HelperActPerformed, HelperActResult, NativeInputDelivery, PlatformActRequest, PlatformApp as HelperApp, PlatformDiagnostics, PlatformFrontmostResult as FrontmostResult, PlatformRoot as HelperWindow } from "./platform/types.ts";
 import type { PermissionStatus } from "./permissions.ts";
 import { ResourceScheduler } from "./runtime.ts";
@@ -74,7 +75,7 @@ interface ComputerUseDetails {
 	target: {
 		app: string;
 		bundleId?: string;
-		pid: number;
+		pid?: number;
 		windowTitle: string;
 		windowId: number;
 		windowRef?: string;
@@ -131,7 +132,7 @@ interface TerminalDesktopActionDetails {
 	target: {
 		app: string;
 		bundleId?: string;
-		pid: number;
+		pid?: number;
 		windowTitle: string;
 		windowId: number;
 		windowRef?: string;
@@ -151,7 +152,7 @@ interface ListWindowsDetails {
 	windows: Array<{
 		app: string;
 		bundleId?: string;
-		pid: number;
+		pid?: number;
 		kind: string;
 		windowTitle: string;
 		windowId?: number;
@@ -260,7 +261,7 @@ interface WindowRefRecord {
 	ref: string;
 	appName: string;
 	bundleId?: string;
-	pid: number;
+	pid?: number;
 	windowTitle: string;
 	windowId?: number;
 	nativeWindowRef?: string;
@@ -319,8 +320,8 @@ function operationState(): OperationState {
 	return savedStates.current();
 }
 
-function desktopResourceKey(target: Pick<CurrentTarget, "pid">): string {
-	return `desktop-pid:${target.pid}`;
+function desktopResourceKey(target: Pick<CurrentTarget, "pid" | "bundleId">): string {
+	return resourceKeyForTarget(currentPlatformBackend.name, target);
 }
 
 function persistOperation(state: OperationState): void {
@@ -582,8 +583,8 @@ async function listApps(signal?: AbortSignal): Promise<HelperApp[]> {
 	return await currentPlatformBackend.listApps(signal);
 }
 
-async function listWindows(pid: number, signal?: AbortSignal): Promise<HelperWindow[]> {
-	return await currentPlatformBackend.listRoots({ pid }, signal);
+async function listWindows(pid: number | undefined, signal?: AbortSignal, bundleId?: string): Promise<HelperWindow[]> {
+	return await currentPlatformBackend.listRoots({ pid, bundleId }, signal);
 }
 
 function appMatchesWindowQuery(app: HelperApp, query: FindParams): boolean {
@@ -626,7 +627,7 @@ function formatWindowLine(window: ListWindowsDetails["windows"][number]): string
 	const frame = `${Math.round(window.framePoints.x)},${Math.round(window.framePoints.y)} ${Math.round(window.framePoints.w)}x${Math.round(window.framePoints.h)}`;
 	const id = window.windowId ? `windowId ${window.windowId}` : window.nativeWindowRef ? `nativeRootRef ${window.nativeWindowRef}` : "unstable root id";
 	const pairing = window.pairing ? `, pairing ${window.pairing.confidence}/${Math.round(window.pairing.score)}` : "";
-	return `- ${window.windowRef} ${window.kind} ${window.app} pid ${window.pid} — ${window.windowTitle || "(untitled)"} (z ${window.zOrder}, ${id}, frame ${frame}${pairing}${flags ? `, ${flags}` : ""})`;
+	return `- ${window.windowRef} ${window.kind} ${window.app}${window.pid === undefined ? "" : ` pid ${window.pid}`} — ${window.windowTitle || "(untitled)"} (z ${window.zOrder}, ${id}, frame ${frame}${pairing}${flags ? `, ${flags}` : ""})`;
 }
 
 async function getFrontmost(signal?: AbortSignal): Promise<FrontmostResult> {
@@ -641,15 +642,8 @@ function assertBrowserUseAllowed(target: { appName: string; bundleId?: string })
 	}
 }
 
-function windowRecordIdentity(record: Pick<WindowRefRecord, "pid" | "windowId" | "nativeWindowRef" | "windowTitle" | "framePoints">): string {
-	if (record.windowId && record.windowId > 0) {
-		return `pid:${record.pid}|id:${record.windowId}`;
-	}
-	if (record.nativeWindowRef) {
-		return `pid:${record.pid}|ref:${record.nativeWindowRef}`;
-	}
-	const { x, y, w, h } = record.framePoints;
-	return `pid:${record.pid}|title:${normalizeText(record.windowTitle)}|frame:${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`;
+function windowRecordIdentity(record: Pick<WindowRefRecord, "pid" | "bundleId" | "windowId" | "nativeWindowRef" | "windowTitle" | "framePoints">): string {
+	return rootIdentity(currentPlatformBackend.name, record);
 }
 
 function storeWindowRef(record: Omit<WindowRefRecord, "ref">): WindowRefRecord {
@@ -687,6 +681,7 @@ function storeWindowRefForTarget(target: ResolvedTarget): string {
 		pid: target.pid,
 		windowTitle: target.windowTitle,
 		windowId: target.windowId > 0 ? target.windowId : undefined,
+		nativeWindowRef: target.nativeWindowRef,
 		framePoints: target.framePoints,
 		scaleFactor: target.scaleFactor,
 		isMinimized: target.isMinimized,
@@ -769,7 +764,7 @@ function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget 
 	return { ...baseTarget, windowRef: storeWindowRefForAppWindow(app, window).ref };
 }
 
-export function nativeWindowRequest(target: Pick<CurrentTarget, "pid" | "windowId" | "nativeWindowRef">): { pid: number; windowId?: number; rootRef?: string; windowRef?: string } {
+export function nativeWindowRequest(target: Pick<CurrentTarget, "pid" | "windowId" | "nativeWindowRef">): { pid?: number; windowId?: number; rootRef?: string; windowRef?: string } {
 	return {
 		pid: target.pid,
 		...(target.windowId > 0 ? { windowId: target.windowId } : {}),
@@ -811,8 +806,10 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 	const fromRef = runtimeState.windowRefs.get(normalized);
 	if (fromRef) {
 		const app: HelperApp = { appName: fromRef.appName, bundleId: fromRef.bundleId, pid: fromRef.pid };
-		const windows = await listWindows(fromRef.pid, signal);
-		const match =
+		const windows = await listWindows(fromRef.pid, signal, fromRef.bundleId);
+		const match = currentPlatformBackend.name === "android"
+			? windows.find((window) => window.rootRef === fromRef.nativeWindowRef)
+			:
 			(fromRef.windowId ? windows.find((window) => window.windowId === fromRef.windowId) : undefined) ??
 			(fromRef.nativeWindowRef ? windows.find((window) => window.windowRef === fromRef.nativeWindowRef) : undefined) ??
 			windows.find((window) => normalizeText(window.title || "(untitled)") === normalizeText(fromRef.windowTitle));
@@ -828,7 +825,7 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 	if (Number.isInteger(numericWindowId) && numericWindowId > 0) {
 		const apps = await listApps(signal);
 		for (const app of apps) {
-			const windows = await listWindows(app.pid, signal);
+			const windows = await listWindows(app.pid, signal, app.bundleId);
 			const match = windows.find((window) => window.windowId === numericWindowId);
 			if (match) {
 				assertBrowserUseAllowed(app);
@@ -852,7 +849,7 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 	const match = fuzzy.sort((a, b) => Number(b.isFocused) - Number(a.isFocused) || a.zOrder - b.zOrder)[0];
 	if (!match) throw new Error(`Root query '${normalized}' did not match any current root. Call find_roots to inspect roots.`);
 	const app: HelperApp = { appName: match.app, bundleId: match.bundleId, pid: match.pid };
-	const roots = await listWindows(match.pid, signal);
+	const roots = await listWindows(match.pid, signal, match.bundleId);
 	const helperRoot = roots.find((root) => root.rootRef === match.nativeWindowRef || root.windowRef === match.nativeWindowRef || root.windowId === match.windowId) ?? roots[0];
 	const resolved = toResolvedTarget(app, helperRoot);
 	setCurrentTarget(resolved);
@@ -861,7 +858,7 @@ async function resolveTargetByWindowSelector(selector: RootSelector, signal?: Ab
 
 async function resolveCurrentTarget(signal?: AbortSignal, options: { preferModal?: boolean } = {}): Promise<ResolvedTarget> {
 	const current = currentTargetOrThrow();
-	const windows = await listWindows(current.pid, signal);
+	const windows = await listWindows(current.pid, signal, current.bundleId);
 	if (!windows.length) {
 		throw new Error(CURRENT_TARGET_GONE_ERROR);
 	}
@@ -869,6 +866,7 @@ async function resolveCurrentTarget(signal?: AbortSignal, options: { preferModal
 	const hadStableWindowId = current.windowId > 0;
 	const titleQuery = normalizeText(current.windowTitle);
 	let match = current.nativeWindowRef ? windows.find((window) => window.windowRef === current.nativeWindowRef || window.rootRef === current.nativeWindowRef) : undefined;
+	if (currentPlatformBackend.name === "android" && !match) throw new Error(CURRENT_TARGET_GONE_ERROR);
 	match ??= hadStableWindowId ? windows.find((window) => window.windowId !== undefined && window.windowId === current.windowId) : undefined;
 	if (!match) {
 		const exactTitleMatches = titleQuery && titleQuery !== "(untitled)" ? windows.filter((window) => normalizeText(window.title) === titleQuery) : [];
@@ -911,13 +909,13 @@ async function resolveCurrentTarget(signal?: AbortSignal, options: { preferModal
 async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTarget> {
 	const frontmost = await getFrontmost(signal);
 	const apps = await listApps(signal);
-	const app = apps.find((candidate) => candidate.pid === frontmost.pid) ?? {
+	const app = apps.find((candidate) => appIdentity(candidate) === appIdentity(frontmost)) ?? {
 		appName: frontmost.appName,
 		bundleId: frontmost.bundleId,
 		pid: frontmost.pid,
 	};
 
-	const windows = await listWindows(frontmost.pid, signal);
+	const windows = await listWindows(frontmost.pid, signal, frontmost.bundleId);
 	if (!windows.length) {
 		throw new Error("No frontmost controllable root was found. Open an app window and call observe_ui again.");
 	}
@@ -1154,8 +1152,8 @@ function modelRefForRootDelta(delta: NonNullable<HelperActResult["rootDelta"]>[n
 	const current = operationState().currentTarget;
 	const record: WindowRefRecord = {
 		ref,
-		appName: current?.pid === delta.pid ? current.appName : "Unknown App",
-		bundleId: current?.pid === delta.pid ? current.bundleId : undefined,
+		appName: current && current.pid === delta.pid ? current.appName : "Unknown App",
+		bundleId: delta.bundleId ?? (current && current.pid === delta.pid ? current.bundleId : undefined),
 		pid: delta.pid,
 		windowTitle: delta.title ?? "(untitled)",
 		nativeWindowRef: delta.ref,
@@ -1298,14 +1296,14 @@ function sortWindowDetails(windows: ListWindowsDetails["windows"]): ListWindowsD
 
 // Side effect: stores stable @r refs for discovered windows in runtimeState.
 async function collectWindowDetails(apps: HelperApp[], config: ReturnType<typeof getComputerUseConfig>, signal?: AbortSignal): Promise<ListWindowsDetails["windows"]> {
-	const perApp = await Promise.all(apps.map(async (app) => ({ app, windows: await listWindows(app.pid, signal) })));
+	const perApp = await Promise.all(apps.map(async (app) => ({ app, windows: await listWindows(app.pid, signal, app.bundleId) })));
 	return sortWindowDetails(perApp.flatMap(({ app, windows }) => windows.map((window) => windowDetails(app, window, config))));
 }
 
 function collectBroadWindowDetails(roots: HelperWindow[], config: ReturnType<typeof getComputerUseConfig>): ListWindowsDetails["windows"] {
 	const windows: ListWindowsDetails["windows"] = [];
 	for (const window of roots) {
-		if (!window.pid) continue;
+		if (!window.pid && !(currentPlatformBackend.name === "android" && window.bundleId && window.rootRef)) continue;
 		windows.push(windowDetails({ appName: window.appName ?? "Unknown App", bundleId: window.bundleId, pid: window.pid }, window, config));
 	}
 	return sortWindowDetails(windows);
@@ -1463,12 +1461,16 @@ async function performReadText(params: ReadTextParams, signal?: AbortSignal): Pr
 	const node = outlineNodeByRef(ref);
 	const state = operationState();
 	if (!state.resourceKey || state.epoch === undefined) throw new Error("The observation has no live resource identity. Observe again.");
-	const raw = (await resourceScheduler.readAt(state.resourceKey, state.epoch, async () => await currentPlatformBackend.readText({
+	const read = async () => await currentPlatformBackend.readText({
 		lookId: state.currentOutline!.lookId,
 		elementRef: wireRefForNode(node),
 		offset: Math.max(0, Math.trunc(toFiniteNumber(params.offset, 0))),
 		limit: UI_TEXT_PAGE_CHARS,
-	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS }))).value;
+	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
+	// Detached snapshot text does not touch live UI. Other backends retain the epoch check.
+	const raw = currentPlatformBackend.capabilities?.snapshotText
+		? await read()
+		: (await resourceScheduler.readAt(state.resourceKey, state.epoch, read)).value;
 	const text = raw.text;
 	const details: ReadTextDetails = {
 		tool: "read_text",
@@ -1616,11 +1618,13 @@ async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Prom
 		outline: serializeOutline(refreshed.outline),
 		renderedOutline: foldToBudget(refreshed.outline).text,
 	};
-	const message = details.found ? (details.gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
+	const message = details.found ? (details.gone ? "Condition disappeared." : "Condition appeared.")
+		: `Timed out after ${raw.timeoutMs ?? timeoutMs}ms waiting for condition.`;
 	return { content: [{ type: "text", text: `${message}\n${waitForViewText(refreshed.outline, refreshed.capture.stateId, transition)}` }], details };
 }
 
 function sameRootIdentity(a: CurrentTarget, b: CurrentTarget): boolean {
+	if (currentPlatformBackend.name === "android") return Boolean(a.nativeWindowRef && a.nativeWindowRef === b.nativeWindowRef);
 	if (a.pid !== b.pid) return false;
 	if (a.windowId > 0 && b.windowId > 0) return a.windowId === b.windowId;
 	if (a.nativeWindowRef && b.nativeWindowRef) return a.nativeWindowRef === b.nativeWindowRef;
@@ -1699,7 +1703,7 @@ async function performSearchUi(params: SearchUiParams, signal?: AbortSignal): Pr
 	let matches = ranked.matches;
 	let escalatedOCR = false;
 	const look = state.currentLook;
-	if (shouldEscalateSearchOCR(matches, text) && look && look.readText?.requested !== "never" && !look.readText?.executed && state.lastSearchOcrEscalatedLookId !== look.lookId) {
+	if (currentPlatformBackend.capabilities?.ocr !== false && shouldEscalateSearchOCR(matches, text) && look && look.readText?.requested !== "never" && !look.readText?.executed && state.lastSearchOcrEscalatedLookId !== look.lookId) {
 		state.lastSearchOcrEscalatedLookId = look.lookId;
 		const currentTarget = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
 		// captureCurrentTarget adopts the new look/outline/capture into
@@ -1736,7 +1740,7 @@ async function performExpandUi(params: ExpandUiParams, signal?: AbortSignal): Pr
 	const depth = Math.max(1, Math.min(8, Math.trunc(toFiniteNumber(params.depth, 3))));
 	const regionKey = noteRegionKeyForRef(outline, ref);
 	const regionChanged = Boolean(regionKey && state.currentNote?.regions.some((region) => region.key === regionKey && region.status === "changed"));
-	if (target.truncated || regionChanged) {
+	if ((target.truncated || regionChanged) && currentPlatformBackend.capabilities?.scopedRefresh !== false) {
 		const currentTarget = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
 		const targetWireRef = wireRefForNode(target);
 		if (!state.resourceKey || state.epoch === undefined) throw new Error("The observation has no live resource identity. Observe again.");
@@ -1818,14 +1822,15 @@ async function dispatchUiTransaction(actions: UiAction[], target: ResolvedTarget
 	// Strict-headless batches have one immutable delivery class. When foreground
 	// fallback is permitted, decide independently per action so a completed
 	// background prefix is never replayed as part of a foreground batch.
-	if (headless && currentPlatformBackend.actBatch) {
+	if ((headless || currentPlatformBackend.capabilities?.nativeTransactions) && currentPlatformBackend.actBatch) {
 		const actionState: ActionState = { currentFocus: false };
-		const requests = actions.map((action) => helperActRequest(target, prepareUiAction(action, actionState, look, true) as NativePreparedAction, "ax_only"));
+		const batchPolicy = headless ? "ax_only" : "default";
+		const requests = actions.map((action) => helperActRequest(target, prepareUiAction(action, actionState, look, headless) as NativePreparedAction, batchPolicy));
 		const textLength = actions.reduce((sum, action) => sum + (action.text?.length ?? 0), 0);
 		const result = await currentPlatformBackend.actBatch(requests, { signal, timeoutMs: Math.max(COMMAND_TIMEOUT_MS, textLength * 25 + 6_000) });
 		if (!result.steps || result.steps.length === 0) throw new Error("Native action transaction returned no checked steps.");
-		const execution = aggregateExecutions(result.steps.map((step) => executionTraceFromAct(step, "ax_only")));
-		const batchTrace = executionTraceFromAct(result, "ax_only");
+		const execution = aggregateExecutions(result.steps.map((step) => executionTraceFromAct(step, batchPolicy)));
+		const batchTrace = executionTraceFromAct(result, batchPolicy);
 		execution.outcome = result.outcome;
 		execution.performed = result.performed;
 		execution.rootDelta = batchTrace.rootDelta;
@@ -1859,6 +1864,7 @@ function aggregateExecutions(steps: ExecutionTrace[]): ExecutionTrace {
 }
 
 function exactPlatformRootMatchesTarget(root: HelperWindow, target: ResolvedTarget): boolean {
+	if (currentPlatformBackend.name === "android") return Boolean(target.nativeWindowRef && root.rootRef === target.nativeWindowRef);
 	if (root.pid !== target.pid) return false;
 	const nativeRefMatches = Boolean(target.nativeWindowRef && (root.rootRef === target.nativeWindowRef || root.windowRef === target.nativeWindowRef));
 	const windowIdMatches = target.windowId > 0 && root.windowId === target.windowId;
@@ -1884,7 +1890,7 @@ export async function terminalDesktopActionResult(
 	let exactRootAvailable: boolean | undefined;
 	try {
 		for (let attempt = 0; attempt < 3; attempt += 1) {
-			const roots = await currentPlatformBackend.listRoots({ pid: target.pid });
+			const roots = await currentPlatformBackend.listRoots({ pid: target.pid, bundleId: target.bundleId });
 			exactRootAvailable = roots.some((root) => exactPlatformRootMatchesTarget(root, target));
 			if (exactRootAvailable) break;
 			if (attempt < 2) await sleep(75);
@@ -1990,19 +1996,20 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 					gone,
 					timeoutMs,
 				}, { signal, timeoutMs: timeoutMs + 2_000 });
+				const effectiveTimeoutMs = verification.timeoutMs ?? timeoutMs;
 				execution.verification = {
 					status: verification.found ? (desiredWasPreexisting ? "preexisting" : "verified") : "failed",
 					text: expectedText,
 					role: expectedRole,
 					value: expectedValue,
 					gone: gone || undefined,
-					timeoutMs,
+					timeoutMs: effectiveTimeoutMs,
 				};
 				execution.outcome = outcomeAfterCheck(execution.outcome ?? "unknown", execution.verification.status);
 				if (!verification.found) {
 					execution.error = {
 						code: "postcondition_failed",
-						message: `The action was delivered but its postcondition was not satisfied within ${timeoutMs}ms.`,
+						message: `The action was delivered but its postcondition was not satisfied within ${effectiveTimeoutMs}ms.`,
 					};
 				}
 			} else {
@@ -2013,13 +2020,17 @@ async function performDesktopTransaction(params: ActParams, actions: UiAction[],
 			for (const action of executedActions) {
 				state.currentNote = noteAfterAct(state.currentNote ?? noteBefore, action.ref, capture.outline, { window: noteWindowForTarget(capture.target, capture.look), rootDelta: execution.rootDelta });
 			}
-			return await buildToolResult("act_ui", `Executed ${executedActions.length} checked UI action${executedActions.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned state ${capture.capture.stateId}.`, capture, execution, signal, state.currentImageMode, baseView);
+			// Evidence for the executed prefix cannot prove an unexecuted suffix succeeded.
+			if (executedActions.length < actions.length && execution.outcome === "worked") execution.outcome = "unknown";
+			return await buildToolResult("act_ui", `Executed ${executedActions.length} of ${actions.length} checked UI action${actions.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned state ${capture.capture.stateId}.`, capture, execution, signal, state.currentImageMode, baseView);
 		} catch (error) {
 			if (signal?.aborted) {
 				clearDesktopOperationState(state);
 				throw error;
 			}
-			return await terminalDesktopActionResult(target, baseView.stateId, execution, error, condition);
+			const terminal = await terminalDesktopActionResult(target, baseView.stateId, execution, error, condition);
+			if (executedActions.length < actions.length && execution.outcome === "worked") execution.outcome = "unknown";
+			return terminal;
 		}
 	});
 }
@@ -2336,6 +2347,8 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	runtimeState.windowRefByIdentity.clear();
 	runtimeState.nextRootRefIndex = 1;
 
+	// Android service generations and private native snapshots do not survive a resumed session.
+	if (currentPlatformBackend.name === "android") return;
 	const restoredResources = new Set<string>();
 	for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
 		if ((entry as any)?.type !== "message") continue;
@@ -2387,7 +2400,7 @@ export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 		const target: CurrentTarget = {
 			appName: app,
 			bundleId: details.target.bundleId,
-			pid: Math.trunc(details.target.pid),
+			pid: Math.trunc(details.target.pid!),
 			windowTitle: details.target.windowTitle ?? "(untitled)",
 			windowId: Math.trunc(details.target.windowId),
 			windowRef: typeof details.target.windowRef === "string" ? details.target.windowRef : undefined,
