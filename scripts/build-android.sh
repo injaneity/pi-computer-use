@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/native/android"
 OUT="$ROOT/tmp/android-build"
-VERSION="0.1.0-preview.7"
+VERSION="0.1.0-preview.12"
 ANDROID_JAR="${ANDROID_JAR:-${ANDROID_HOME:-$HOME/android-build-test/sdk}/platforms/android-36/android.jar}"
 KEYSTORE="${ANDROID_DEBUG_KEYSTORE:-$HOME/.android/debug.keystore}"
 for tool in aapt2 javac java d8 apksigner python3; do
@@ -22,7 +22,7 @@ java -cp "$WORK/core" dev.picomputeruse.TouchGeometryTest
 aapt2 compile --dir "$APP/res" -o "$WORK/resources.zip"
 aapt2 link -o "$WORK/base.apk" -I "$ANDROID_JAR" --manifest "$APP/AndroidManifest.xml" \
     --java "$WORK/gen" --min-sdk-version 34 --target-sdk-version 36 \
-    --version-code 7 --version-name "$VERSION" "$WORK/resources.zip"
+    --version-code 12 --version-name "$VERSION" "$WORK/resources.zip"
 find "$APP/src" "$WORK/gen" -name '*.java' -print > "$WORK/sources.txt"
 # android.jar omits LambdaMetafactory. Use the Java 8 compile API; D8 desugars lambdas.
 javac --release 8 -Xlint:-options -classpath "$ANDROID_JAR" -d "$WORK/classes" @"$WORK/sources.txt"

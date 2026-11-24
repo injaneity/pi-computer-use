@@ -52,13 +52,13 @@ $HOME/.android/debug.keystore
 The build writes:
 
 ```text
-tmp/android-build/PiComputerUse-0.1.0-preview.6.apk
+tmp/android-build/PiComputerUse-0.1.0-preview.12.apk
 ```
 
 On Termux, the build also copies the APK to this directory when shared storage is available:
 
 ```text
-~/storage/shared/APK-BUILD/PiComputerUse-0.1.0-preview.6.apk
+~/storage/shared/APK-BUILD/PiComputerUse-0.1.0-preview.12.apk
 ```
 
 Install the APK with the Android package installer.
@@ -210,7 +210,7 @@ Spacing uses density-independent units, and the page follows the system dark the
 The safe test page uses the same styling and keeps its test contract: the title `Pi Computer Use test page`,
 the element ids `fixture_input`, `fixture_save`, and `fixture_result`, and the row labels `Test row 1` to `Test row 25`.
 
-A `uiautomator dump` check on preview.6 measured the last button bottom at 2239 px.
+A `uiautomator dump` check on preview.12 measured the last button bottom at 2239 px.
 The navigation bar starts at 2346 px on that 2400 px screen.
 The setup activity stays excluded from discoverable roots while it is visible.
 Screenshots of the setup page are blocked by `FLAG_SECURE`, so that page was checked by layout bounds and a dark-mode smoke test, not by a picture.
