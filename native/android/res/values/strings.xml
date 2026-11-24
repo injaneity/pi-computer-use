@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pi Computer Use</string>
+    <string name="service_description">Allow your paired local Pi session to inspect visible app content, take screenshots, and perform taps, text entry, and swipes. UI content can be sent to your configured AI provider by Pi. Enable only when you intend to use automation. Pause or revoke access in Pi Computer Use at any time. This is an automation tool, not a disability accessibility tool.</string>
+
+    <string name="ui_subtitle">Android 预览版 · 只在本机通信</string>
+
+    <string name="ui_section_about">说明</string>
+    <string name="ui_about_body">配对后，本机 Pi 可以读取界面和截图，并执行点击、输入和滑动。界面内容可能被发送给你配置的模型服务。</string>
+    <string name="ui_about_warning">不要在密码、支付、权限确认等敏感页面使用。随时可以暂停或撤销配对。</string>
+    <string name="ui_steps">1. 手动开启无障碍服务。\n2. 在 Termux 运行配对命令。\n3. 粘贴 64 位密钥并确认。</string>
+
+    <string name="ui_section_status">状态</string>
+    <string name="ui_label_service">无障碍服务</string>
+    <string name="ui_label_control">本机控制</string>
+    <string name="ui_service_connected">已连接</string>
+    <string name="ui_service_off">未运行</string>
+    <string name="ui_control_enabled">已启用</string>
+    <string name="ui_control_paused">已暂停</string>
+    <string name="ui_control_unpaired">未配对</string>
+    <string name="ui_loopback">监听 127.0.0.1:39871 · 只接受本机已配对的连接</string>
+
+    <string name="ui_section_pair">配对</string>
+    <string name="ui_pair_hint">在 Termux 运行 node scripts/pair-android.mjs --clipboard，然后粘贴到下面。</string>
+    <string name="ui_secret_hint">64 位配对密钥</string>
+    <string name="ui_action_paste">粘贴</string>
+    <string name="ui_action_show">显示</string>
+    <string name="ui_action_hide">隐藏</string>
+    <string name="ui_action_pair">确认配对并启用</string>
+    <string name="ui_action_accessibility">打开无障碍设置</string>
+    <string name="ui_error_secret">需要 64 位小写十六进制密钥</string>
+    <string name="ui_error_clipboard">剪贴板里没有文本</string>
+
+    <string name="ui_section_control">控制</string>
+    <string name="ui_action_pause">暂停并断开</string>
+    <string name="ui_action_resume">继续已配对连接</string>
+    <string name="ui_action_revoke">撤销配对</string>
+    <string name="ui_revoke_title">撤销配对？</string>
+    <string name="ui_revoke_message">本机 Pi 会立刻失去控制。要再次使用，必须重新粘贴一个新密钥。</string>
+    <string name="ui_action_cancel">取消</string>
+    <string name="ui_action_confirm_revoke">撤销</string>
+    <string name="ui_pair_confirm_title">允许本机 Pi 控制界面？</string>
+    <string name="ui_pair_confirm_message">配对后，持有该密钥的本机程序可以读取和操作可访问的应用界面。只粘贴你自己生成的密钥。</string>
+    <string name="ui_action_allow">允许</string>
+
+    <string name="ui_section_test">测试</string>
+    <string name="ui_test_hint">在安全测试页面里试点击、输入和保存，不会影响其他应用。</string>
+    <string name="ui_action_fixture">打开安全测试页面</string>
+
+    <string name="ui_toast_paired">已启用本机控制</string>
+    <string name="ui_toast_paused">已暂停本机控制</string>
+    <string name="ui_toast_resumed">已恢复控制</string>
+    <string name="ui_toast_revoked">已撤销配对</string>
+    <string name="ui_toast_no_secret">没有可用的密钥，请先配对</string>
+
+    <string name="fixture_title">Pi Computer Use test page</string>
+    <string name="fixture_subtitle">安全实验区 · 只在这个页面生效</string>
+    <string name="fixture_section_input">输入测试</string>
+    <string name="fixture_input_label">输入一段文字，然后保存</string>
+    <string name="fixture_input_hint">Test message</string>
+    <string name="fixture_save">Save test message</string>
+    <string name="fixture_result_label">结果</string>
+    <string name="fixture_not_saved">Not saved</string>
+    <string name="fixture_saved">Saved: %1$s</string>
+    <string name="fixture_section_dialog">对话框测试</string>
+    <string name="fixture_dialog">Open test dialog</string>
+    <string name="fixture_dialog_title">Test dialog</string>
+    <string name="fixture_dialog_message">No external side effects.</string>
+    <string name="fixture_dialog_close">Close</string>
+    <string name="fixture_section_scroll">滚动测试</string>
+    <string name="fixture_row">Test row %1$d</string>
+
+    <item name="fixture_input" type="id" />
+    <item name="fixture_save" type="id" />
+    <item name="fixture_result" type="id" />
+</resources>

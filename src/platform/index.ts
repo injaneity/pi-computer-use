@@ -2,6 +2,7 @@ import { macosBackend } from "./macos/backend.ts";
 import { isBrowserApp, isChromeFamilyApp, openBrowserLocationWithAppleScript } from "./macos/browser.ts";
 import { ensureMacosReady } from "./macos/permissions.ts";
 import type { ComputerUsePlatformBackend, PlatformName } from "./types.ts";
+import { androidBackend } from "./android/backend.ts";
 import { linuxBackend } from "./linux/backend.ts";
 import { windowsBackend } from "./windows/backend.ts";
 
@@ -55,6 +56,7 @@ export function platformBackendForRuntime(platform: NodeJS.Platform = process.pl
 	if (platform === "darwin") return macosPlatformBackend;
 	if (platform === "win32") return windowsBackend;
 	if (platform === "linux") return linuxBackend;
+	if (platform === "android") return androidBackend;
 	return new UnsupportedPlatformBackend(platform);
 }
 

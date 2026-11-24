@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 
 const { currentPlatformBackend } = await import("../src/platform/index.ts");
+// These fixtures use macOS PID/AX identities, regardless of the test host.
+currentPlatformBackend.name = "macos";
 const { terminalDesktopActionResult: rawTerminal, testing } = await import("../src/bridge.ts");
 const { foldToBudget, serializeOutline } = await import("../src/outline.ts");
 const { changesBetween } = await import("../src/view.ts");

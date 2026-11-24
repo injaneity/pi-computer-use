@@ -6,6 +6,8 @@
 
 `pi-computer-use` lets AI agents use desktop apps on macOS, Windows, and Linux.
 
+This fork also includes an [Android companion preview for Termux](./docs/content/docs/how-to-guides/android.mdx). Android support is not part of the upstream npm release.
+
 The macOS helper requires macOS 14 or newer; the [macOS reference](./docs/content/docs/reference/platforms/macos/implementation.mdx) maps each platform claim to Apple documentation and the implementation.
 
 An agent can look at an app window, understand the buttons and text inside it, and perform actions like clicking, typing, scrolling, and waiting for something to change. This is useful when the agent needs to work with a normal desktop app instead of an API, a terminal command, or a file.
@@ -45,6 +47,8 @@ On Windows, use an interactive desktop session. Windows support uses the platfor
 
 On Linux, run Pi inside the target user's graphical session with a working AT-SPI2 accessibility bus. AT-SPI semantic operations remain background-first. X11 additionally supports EWMH window metadata/focus, window capture, and policy-gated XTEST physical input; strict headless/background policies never use focus or XTEST. Native Wayland remains semantic-only; diagnostics reads portal capability properties without creating a session, and interactive portal use is disabled. See [Linux support](./docs/content/docs/how-to-guides/linux.mdx) for the exact capability matrix and portal status.
 
+On Android, use this fork with the companion APK on the same unlocked phone. Enable accessibility and confirm pairing manually. Runtime control needs neither root nor ADB. Start with the safe test page. See [Android preview](./docs/content/docs/how-to-guides/android.mdx) for installation, supported actions, and unverified cases.
+
 Use `/computer-use` inside Pi to show the active configuration and where it came from.
 
 ## Main tools
@@ -70,6 +74,7 @@ The docs follow [Diátaxis](https://diataxis.fr/) and render through the Next.js
 - [Reference](./docs/content/docs/reference/index.mdx)
 - [macOS root targeting](./docs/content/docs/reference/platforms/macos/root-targeting.mdx)
 - [Linux support](./docs/content/docs/how-to-guides/linux.mdx)
+- [Android preview](./docs/content/docs/how-to-guides/android.mdx)
 - [Contributing](./CONTRIBUTING.md)
 
 ## Development status

@@ -39,6 +39,14 @@ function assert(condition, message) {
 	if (!condition) throw new Error(message);
 }
 
+function checkMacos(name, fn) {
+	if (process.platform !== "darwin") {
+		console.log(`SKIP ${name} (requires a macOS host; not validated here)`);
+		return;
+	}
+	check(name, fn);
+}
+
 check("INV-1 static helper observation commands removed", () => {
 	assert(!swift.includes("visionTargets"), "bridge.swift still contains visionTargets");
 	assert(!swift.includes("axSnapshotTree"), "bridge.swift still contains axSnapshotTree");
@@ -298,7 +306,7 @@ check("INV-20 bounded broad root discovery", () => {
 	assert(swift.includes("recentCompletedRequestIds"), "helper diagnostics cannot establish abandoned-request completion");
 });
 
-check("INV-8 swift typecheck", () => {
+checkMacos("INV-8 swift typecheck", () => {
 	const triple = process.arch === "x64" ? "x86_64-apple-macosx14.0" : "arm64-apple-macosx14.0";
 	execFileSync("xcrun", [
 		"swiftc", "-target", triple, "-parse-as-library",
@@ -316,7 +324,7 @@ check("INV-8 swift typecheck", () => {
 	], { cwd: root, stdio: "pipe" });
 });
 
-check("INV-17 macOS agent cursor lifecycle", () => {
+checkMacos("INV-17 macOS agent cursor lifecycle", () => {
 	const triple = process.arch === "x64" ? "x86_64-apple-macosx14.0" : "arm64-apple-macosx14.0";
 	const binary = path.join(os.tmpdir(), `pi-computer-use-cursor-tests-${process.pid}`);
 	try {

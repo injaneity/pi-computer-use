@@ -519,6 +519,11 @@ async function setupLinuxHelper() {
 
 async function setup() {
 	const explicitPlatform = getArg("--platform");
+	if (explicitPlatform === "android" || (!explicitPlatform && process.platform === "android")) {
+		console.log("[pi-computer-use] Android companion setup is manual. Install the preview APK and manually enable its accessibility service.");
+		console.log("[pi-computer-use] Run node scripts/pair-android.mjs --clipboard, then paste the secret and confirm pairing in the APK.");
+		return;
+	}
 	if (explicitPlatform === "windows" || (!explicitPlatform && process.platform === "win32")) {
 		await setupWindowsHelper();
 		return;
@@ -533,7 +538,7 @@ async function setup() {
 			console.warn("[pi-computer-use] skipping helper setup: platform is not macOS.");
 			return;
 		}
-		throw new Error("pi-computer-use helper is supported on macOS, Windows, and Linux. Use the matching --platform option.");
+		throw new Error("pi-computer-use helper is supported on macOS, Windows, Linux, and Android. Use the matching --platform option.");
 	}
 
 	const arch = normalizeArch(process.arch);

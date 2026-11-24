@@ -49,6 +49,11 @@ This inventory is generated directly from the repository tree and `package.json`
 - [`src/platform/linux/backend.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/platform/linux/backend.ts)
 - [`src/platform/linux/helper.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/platform/linux/helper.ts)
 
+### `src/platform/android/`
+
+- [`src/platform/android/backend.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/platform/android/backend.ts)
+- [`src/platform/android/helper.ts`](https://github.com/injaneity/pi-computer-use/blob/main/src/platform/android/helper.ts)
+
 ### `native/macos/`
 
 - [`native/macos/activity_glow.swift`](https://github.com/injaneity/pi-computer-use/blob/main/native/macos/activity_glow.swift)
@@ -81,6 +86,19 @@ This inventory is generated directly from the repository tree and `package.json`
 - [`native/linux/bridge-rs/src/wayland.rs`](https://github.com/injaneity/pi-computer-use/blob/main/native/linux/bridge-rs/src/wayland.rs)
 - [`native/linux/bridge-rs/src/x11.rs`](https://github.com/injaneity/pi-computer-use/blob/main/native/linux/bridge-rs/src/x11.rs)
 
+### `native/android/src/dev/picomputeruse/`
+
+- [`native/android/src/dev/picomputeruse/AndroidActions.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/AndroidActions.java)
+- [`native/android/src/dev/picomputeruse/Auth.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/Auth.java)
+- [`native/android/src/dev/picomputeruse/BridgeServer.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/BridgeServer.java)
+- [`native/android/src/dev/picomputeruse/ComputerUseService.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/ComputerUseService.java)
+- [`native/android/src/dev/picomputeruse/FixtureActivity.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/FixtureActivity.java)
+- [`native/android/src/dev/picomputeruse/MainActivity.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/MainActivity.java)
+- [`native/android/src/dev/picomputeruse/SnapshotStore.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/SnapshotStore.java)
+- [`native/android/src/dev/picomputeruse/TouchGeometry.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/TouchGeometry.java)
+- [`native/android/src/dev/picomputeruse/Ui.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/Ui.java)
+- [`native/android/src/dev/picomputeruse/UiSnapshot.java`](https://github.com/injaneity/pi-computer-use/blob/main/native/android/src/dev/picomputeruse/UiSnapshot.java)
+
 ### `scripts/docs-generators/`
 
 - [`scripts/docs-generators/README.md`](https://github.com/injaneity/pi-computer-use/blob/main/scripts/docs-generators/README.md)
@@ -93,6 +111,7 @@ This inventory is generated directly from the repository tree and `package.json`
 
 ## Repository commands
 
+- `npm run build:android`
 - `npm run build:linux`
 - `npm run build:native`
 - `npm run build:windows`
@@ -104,6 +123,8 @@ This inventory is generated directly from the repository tree and `package.json`
 - `npm run postinstall`
 - `npm run test`
 - `npm run test:act-outcomes`
+- `npm run test:android`
+- `npm run test:android-live`
 - `npm run test:commits`
 - `npm run test:find-params`
 - `npm run test:invariants`
